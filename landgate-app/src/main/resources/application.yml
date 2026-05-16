@@ -1,0 +1,27 @@
+spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:test}
+  flyway:
+    locations: classpath:db/migration   # 数据库迁移脚本路径
+    baseline-on-migrate: true           # 已有表时自动建立基线
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml          # XML mapper 文件路径
+  type-aliases-package: com.landgate.infrastructure.dao.po  # PO 类别名
+  configuration:
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler  # 枚举按名称映射，等同 JPA @Enumerated(STRING)
+    map-underscore-to-camel-case: true              # 数据库下划线自动转 Java 驼峰 (user_id → userId)
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+landgate:
+  jwt:
+    access-token-expire-seconds: 3600    # JWT 访问令牌有效期 (1小时)
+    refresh-token-expire-seconds: 604800 # JWT 刷新令牌有效期 (7天)
+  security:
+    credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY}
+  gateway:
+    max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}           # 请求体上限，默认64MB
+
+
+server:
+  shutdown: graceful                # 优雅停机，等待正在处理的请求完成

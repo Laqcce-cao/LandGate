@@ -1,0 +1,168 @@
+package com.landgate.domain.auth.service;
+
+import com.landgate.domain.auth.adapter.repository.IUserRepository;
+import com.landgate.domain.auth.adapter.repository.IApiKeyRepository;
+import com.landgate.domain.auth.model.entity.UserEntity;
+import com.landgate.domain.auth.model.entity.ApiKeyEntity;
+import com.landgate.types.enums.Role;
+import com.landgate.types.enums.Status;
+import com.landgate.types.enums.SignupSource;
+import com.landgate.types.exception.AuthenticationException;
+import com.landgate.types.exception.NotFoundException;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.security.SecureRandom;
+import java.time.Instant;
+import java.util.HexFormat;
+import java.util.List;
+
+/**
+ * 认证与授权领域服务 —— 用户注册、登录、API Key 管理。
+ * <p>
+ * 负责用户身份认证流程，以及 API 密钥的创建、查询和删除。
+ * 密码加密委托给 {@link PasswordDomainService}。
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AuthDomainService {
+
+    private final IUserRepository userRepository;
+    private final IApiKeyRepository apiKeyRepository;
+    private final PasswordDomainService passwordService;
+
+    /**
+     * 用户注册 —— 创建新用户并返回用户实体。
+     * 默认角色为 USER，初始余额为 0，并发限制为 5。
+     *
+     * @param email    邮箱
+     * @param password 明文密码
+     * @return 新创建的用户实体
+     * @throws AuthenticationException 邮箱已存在时抛出
+     */
+    @Transactional
+    public UserEntity register(String email, String password) {
+        if (userRepository.existsByEmail(email)) {
+            throw new AuthenticationException("Email already registered");
+        }
+        UserEntity user = UserEntity.builder()
+                .email(email)
+                .passwordHash(passwordService.hashPassword(password))
+                .username(email.split("@")[0])
+                .role(Role.USER)
+                .status(Status.ACTIVE)
+                .signupSource(SignupSource.EMAIL)
+                .balance(BigDecimal.ZERO)
+                .concurrency(5)
+                .tokenVersion(0L)
+                .build();
+        user = userRepository.save(user);
+        log.info("User registered: id={}, email={}", user.getId(), user.getEmail());
+        return user;
+    }
+
+    /**
+     * 用户登录 —— 校验邮箱和密码，更新最后登录时间。
+     *
+     * @param email    邮箱
+     * @param password 明文密码
+     * @return 登录成功的用户实体
+     * @throws AuthenticationException 邮箱或密码错误、账号被禁用时抛出
+     */
+    @Transactional
+    public UserEntity login(String email, String password) {
+        UserEntity user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new AuthenticationException("Invalid email or password"));
+        if (!user.isActive()) throw new AuthenticationException("Account is disabled");
+        if (!passwordService.checkPassword(password, user.getPasswordHash()))
+            throw new AuthenticationException("Invalid email or password");
+        user.setLastLoginAt(Instant.now());
+        user.setLastActiveAt(Instant.now());
+        userRepository.save(user);
+        log.info("User logged in: id={}, email={}", user.getId(), user.getEmail());
+        return user;
+    }
+
+    /**
+     * 吊销用户的所有 JWT Token —— 递增 tokenVersion 使已签发的 Token 全部失效。
+     *
+     * @param userId 用户 ID
+     */
+    @Transactional
+    public void revokeAllUserTokens(Long userId) {
+        userRepository.findById(userId).ifPresent(user -> {
+            user.setTokenVersion(user.getTokenVersion() + 1);
+            userRepository.save(user);
+            log.info("All tokens revoked for user: id={}", userId);
+        });
+    }
+
+    /**
+     * 获取当前用户信息。
+     *
+     * @param userId 用户 ID
+     * @return 用户实体
+     * @throws AuthenticationException 用户不存在时抛出
+     */
+    public UserEntity getCurrentUser(Long userId) {
+        return userRepository.findById(userId)
+                .orElseThrow(() -> new AuthenticationException("User not found"));
+    }
+
+    /**
+     * 创建 API Key —— 生成以 "ak-" 开头的随机密钥。
+     *
+     * @param userId  用户 ID
+     * @param name    API Key 名称
+     * @param groupId 关联分组 ID（可选）
+     * @return 新创建的 API Key 实体
+     */
+    @Transactional
+    public ApiKeyEntity createApiKey(Long userId, String name, Long groupId) {
+        UserEntity user = getCurrentUser(userId);
+        String keyStr = "ak-" + generateSecureToken(32);
+        ApiKeyEntity apiKey = ApiKeyEntity.builder()
+                .userId(user.getId()).key(keyStr).name(name).groupId(groupId).build();
+        apiKey = apiKeyRepository.save(apiKey);
+        log.info("API key created: id={}, user_id={}, name={}", apiKey.getId(), userId, name);
+        return apiKey;
+    }
+
+    /**
+     * 查询用户的所有 API Key。
+     *
+     * @param userId 用户 ID
+     * @return API Key 列表
+     */
+    public List<ApiKeyEntity> listApiKeys(Long userId) {
+        return apiKeyRepository.findByUserId(userId);
+    }
+
+    /**
+     * 删除用户指定的 API Key。
+     *
+     * @param userId   用户 ID
+     * @param apiKeyId API Key ID
+     * @throws AuthenticationException API Key 不存在或不属于该用户时抛出
+     */
+    @Transactional
+    public void deleteApiKey(Long userId, Long apiKeyId) {
+        ApiKeyEntity key = apiKeyRepository.findByUserId(userId).stream()
+                .filter(k -> k.getId().equals(apiKeyId))
+                .findFirst()
+                .orElseThrow(() -> new AuthenticationException("API key not found"));
+        apiKeyRepository.deleteById(apiKeyId);
+        log.info("API key deleted: id={}, user_id={}", apiKeyId, userId);
+    }
+
+    private String generateSecureToken(int byteLength) {
+        SecureRandom random = new SecureRandom();
+        byte[] bytes = new byte[byteLength];
+        random.nextBytes(bytes);
+        return HexFormat.of().formatHex(bytes);
+    }
+}

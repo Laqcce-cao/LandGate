@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IAnnouncementDao">
+
+    <resultMap id="AnnouncementResultMap" type="com.landgate.infrastructure.dao.po.AnnouncementPO">
+        <id     column="id"           property="id"/>
+        <result column="title"        property="title"/>
+        <result column="content"      property="content"/>
+        <result column="type"         property="type"/>
+        <result column="published"    property="published"/>
+        <result column="publish_at"   property="publishAt"/>
+        <result column="expires_at"   property="expiresAt"/>
+        <result column="sort_order"   property="sortOrder"/>
+        <result column="created_by"   property="createdBy"/>
+        <result column="created_at"   property="createdAt"/>
+        <result column="updated_at"   property="updatedAt"/>
+        <result column="deleted_at"   property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="AnnouncementResultMap">
+        SELECT * FROM announcements WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO announcements (
+            title, content, type, published, publish_at, expires_at,
+            sort_order, created_by, created_at, updated_at, deleted_at
+        ) VALUES (
+            #{title}, #{content}, #{type}, #{published}, #{publishAt}, #{expiresAt},
+            #{sortOrder}, #{createdBy}, NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE announcements SET
+            title = #{title}, content = #{content}, type = #{type},
+            published = #{published}, publish_at = #{publishAt},
+            expires_at = #{expiresAt}, sort_order = #{sortOrder},
+            created_by = #{createdBy},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="AnnouncementResultMap">
+        SELECT * FROM announcements WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM announcements WHERE deleted_at IS NULL
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectPublished" resultMap="AnnouncementResultMap">
+        SELECT * FROM announcements WHERE published = TRUE AND deleted_at IS NULL
+    </select>
+
+    <select id="selectActive" resultMap="AnnouncementResultMap">
+        SELECT * FROM announcements
+        WHERE deleted_at IS NULL
+          AND published = TRUE
+          AND (publish_at IS NULL OR publish_at &lt;= NOW())
+          AND (expires_at IS NULL OR expires_at &gt; NOW())
+        ORDER BY sort_order ASC, created_at DESC
+    </select>
+
+</mapper>

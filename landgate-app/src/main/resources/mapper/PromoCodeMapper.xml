@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IPromoCodeDao">
+
+    <resultMap id="PromoCodeResultMap" type="com.landgate.infrastructure.dao.po.PromoCodePO">
+        <id     column="id"                  property="id"/>
+        <result column="code"                property="code"/>
+        <result column="discount_type"       property="discountType"/>
+        <result column="discount_value"      property="discountValue"/>
+        <result column="min_order_amount"    property="minOrderAmount"/>
+        <result column="max_discount_amount" property="maxDiscountAmount"/>
+        <result column="max_uses"            property="maxUses"/>
+        <result column="used_count"          property="usedCount"/>
+        <result column="max_uses_per_user"   property="maxUsesPerUser"/>
+        <result column="enabled"             property="enabled"/>
+        <result column="starts_at"           property="startsAt"/>
+        <result column="expires_at"          property="expiresAt"/>
+        <result column="created_by"          property="createdBy"/>
+        <result column="notes"               property="notes"/>
+        <result column="created_at"          property="createdAt"/>
+        <result column="updated_at"          property="updatedAt"/>
+        <result column="deleted_at"          property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="PromoCodeResultMap">
+        SELECT * FROM promo_codes WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO promo_codes (
+            code, discount_type, discount_value, min_order_amount, max_discount_amount,
+            max_uses, used_count, max_uses_per_user, enabled, starts_at, expires_at,
+            created_by, notes, created_at, updated_at, deleted_at
+        ) VALUES (
+            #{code}, #{discountType}, #{discountValue}, #{minOrderAmount}, #{maxDiscountAmount},
+            #{maxUses}, #{usedCount}, #{maxUsesPerUser}, #{enabled}, #{startsAt}, #{expiresAt},
+            #{createdBy}, #{notes}, NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE promo_codes SET
+            code = #{code}, discount_type = #{discountType}, discount_value = #{discountValue},
+            min_order_amount = #{minOrderAmount}, max_discount_amount = #{maxDiscountAmount},
+            max_uses = #{maxUses}, used_count = #{usedCount},
+            max_uses_per_user = #{maxUsesPerUser}, enabled = #{enabled},
+            starts_at = #{startsAt}, expires_at = #{expiresAt},
+            created_by = #{createdBy}, notes = #{notes},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="PromoCodeResultMap">
+        SELECT * FROM promo_codes WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM promo_codes WHERE deleted_at IS NULL
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByCode" resultMap="PromoCodeResultMap">
+        SELECT * FROM promo_codes WHERE code = #{code} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectEnabled" resultMap="PromoCodeResultMap">
+        SELECT * FROM promo_codes WHERE enabled = TRUE AND deleted_at IS NULL
+    </select>
+
+</mapper>

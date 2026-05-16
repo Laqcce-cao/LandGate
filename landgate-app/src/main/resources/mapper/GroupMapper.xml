@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IGroupDao">
+
+    <resultMap id="GroupResultMap" type="com.landgate.infrastructure.dao.po.GroupPO">
+        <id     column="id"                                   property="id"/>
+        <result column="name"                                 property="name"/>
+        <result column="description"                          property="description"/>
+        <result column="rate_multiplier"                      property="rateMultiplier"/>
+        <result column="is_exclusive"                         property="isExclusive"/>
+        <result column="status"                               property="status"/>
+        <result column="platform"                             property="platform"/>
+        <result column="subscription_type"                    property="subscriptionType"/>
+        <result column="daily_limit_usd"                      property="dailyLimitUsd"/>
+        <result column="weekly_limit_usd"                     property="weeklyLimitUsd"/>
+        <result column="monthly_limit_usd"                    property="monthlyLimitUsd"/>
+        <result column="default_validity_days"                property="defaultValidityDays"/>
+        <result column="allow_image_generation"               property="allowImageGeneration"/>
+        <result column="image_rate_independent"               property="imageRateIndependent"/>
+        <result column="image_rate_multiplier"                property="imageRateMultiplier"/>
+        <result column="image_price_1k"                       property="imagePrice1k"/>
+        <result column="image_price_2k"                       property="imagePrice2k"/>
+        <result column="image_price_4k"                       property="imagePrice4k"/>
+        <result column="claude_code_only"                     property="claudeCodeOnly"/>
+        <result column="fallback_group_id"                    property="fallbackGroupId"/>
+        <result column="fallback_group_id_on_invalid_request" property="fallbackGroupIdOnInvalidRequest"/>
+        <result column="model_routing"                        property="modelRouting"/>
+        <result column="model_routing_enabled"                property="modelRoutingEnabled"/>
+        <result column="mcp_xml_inject"                       property="mcpXmlInject"/>
+        <result column="supported_model_scopes"               property="supportedModelScopes"/>
+        <result column="sort_order"                           property="sortOrder"/>
+        <result column="allow_messages_dispatch"              property="allowMessagesDispatch"/>
+        <result column="require_oauth_only"                   property="requireOauthOnly"/>
+        <result column="require_privacy_set"                  property="requirePrivacySet"/>
+        <result column="default_mapped_model"                 property="defaultMappedModel"/>
+        <result column="messages_dispatch_model_config"       property="messagesDispatchModelConfig"/>
+        <result column="rpm_limit"                            property="rpmLimit"/>
+        <result column="created_at"                           property="createdAt"/>
+        <result column="updated_at"                           property="updatedAt"/>
+        <result column="deleted_at"                           property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="GroupResultMap">
+        SELECT * FROM `groups` WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO `groups` (
+            name, description, rate_multiplier, is_exclusive, status, platform, subscription_type,
+            daily_limit_usd, weekly_limit_usd, monthly_limit_usd, default_validity_days,
+            allow_image_generation, image_rate_independent, image_rate_multiplier,
+            image_price_1k, image_price_2k, image_price_4k,
+            claude_code_only, fallback_group_id, fallback_group_id_on_invalid_request,
+            model_routing, model_routing_enabled, mcp_xml_inject, supported_model_scopes,
+            sort_order, allow_messages_dispatch, require_oauth_only, require_privacy_set,
+            default_mapped_model, messages_dispatch_model_config, rpm_limit,
+            created_at, updated_at, deleted_at
+        ) VALUES (
+            #{name}, #{description}, #{rateMultiplier}, #{isExclusive}, #{status}, #{platform}, #{subscriptionType},
+            #{dailyLimitUsd}, #{weeklyLimitUsd}, #{monthlyLimitUsd}, #{defaultValidityDays},
+            #{allowImageGeneration}, #{imageRateIndependent}, #{imageRateMultiplier},
+            #{imagePrice1k}, #{imagePrice2k}, #{imagePrice4k},
+            #{claudeCodeOnly}, #{fallbackGroupId}, #{fallbackGroupIdOnInvalidRequest},
+            #{modelRouting}, #{modelRoutingEnabled}, #{mcpXmlInject}, #{supportedModelScopes},
+            #{sortOrder}, #{allowMessagesDispatch}, #{requireOauthOnly}, #{requirePrivacySet},
+            #{defaultMappedModel}, #{messagesDispatchModelConfig}, #{rpmLimit},
+            NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE `groups` SET
+            name = #{name}, description = #{description}, rate_multiplier = #{rateMultiplier},
+            is_exclusive = #{isExclusive}, status = #{status}, platform = #{platform},
+            subscription_type = #{subscriptionType},
+            daily_limit_usd = #{dailyLimitUsd}, weekly_limit_usd = #{weeklyLimitUsd},
+            monthly_limit_usd = #{monthlyLimitUsd}, default_validity_days = #{defaultValidityDays},
+            allow_image_generation = #{allowImageGeneration},
+            image_rate_independent = #{imageRateIndependent},
+            image_rate_multiplier = #{imageRateMultiplier},
+            image_price_1k = #{imagePrice1k}, image_price_2k = #{imagePrice2k},
+            image_price_4k = #{imagePrice4k}, claude_code_only = #{claudeCodeOnly},
+            fallback_group_id = #{fallbackGroupId},
+            fallback_group_id_on_invalid_request = #{fallbackGroupIdOnInvalidRequest},
+            model_routing = #{modelRouting}, model_routing_enabled = #{modelRoutingEnabled},
+            mcp_xml_inject = #{mcpXmlInject}, supported_model_scopes = #{supportedModelScopes},
+            sort_order = #{sortOrder}, allow_messages_dispatch = #{allowMessagesDispatch},
+            require_oauth_only = #{requireOauthOnly}, require_privacy_set = #{requirePrivacySet},
+            default_mapped_model = #{defaultMappedModel},
+            messages_dispatch_model_config = #{messagesDispatchModelConfig},
+            rpm_limit = #{rpmLimit},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="GroupResultMap">
+        SELECT * FROM `groups` WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM `groups` WHERE deleted_at IS NULL
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByName" resultMap="GroupResultMap">
+        SELECT * FROM `groups` WHERE name = #{name} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByPlatform" resultMap="GroupResultMap">
+        SELECT * FROM `groups` WHERE platform = #{platform} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByStatus" resultMap="GroupResultMap">
+        SELECT * FROM `groups` WHERE status = #{status} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectBySubscriptionType" resultMap="GroupResultMap">
+        SELECT * FROM `groups` WHERE subscription_type = #{subscriptionType} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectExclusive" resultMap="GroupResultMap">
+        SELECT * FROM `groups` WHERE is_exclusive = TRUE AND deleted_at IS NULL
+    </select>
+
+</mapper>

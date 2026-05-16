@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IAccountGroupDao">
+
+    <resultMap id="AccountGroupResultMap" type="com.landgate.infrastructure.dao.po.AccountGroupPO">
+        <id     column="account_id"  property="accountId"/>
+        <id     column="group_id"    property="groupId"/>
+        <result column="priority"    property="priority"/>
+        <result column="created_at"  property="createdAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <insert id="insert">
+        INSERT INTO account_groups (account_id, group_id, priority, created_at)
+        VALUES (#{accountId}, #{groupId}, #{priority}, NOW())
+    </insert>
+
+    <update id="update">
+        UPDATE account_groups SET priority = #{priority}
+        WHERE account_id = #{accountId} AND group_id = #{groupId}
+    </update>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByGroupId" resultMap="AccountGroupResultMap">
+        SELECT * FROM account_groups WHERE group_id = #{groupId}
+    </select>
+
+    <select id="selectByGroupIdOrderByPriority" resultMap="AccountGroupResultMap">
+        SELECT * FROM account_groups WHERE group_id = #{groupId} ORDER BY priority ASC
+    </select>
+
+    <select id="selectByAccountId" resultMap="AccountGroupResultMap">
+        SELECT * FROM account_groups WHERE account_id = #{accountId}
+    </select>
+
+    <delete id="deleteByGroupId">
+        DELETE FROM account_groups WHERE group_id = #{groupId}
+    </delete>
+
+    <delete id="deleteByAccountId">
+        DELETE FROM account_groups WHERE account_id = #{accountId}
+    </delete>
+
+</mapper>

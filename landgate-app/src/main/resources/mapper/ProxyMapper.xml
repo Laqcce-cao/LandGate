@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IProxyDao">
+
+    <resultMap id="ProxyResultMap" type="com.landgate.infrastructure.dao.po.ProxyPO">
+        <id     column="id"           property="id"/>
+        <result column="name"         property="name"/>
+        <result column="protocol"     property="protocol"/>
+        <result column="host"         property="host"/>
+        <result column="port"         property="port"/>
+        <result column="username"     property="username"/>
+        <result column="password"     property="password"/>
+        <result column="status"       property="status"/>
+        <result column="created_at"   property="createdAt"/>
+        <result column="updated_at"   property="updatedAt"/>
+        <result column="deleted_at"   property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="ProxyResultMap">
+        SELECT * FROM proxies WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO proxies (name, protocol, host, port, username, password, status, created_at, updated_at, deleted_at)
+        VALUES (#{name}, #{protocol}, #{host}, #{port}, #{username}, #{password}, #{status}, NOW(), NOW(), NULL)
+    </insert>
+
+    <update id="update">
+        UPDATE proxies SET
+            name = #{name}, protocol = #{protocol}, host = #{host}, port = #{port},
+            username = #{username}, password = #{password}, status = #{status},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="ProxyResultMap">
+        SELECT * FROM proxies WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM proxies WHERE deleted_at IS NULL
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByStatus" resultMap="ProxyResultMap">
+        SELECT * FROM proxies WHERE status = #{status} AND deleted_at IS NULL
+    </select>
+
+</mapper>

@@ -1,0 +1,84 @@
+package com.landgate.trigger.gateway;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.domain.billing.model.valobj.UsageTokens;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+/**
+ * OpenAI 用量解析器 —— 从 OpenAI API 响应中提取 Token 用量。
+ * <p>
+ * 非流式响应：{@code {"usage": {"prompt_tokens": N, "completion_tokens": N}}}
+ * <p>
+ * 流式（SSE）响应：用量仅出现在最后一个 chunk 中：
+ * {@code data: {"choices": [...], "usage": {...}}}
+ */
+@Slf4j
+@Component
+public class OpenAiUsageParser {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /**
+     * 从非流式 OpenAI 响应体解析用量。
+     */
+    public UsageTokens parseNonStreaming(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return new UsageTokens();
+        }
+        try {
+            JsonNode root = JSON.readTree(responseBody);
+            JsonNode usage = root.path("usage");
+            if (usage.isMissingNode() || usage.isNull()) {
+                return new UsageTokens();
+            }
+            return UsageTokens.builder()
+                    .inputTokens(usage.path("prompt_tokens").asInt())
+                    .outputTokens(usage.path("completion_tokens").asInt())
+                    .build();
+        } catch (Exception e) {
+            log.debug("Failed to parse OpenAI non-streaming usage", e);
+            return new UsageTokens();
+        }
+    }
+
+    /**
+     * 解析 OpenAI SSE 流式响应的单行数据。
+     * 无用量时返回 null。用量仅出现在最后一个 chunk 中。
+     */
+    public UsageTokens parseSSELine(String sseData) {
+        if (sseData == null || sseData.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode root = JSON.readTree(sseData);
+            JsonNode usage = root.path("usage");
+            if (usage.isMissingNode() || usage.isNull()) {
+                return null;
+            }
+            return UsageTokens.builder()
+                    .inputTokens(usage.path("prompt_tokens").asInt())
+                    .outputTokens(usage.path("completion_tokens").asInt())
+                    .build();
+        } catch (Exception e) {
+            log.debug("Failed to parse OpenAI SSE line", e);
+            return null;
+        }
+    }
+
+    /**
+     * 从 OpenAI 请求体中提取模型名称。
+     */
+    public String extractModel(String body) {
+        try {
+            JsonNode root = JSON.readTree(body);
+            if (root.has("model")) {
+                return root.get("model").asText();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to extract model from OpenAI request body");
+        }
+        return "unknown";
+    }
+}
