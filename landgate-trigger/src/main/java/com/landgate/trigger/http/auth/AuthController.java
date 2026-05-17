@@ -51,7 +51,7 @@ public class AuthController {
         // CAPTCHA 人机验证
         captchaService.verify(req.captchaToken(), request.getRemoteAddr());
 
-        UserEntity user = authDomainService.register(req.email(), req.password());
+        UserEntity user = authDomainService.register(req.email(), req.password(), req.username());
         // 注册后不直接返回token —— 需要先验证邮箱
         log.debug("Register success (pending verification): user_id={}", user.getId());
         return ResponseEntity.ok(Map.of(

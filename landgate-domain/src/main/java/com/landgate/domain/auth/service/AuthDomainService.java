@@ -49,14 +49,15 @@ public class AuthDomainService {
      * @throws AuthenticationException 邮箱已存在时抛出
      */
     @Transactional
-    public UserEntity register(String email, String password) {
+    public UserEntity register(String email, String password, String username) {
         if (userRepository.existsByEmail(email)) {
             throw new AuthenticationException("Email already registered");
         }
+        String displayName = (username != null && !username.isBlank()) ? username.trim() : email.split("@")[0];
         UserEntity user = UserEntity.builder()
                 .email(email)
                 .passwordHash(passwordService.hashPassword(password))
-                .username(email.split("@")[0])
+                .username(displayName)
                 .role(Role.USER.getKey())
                 .status(Status.ACTIVE.getKey())
                 .emailVerified(false)

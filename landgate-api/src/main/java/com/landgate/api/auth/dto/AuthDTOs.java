@@ -17,7 +17,10 @@ public final class AuthDTOs {
             String password,
 
             @NotBlank(message = "Captcha token is required")
-            String captchaToken
+            String captchaToken,
+
+            @Size(max = 100, message = "Username must be at most 100 characters")
+            String username
     ) {}
 
     public record LoginRequest(
