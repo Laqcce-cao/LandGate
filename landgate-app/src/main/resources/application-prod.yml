@@ -37,7 +37,7 @@ landgate:
     email-resend-cooldown-seconds: 60
   captcha:
     enabled: ${CAPTCHA_ENABLED:true}
-    turnstile-secret-key: ${TURNSTILE_SECRET_KEY}
+    turnstile-secret-key: ${TURNSTILE_SECRET_KEY:}
   ratelimit:
     registration:
       max-per-ip-per-hour: ${REGISTER_RATE_LIMIT:3}
