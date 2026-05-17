@@ -5,6 +5,7 @@ import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
@@ -16,11 +17,15 @@ public class EmailService implements IEmailPort {
 
     private final JavaMailSender mailSender;
 
+    @Value("${spring.mail.username:}")
+    private String from;
+
     public void sendVerificationCode(String to, String username, String code) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
             helper.setTo(to);
+            helper.setFrom(from);
             helper.setSubject("邮箱验证码 - LandGate");
             String html = buildVerificationCodeHtml(username, code);
             helper.setText(html, true);
