@@ -162,6 +162,47 @@ public class AuthDomainService {
     }
 
     /**
+     * 修改密码 —— 验证旧密码后更新为新密码。
+     *
+     * @param userId      用户 ID
+     * @param oldPassword 旧密码（明文）
+     * @param newPassword 新密码（明文）
+     * @throws AuthenticationException 旧密码错误时抛出
+     */
+    @Transactional
+    public void updatePassword(Long userId, String oldPassword, String newPassword) {
+        UserEntity user = getCurrentUser(userId);
+        if (!passwordService.checkPassword(oldPassword, user.getPasswordHash())) {
+            throw new AuthenticationException("Current password is incorrect");
+        }
+        user.setPasswordHash(passwordService.hashPassword(newPassword));
+        user.setTokenVersion(user.getTokenVersion() + 1); // 使旧 token 失效
+        userRepository.save(user);
+        log.info("Password updated: user_id={}", userId);
+    }
+
+    /**
+     * 修改用户名 —— 昵称不为空时更新。
+     *
+     * @param userId   用户 ID
+     * @param username 新昵称
+     * @throws AuthenticationException 昵称为空时抛出
+     */
+    @Transactional
+    public void updateUsername(Long userId, String username) {
+        if (username == null || username.isBlank()) {
+            throw new AuthenticationException("Username cannot be empty");
+        }
+        if (username.length() > 100) {
+            throw new AuthenticationException("Username must be at most 100 characters");
+        }
+        UserEntity user = getCurrentUser(userId);
+        user.setUsername(username.trim());
+        userRepository.save(user);
+        log.info("Username updated: user_id={}, username={}", userId, username);
+    }
+
+    /**
      * 创建 API Key —— 生成以 "ak-" 开头的随机密钥。
      *
      * @param userId  用户 ID

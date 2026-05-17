@@ -63,6 +63,7 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain userFilterChain(HttpSecurity http) throws Exception {
         http.securityMatcher("/api/v1/auth/me", "/api/v1/auth/revoke-all-sessions",
+                        "/api/v1/auth/password", "/api/v1/auth/username",
                         "/api/v1/auth/api-keys/**", "/api/v1/user/**", "/api/v1/admin/**",
                         "/api/v1/payment/**", "/api/v1/codes/**")
                 .csrf(csrf -> csrf.disable())

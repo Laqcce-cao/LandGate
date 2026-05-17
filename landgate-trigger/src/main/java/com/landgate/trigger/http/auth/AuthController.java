@@ -89,6 +89,44 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("success", true));
     }
 
+    @PutMapping("/password")
+    public ResponseEntity<?> updatePassword(@RequestAttribute("user_id") Long userId,
+                                            @RequestBody Map<String, String> body) {
+        String oldPassword = body.get("oldPassword");
+        String newPassword = body.get("newPassword");
+        if (oldPassword == null || oldPassword.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Current password is required"
+            ));
+        }
+        if (newPassword == null || newPassword.length() < 8) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "New password must be at least 8 characters"
+            ));
+        }
+        authDomainService.updatePassword(userId, oldPassword, newPassword);
+        return ResponseEntity.ok(Map.of("message", "Password updated successfully"));
+    }
+
+    @PutMapping("/username")
+    public ResponseEntity<?> updateUsername(@RequestAttribute("user_id") Long userId,
+                                            @RequestBody Map<String, String> body) {
+        String username = body.get("username");
+        if (username == null || username.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Username cannot be empty"
+            ));
+        }
+        authDomainService.updateUsername(userId, username);
+        return ResponseEntity.ok(Map.of(
+                "message", "Username updated successfully",
+                "username", username
+        ));
+    }
+
     @GetMapping("/api-keys")
     public ResponseEntity<?> listApiKeys(@RequestAttribute("user_id") Long userId) {
         log.debug("List API keys: user_id={}", userId);
