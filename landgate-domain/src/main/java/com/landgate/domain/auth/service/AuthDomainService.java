@@ -1,5 +1,7 @@
 package com.landgate.domain.auth.service;
 
+import com.landgate.domain.auth.adapter.port.IEmailPort;
+import com.landgate.domain.auth.adapter.port.IVerificationCodePort;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.adapter.repository.IApiKeyRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
@@ -34,6 +36,8 @@ public class AuthDomainService {
     private final IUserRepository userRepository;
     private final IApiKeyRepository apiKeyRepository;
     private final PasswordDomainService passwordService;
+    private final IVerificationCodePort verificationCodePort;
+    private final IEmailPort emailPort;
 
     /**
      * 用户注册 —— 创建新用户并返回用户实体。
@@ -53,15 +57,21 @@ public class AuthDomainService {
                 .email(email)
                 .passwordHash(passwordService.hashPassword(password))
                 .username(email.split("@")[0])
-                .role(Role.USER)
-                .status(Status.ACTIVE)
+                .role(Role.USER.getKey())
+                .status(Status.ACTIVE.getKey())
+                .emailVerified(false)
                 .signupSource(SignupSource.EMAIL)
-                .balance(BigDecimal.ZERO)
+                .balance(BigDecimal.ONE)
                 .concurrency(5)
                 .tokenVersion(0L)
                 .build();
         user = userRepository.save(user);
-        log.info("User registered: id={}, email={}", user.getId(), user.getEmail());
+
+        // 生成6位数字验证码存入Redis(5分钟TTL)，发送邮件
+        String code = verificationCodePort.generateCode(user.getEmail());
+        emailPort.sendVerificationCode(user.getEmail(), user.getUsername(), code);
+
+        log.info("User registered (pending verification): id={}, email={}", user.getId(), user.getEmail());
         return user;
     }
 
@@ -78,6 +88,8 @@ public class AuthDomainService {
         UserEntity user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new AuthenticationException("Invalid email or password"));
         if (!user.isActive()) throw new AuthenticationException("Account is disabled");
+        if (!user.getEmailVerified()) throw new AuthenticationException(
+                "Please verify your email first. Check your inbox for the verification code.");
         if (!passwordService.checkPassword(password, user.getPasswordHash()))
             throw new AuthenticationException("Invalid email or password");
         user.setLastLoginAt(Instant.now());
@@ -85,6 +97,41 @@ public class AuthDomainService {
         userRepository.save(user);
         log.info("User logged in: id={}, email={}", user.getId(), user.getEmail());
         return user;
+    }
+
+    /**
+     * 验证邮箱 —— 校验验证码并标记邮箱为已验证。
+     *
+     * @param email 邮箱地址
+     * @param code  6位数字验证码
+     * @throws AuthenticationException 验证码无效或过期时抛出
+     */
+    @Transactional
+    public void verifyEmail(String email, String code) {
+        if (!verificationCodePort.validateCode(email, code)) {
+            throw new AuthenticationException("Invalid or expired verification code");
+        }
+        UserEntity user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new AuthenticationException("User not found"));
+        if (user.getEmailVerified()) {
+            return; // already verified, idempotent
+        }
+        user.setEmailVerified(true);
+        userRepository.save(user);
+        log.info("Email verified: user_id={}, email={}", user.getId(), user.getEmail());
+    }
+
+    /**
+     * 重新发送邮箱验证码 —— 冷却期内会抛出异常。
+     *
+     * @param email 邮箱地址
+     * @throws AuthenticationException 冷却期内时抛出
+     */
+    public void resendVerificationCode(String email) {
+        String code = verificationCodePort.generateCode(email);
+        String username = email.split("@")[0];
+        emailPort.sendVerificationCode(email, username, code);
+        log.info("Verification code resent to: {}", email);
     }
 
     /**

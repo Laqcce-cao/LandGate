@@ -5,6 +5,7 @@
     <resultMap id="UserResultMap" type="com.landgate.infrastructure.dao.po.UserPO">
         <id     column="id"                           property="id"/>
         <result column="email"                        property="email"/>
+        <result column="email_verified"               property="emailVerified"/>
         <result column="password_hash"                property="passwordHash"/>
         <result column="role"                         property="role"/>
         <result column="balance"                      property="balance"/>
@@ -38,14 +39,14 @@
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO users (
-            email, password_hash, role, balance, concurrency, status, username, notes,
+            email, email_verified, password_hash, role, balance, concurrency, status, username, notes,
             totp_secret_encrypted, totp_enabled, totp_enabled_at,
             signup_source, last_login_at, last_active_at,
             balance_notify_enabled, balance_notify_threshold_type, balance_notify_threshold,
             balance_notify_extra_emails, total_recharged, token_version, rpm_limit,
             created_at, updated_at, deleted_at
         ) VALUES (
-            #{email}, #{passwordHash}, #{role}, #{balance}, #{concurrency}, #{status}, #{username}, COALESCE(#{notes}, ''),
+            #{email}, #{emailVerified}, #{passwordHash}, #{role}, #{balance}, #{concurrency}, #{status}, #{username}, COALESCE(#{notes}, ''),
             #{totpSecretEncrypted}, #{totpEnabled}, #{totpEnabledAt},
             #{signupSource}, #{lastLoginAt}, #{lastActiveAt},
             #{balanceNotifyEnabled}, #{balanceNotifyThresholdType}, #{balanceNotifyThreshold},
@@ -56,7 +57,7 @@
 
     <update id="update">
         UPDATE users SET
-            email = #{email}, password_hash = #{passwordHash}, role = #{role},
+            email = #{email}, email_verified = #{emailVerified}, password_hash = #{passwordHash}, role = #{role},
             balance = #{balance}, concurrency = #{concurrency}, status = #{status},
             username = #{username}, notes = #{notes},
             totp_secret_encrypted = #{totpSecretEncrypted}, totp_enabled = #{totpEnabled},

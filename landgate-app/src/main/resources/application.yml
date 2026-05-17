@@ -4,6 +4,17 @@ spring:
   flyway:
     locations: classpath:db/migration   # 数据库迁移脚本路径
     baseline-on-migrate: true           # 已有表时自动建立基线
+  mail:
+    host: ${SMTP_HOST:smtp.example.com}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
 
 mybatis:
   mapper-locations: classpath:mapper/*.xml          # XML mapper 文件路径
@@ -21,6 +32,15 @@ landgate:
     credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY}
   gateway:
     max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}           # 请求体上限，默认64MB
+  verification:
+    email-code-expire-seconds: 300       # 邮箱验证码有效期: 5分钟
+    email-resend-cooldown-seconds: 60    # 重发验证码冷却: 60秒
+  captcha:
+    enabled: ${CAPTCHA_ENABLED:false}              # CAPTCHA 人机验证开关
+    turnstile-secret-key: ${TURNSTILE_SECRET_KEY:} # Cloudflare Turnstile secret key
+  ratelimit:
+    registration:
+      max-per-ip-per-hour: ${REGISTER_RATE_LIMIT:3}  # 同IP每小时最大注册次数
 
 
 server:

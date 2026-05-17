@@ -13,6 +13,9 @@ spring:
       connection-timeout: 10000
   flyway:
     enabled: true
+  mail:
+    host: ${SMTP_HOST:127.0.0.1}
+    port: ${SMTP_PORT:1025}
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
@@ -27,6 +30,15 @@ spring:
 landgate:
   jwt:
     signing-key: ${JWT_SIGNING_KEY}
+  verification:
+    email-code-expire-seconds: 300
+    email-resend-cooldown-seconds: 60
+  captcha:
+    enabled: ${CAPTCHA_ENABLED:false}
+    turnstile-secret-key: ${TURNSTILE_SECRET_KEY:}
+  ratelimit:
+    registration:
+      max-per-ip-per-hour: ${REGISTER_RATE_LIMIT:3}
 
 redis:
   sdk:
