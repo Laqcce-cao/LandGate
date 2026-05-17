@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS `groups` (
     messages_dispatch_model_config  JSON DEFAULT ('{}'),
 
     rpm_limit               INTEGER NOT NULL DEFAULT 0,
+    excluded_models         TEXT DEFAULT NULL,
 
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
