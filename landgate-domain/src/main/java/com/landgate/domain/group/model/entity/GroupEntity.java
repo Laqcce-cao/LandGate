@@ -129,6 +129,12 @@ public class GroupEntity {
     @Builder.Default
     private Integer rpmLimit = 0;
 
+    /**
+     * 排除模型列表（JSON 数组），例如 ["claude-opus-4","gemini-pro"]。
+     * 这些模型对该分组不可用，即使全局价格已配置。
+     */
+    private String excludedModels;
+
     private Instant createdAt;
     private Instant updatedAt;
     private Instant deletedAt;

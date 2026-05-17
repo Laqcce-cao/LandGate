@@ -86,6 +86,7 @@ public class GroupDomainService {
         if (updates.getImageRateIndependent() != null) existing.setImageRateIndependent(updates.getImageRateIndependent());
         if (updates.getRpmLimit() != null) existing.setRpmLimit(updates.getRpmLimit());
         if (updates.getSortOrder() != null) existing.setSortOrder(updates.getSortOrder());
+        if (updates.getExcludedModels() != null) existing.setExcludedModels(updates.getExcludedModels());
         groupRepository.save(existing);
         log.info("Group updated: id={}", id);
         return existing;
@@ -179,5 +180,20 @@ public class GroupDomainService {
     public void revokeUser(Long groupId, Long userId) {
         userAllowedGroupRepository.deleteByUserId(userId);
         log.info("User access revoked: user_id={}, group_id={}", userId, groupId);
+    }
+
+    /**
+     * 检查指定模型是否被该分组排除。
+     *
+     * @param groupId 分组 ID
+     * @param model   模型名称
+     * @return true 表示该模型对该分组不可用
+     */
+    public boolean isModelExcluded(Long groupId, String model) {
+        if (groupId == null || model == null) return false;
+        GroupEntity group = getById(groupId);
+        String excluded = group.getExcludedModels();
+        if (excluded == null || excluded.isBlank()) return false;
+        return excluded.contains("\"" + model + "\"");
     }
 }
