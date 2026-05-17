@@ -2,10 +2,10 @@ spring:
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:test}
   flyway:
-    locations: classpath:db/migration   # 数据库迁移脚本路径
-    baseline-on-migrate: true           # 已有表时自动建立基线
+    locations: classpath:db/migration
+    baseline-on-migrate: true
   mail:
-    host: ${SMTP_HOST:smtp.example.com}
+    host: ${SMTP_HOST:}
     port: ${SMTP_PORT:587}
     username: ${SMTP_USERNAME:}
     password: ${SMTP_PASSWORD:}
@@ -17,31 +17,30 @@ spring:
             enable: true
 
 mybatis:
-  mapper-locations: classpath:mapper/*.xml          # XML mapper 文件路径
-  type-aliases-package: com.landgate.infrastructure.dao.po  # PO 类别名
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.landgate.infrastructure.dao.po
   configuration:
-    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler  # 枚举按名称映射，等同 JPA @Enumerated(STRING)
-    map-underscore-to-camel-case: true              # 数据库下划线自动转 Java 驼峰 (user_id → userId)
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+    map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
 landgate:
   jwt:
-    access-token-expire-seconds: 3600    # JWT 访问令牌有效期 (1小时)
-    refresh-token-expire-seconds: 604800 # JWT 刷新令牌有效期 (7天)
+    access-token-expire-seconds: 3600
+    refresh-token-expire-seconds: 604800
   security:
-    credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY}
+    credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY:}
   gateway:
-    max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}           # 请求体上限，默认64MB
+    max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}
   verification:
-    email-code-expire-seconds: 300       # 邮箱验证码有效期: 5分钟
-    email-resend-cooldown-seconds: 60    # 重发验证码冷却: 60秒
+    email-code-expire-seconds: 300
+    email-resend-cooldown-seconds: 60
   captcha:
-    enabled: ${CAPTCHA_ENABLED:false}              # CAPTCHA 人机验证开关
-    turnstile-secret-key: ${TURNSTILE_SECRET_KEY:} # Cloudflare Turnstile secret key
+    enabled: ${CAPTCHA_ENABLED:false}
+    turnstile-secret-key: ${TURNSTILE_SECRET_KEY:}
   ratelimit:
     registration:
-      max-per-ip-per-hour: ${REGISTER_RATE_LIMIT:3}  # 同IP每小时最大注册次数
-
+      max-per-ip-per-hour: ${REGISTER_RATE_LIMIT:3}
 
 server:
-  shutdown: graceful                # 优雅停机，等待正在处理的请求完成
+  shutdown: graceful
