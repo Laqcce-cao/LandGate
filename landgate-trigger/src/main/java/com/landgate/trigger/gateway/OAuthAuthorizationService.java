@@ -1,0 +1,297 @@
+package com.landgate.trigger.gateway;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.api.oauth.IOAuthService;
+import com.landgate.api.oauth.dto.*;
+import com.landgate.infrastructure.config.OAuthProperties;
+import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.domain.account.service.AccountDomainService;
+import com.landgate.domain.account.service.CredentialDomainService;
+import com.landgate.types.constant.RedisKeys;
+import com.landgate.types.enums.AccountType;
+import com.landgate.types.enums.Platform;
+import com.landgate.types.enums.Status;
+import com.landgate.types.exception.BadRequestException;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RBucket;
+import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Base64;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * OAuth 授权服务 —— 管理 OAuth Authorization Code Flow + PKCE 流程。
+ * <p>
+ * 流程：生成 PKCE 参数 → 存储 state 到 Redis → 返回授权 URL →
+ * 管理员浏览器授权 → 前端回调 → 用 code 换 token → 创建 Account。
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class OAuthAuthorizationService implements IOAuthService {
+
+    private final OAuthProperties oauthProperties;
+    private final CredentialDomainService credentialService;
+    private final AccountDomainService accountDomainService;
+    private final OAuthTokenRefreshService tokenRefreshService;
+
+    @Qualifier("redissonClient")
+    private final RedissonClient redissonClient;
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+
+    @Override
+    public OAuthAuthorizeResponse authorize(OAuthAuthorizeRequest request) {
+        String platformKey = request.platform().toLowerCase();
+        OAuthProperties.ProviderConfig provider = oauthProperties.getProviders().get(platformKey);
+        if (provider == null) {
+            throw new BadRequestException("Unsupported OAuth platform: " + platformKey);
+        }
+
+        // Generate PKCE
+        String codeVerifier = generateCodeVerifier();
+        String codeChallenge = generateCodeChallenge(codeVerifier);
+
+        // Generate state
+        String state = UUID.randomUUID().toString();
+
+        // Store state → {codeVerifier, platform, redirectUri} in Redis
+        String redirectUri = request.redirectUri() != null
+                ? request.redirectUri()
+                : oauthProperties.getDefaultRedirectUri();
+
+        storeState(state, codeVerifier, platformKey, redirectUri);
+
+        // Build authorize URL
+        String authorizeUrl = buildAuthorizeUrl(provider, codeChallenge, state, redirectUri);
+
+        log.info("OAuth authorize URL generated: platform={}, state={}", platformKey, state);
+
+        return new OAuthAuthorizeResponse(
+                authorizeUrl,
+                state,
+                oauthProperties.getStateExpireSeconds()
+        );
+    }
+
+    @Override
+    public OAuthCallbackResponse callback(OAuthCallbackRequest request) {
+        // Validate and retrieve state from Redis
+        StateData stateData = loadAndDeleteState(request.state());
+        if (stateData == null) {
+            throw new BadRequestException("Invalid or expired OAuth state");
+        }
+
+        String platformKey = stateData.platform;
+        OAuthProperties.ProviderConfig provider = oauthProperties.getProviders().get(platformKey);
+        if (provider == null) {
+            throw new BadRequestException("Unsupported OAuth platform: " + platformKey);
+        }
+
+        log.info("OAuth callback: platform={}, state={}", platformKey, request.state());
+
+        try {
+            // Exchange code for tokens
+            String body = "grant_type=authorization_code"
+                    + "&code=" + URLEncoder.encode(request.code(), StandardCharsets.UTF_8)
+                    + "&redirect_uri=" + URLEncoder.encode(stateData.redirectUri, StandardCharsets.UTF_8)
+                    + "&code_verifier=" + URLEncoder.encode(stateData.codeVerifier, StandardCharsets.UTF_8)
+                    + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8);
+
+            HttpRequest httpReq = HttpRequest.newBuilder()
+                    .uri(URI.create(provider.getTokenUrl()))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            HttpResponse<String> resp = HTTP.send(httpReq, HttpResponse.BodyHandlers.ofString());
+
+            if (resp.statusCode() != 200) {
+                log.error("OAuth token exchange failed: platform={}, status={}, body={}",
+                        platformKey, resp.statusCode(), resp.body());
+                throw new BadRequestException("OAuth token exchange failed: HTTP " + resp.statusCode());
+            }
+
+            var tokenResp = JSON.readTree(resp.body());
+            String accessToken = tokenResp.has("access_token") ? tokenResp.get("access_token").asText() : null;
+            String refreshToken = tokenResp.has("refresh_token") ? tokenResp.get("refresh_token").asText() : null;
+            long expiresIn = tokenResp.has("expires_in") ? tokenResp.get("expires_in").asLong() : 3600;
+
+            if (accessToken == null) {
+                throw new BadRequestException("No access_token in OAuth response");
+            }
+
+            // Encrypt tokens
+            String encryptedAccess = credentialService.encrypt(accessToken);
+            String encryptedRefresh = refreshToken != null ? credentialService.encrypt(refreshToken) : null;
+
+            // Build credentials JSON
+            ObjectNode credsNode = JSON.createObjectNode();
+            credsNode.put("access_token", encryptedAccess);
+            if (encryptedRefresh != null) {
+                credsNode.put("refresh_token", encryptedRefresh);
+            }
+            Instant expiresAt = Instant.now().plusSeconds(expiresIn);
+            credsNode.put("token_expires_at", expiresAt.toString());
+            credsNode.put("oauth_provider", platformKey);
+
+            // Create Account entity
+            Platform platform = Platform.from(platformKey);
+            AccountEntity account = AccountEntity.builder()
+                    .name("OAuth-" + platform.name() + "-" + System.currentTimeMillis())
+                    .platform(platform)
+                    .type(AccountType.OAUTH)
+                    .credentials(credsNode.toString())
+                    .concurrency(3)
+                    .priority(50)
+                    .status(Status.ACTIVE)
+                    .schedulable(true)
+                    .build();
+
+            AccountEntity created = accountDomainService.create(account);
+
+            // Schedule proactive refresh if refresh_token is available
+            if (encryptedRefresh != null) {
+                tokenRefreshService.scheduleProactiveRefresh(created.getId(), expiresAt);
+            }
+
+            log.info("OAuth account created: account_id={}, name={}, platform={}, expires_at={}",
+                    created.getId(), created.getName(), platformKey, expiresAt);
+
+            return new OAuthCallbackResponse(
+                    created.getId(),
+                    created.getName(),
+                    created.getPlatform(),
+                    created.getType(),
+                    created.getStatus(),
+                    expiresAt.toString()
+            );
+
+        } catch (Exception e) {
+            if (e instanceof BadRequestException) throw (BadRequestException) e;
+            log.error("OAuth callback error: platform={}", platformKey, e);
+            throw new RuntimeException("OAuth token exchange error", e);
+        }
+    }
+
+    @Override
+    public void refreshToken(Long accountId) {
+        AccountEntity account = accountDomainService.getById(accountId);
+        if (account.getType() != AccountType.OAUTH) {
+            throw new BadRequestException("Account is not OAuth type");
+        }
+
+        String newToken = tokenRefreshService.refreshAccessToken(accountId);
+        if (newToken == null) {
+            throw new BadRequestException("Token refresh failed");
+        }
+
+        log.info("Manual OAuth token refresh: account_id={}", accountId);
+    }
+
+    // ==================== PKCE ====================
+
+    /**
+     * 生成 PKCE code_verifier —— 64 字节随机数，Base64URL 编码（无 padding）。
+     */
+    private String generateCodeVerifier() {
+        byte[] bytes = new byte[64];
+        SECURE_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    /**
+     * 生成 PKCE code_challenge —— code_verifier 的 SHA-256 哈希，Base64URL 编码（无 padding）。
+     */
+    private String generateCodeChallenge(String codeVerifier) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(codeVerifier.getBytes(StandardCharsets.US_ASCII));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to generate code challenge", e);
+        }
+    }
+
+    // ==================== Redis State Management ====================
+
+    /**
+     * 将 PKCE code_verifier 和平台信息存入 Redis，以 state 为 key。
+     * 设置 TTL 防止 state 被无限占用（默认 5 分钟）。
+     */
+    private void storeState(String state, String codeVerifier, String platform, String redirectUri) {
+        try {
+            ObjectNode data = JSON.createObjectNode();
+            data.put("code_verifier", codeVerifier);
+            data.put("platform", platform);
+            data.put("redirect_uri", redirectUri);
+            RBucket<String> bucket = redissonClient.<String>getBucket(RedisKeys.oauthStateKey(state));
+            bucket.set(data.toString(), oauthProperties.getStateExpireSeconds(), TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.error("Failed to store OAuth state: state={}", state, e);
+            throw new RuntimeException("Failed to store OAuth state", e);
+        }
+    }
+
+    /**
+     * 从 Redis 读取并删除 OAuth state 数据，确保 state 只能被使用一次。
+     *
+     * @return state 关联的 StateData，不存在或已过期时返回 null
+     */
+    private StateData loadAndDeleteState(String state) {
+        try {
+            RBucket<String> bucket = redissonClient.<String>getBucket(RedisKeys.oauthStateKey(state));
+            String json = bucket.getAndDelete();
+            if (json == null) return null;
+            var node = JSON.readTree(json);
+            return new StateData(
+                    node.get("code_verifier").asText(),
+                    node.get("platform").asText(),
+                    node.get("redirect_uri").asText()
+            );
+        } catch (Exception e) {
+            log.error("Failed to load OAuth state: state={}", state, e);
+            return null;
+        }
+    }
+
+    // ==================== URL Builder ====================
+
+    /**
+     * 构造完整的 OAuth 授权 URL，包含 PKCE 参数（code_challenge + S256）和 state。
+     */
+    private String buildAuthorizeUrl(OAuthProperties.ProviderConfig provider,
+                                      String codeChallenge, String state, String redirectUri) {
+        return provider.getAuthorizeUrl()
+                + "?response_type=code"
+                + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8)
+                + "&redirect_uri=" + URLEncoder.encode(redirectUri, StandardCharsets.UTF_8)
+                + "&scope=" + URLEncoder.encode(provider.getScopes(), StandardCharsets.UTF_8)
+                + "&code_challenge=" + codeChallenge
+                + "&code_challenge_method=S256"
+                + "&state=" + state;
+    }
+
+    /** OAuth 授权流程的临时状态数据，存入 Redis 等待回调验证。 */
+    private record StateData(String codeVerifier, String platform, String redirectUri) {}
+}

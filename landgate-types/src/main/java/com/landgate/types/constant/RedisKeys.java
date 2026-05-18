@@ -15,6 +15,12 @@ public final class RedisKeys {
     public static final String EMAIL_CODE_COOLDOWN_PREFIX = "email_code_cooldown:";
     /** 注册频率限制（按 IP） */
     public static final String REGISTER_RATE_PREFIX = "register_rate:";
+    /** OAuth 授权状态（临时，TTL 5 分钟） */
+    public static final String OAUTH_STATE_PREFIX = "oauth:state:";
+    /** OAuth Token 过期时间索引（Sorted Set） */
+    public static final String OAUTH_TOKEN_EXPIRY_KEY = "oauth:token:expiry";
+    /** OAuth Token 刷新分布式锁 */
+    public static final String OAUTH_TOKEN_REFRESH_LOCK_PREFIX = "oauth:token:refresh:lock:";
 
     // ==================== Key 构造方法 ====================
 
@@ -28,5 +34,13 @@ public final class RedisKeys {
 
     public static String registerRateKey(String ip) {
         return REGISTER_RATE_PREFIX + ip;
+    }
+
+    public static String oauthStateKey(String state) {
+        return OAUTH_STATE_PREFIX + state;
+    }
+
+    public static String oauthTokenRefreshLockKey(Long accountId) {
+        return OAUTH_TOKEN_REFRESH_LOCK_PREFIX + accountId;
     }
 }

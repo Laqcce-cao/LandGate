@@ -32,6 +32,20 @@ landgate:
     credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY:}
   gateway:
     max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}
+  oauth:
+    default-redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:80/oauth/callback}
+    state-expire-seconds: 300
+    providers:
+      anthropic:
+        authorize-url: https://platform.claude.com/oauth/authorize
+        token-url: https://platform.claude.com/v1/oauth/token
+        client-id: 9d1c250a-e61b-44d9-88ed-5944d1962f5e
+        scopes: anthropic_creds
+      openai:
+        authorize-url: https://platform.openai.com/oauth/authorize
+        token-url: https://api.openai.com/v1/oauth/token
+        client-id: ${OPENAI_OAUTH_CLIENT_ID:}
+        scopes: openai.credentials
   verification:
     email-code-expire-seconds: 300
     email-resend-cooldown-seconds: 60

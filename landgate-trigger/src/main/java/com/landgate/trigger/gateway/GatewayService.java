@@ -8,6 +8,7 @@ import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
+import com.landgate.types.enums.AccountType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +45,7 @@ public class GatewayService {
     private final UsageParser usageParser;
     private final ConcurrencyService concurrencyService;
     private final SessionHashService sessionHashService;
+    private final OAuthTokenRefreshService oauthTokenRefreshService;
 
     private static final int MAX_FAILOVER_SWITCHES = 3;
 
@@ -215,6 +217,19 @@ public class GatewayService {
                     concurrencyService.release(account.getId());
                     return;
 
+                } else if (statusCode == 401 && account.getType() == AccountType.OAUTH) {
+                    // OAuth token may have expired — attempt refresh and retry
+                    log.info("OAuth 401 detected, attempting token refresh: account_id={}",
+                            account.getId());
+                    concurrencyService.release(account.getId());
+                    String newToken = oauthTokenRefreshService.refreshAccessToken(account.getId());
+                    if (newToken != null) {
+                        log.info("OAuth token refreshed successfully: account_id={}, retrying", account.getId());
+                        stickyAccountId = account.getId();
+                        continue;
+                    }
+                    log.warn("OAuth token refresh failed: account_id={}, failing over", account.getId());
+                    failoverCount++;
                 } else if (statusCode == 429 || statusCode == 529 || statusCode >= 500) {
                     log.warn("Failover error: status={}, account_id={}, attempt={}",
                             statusCode, account.getId(), failoverCount);

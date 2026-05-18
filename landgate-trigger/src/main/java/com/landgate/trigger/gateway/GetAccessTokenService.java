@@ -8,6 +8,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+
 /**
  * 访问令牌提取服务 —— 从上游账号凭证中提取 Access Token。
  * <p>
@@ -41,6 +43,21 @@ public class GetAccessTokenService {
                     yield token;
                 }
                 case OAUTH, SETUP_TOKEN -> {
+                    // Check if token is about to expire (should have been proactively refreshed)
+                    if (root.has("token_expires_at")) {
+                        try {
+                            Instant expiresAt = Instant.parse(root.get("token_expires_at").asText());
+                            if (expiresAt.isBefore(Instant.now())) {
+                                log.warn("OAuth token already expired for account: account_id={}, expires_at={}",
+                                        account.getId(), expiresAt);
+                            } else if (expiresAt.minusSeconds(60).isBefore(Instant.now())) {
+                                log.warn("OAuth token expiring soon (<60s): account_id={}, expires_at={}",
+                                        account.getId(), expiresAt);
+                            }
+                        } catch (Exception e) {
+                            log.debug("Could not parse token_expires_at for account: account_id={}", account.getId());
+                        }
+                    }
                     var token = root.has("access_token") ? root.get("access_token").asText() : null;
                     if (token != null && token.length() > 100) {
                         try {
