@@ -31,7 +31,15 @@ public class OAuthProperties {
         private String tokenUrl;
         /** OAuth App 的 client_id */
         private String clientId;
-        /** 请求的 OAuth 权限范围（如 "anthropic_creds"） */
+        /** 请求的 OAuth 权限范围（如 "anthropic_creds"、"openid profile email offline_access"） */
         private String scopes;
+        /** PKCE code_verifier 编码方式：base64url（Anthropic）或 hex（OpenAI），默认 base64url */
+        private String pkceEncoding = "base64url";
+        /** 授权 URL 额外的查询参数（如 OpenAI 的 codex_cli_simplified_flow=true） */
+        private Map<String, String> extraAuthorizeParams = Map.of();
+        /** Token 请求时使用的 User-Agent 头（如 OpenAI 需要 "codex-cli/0.91.0"） */
+        private String userAgent;
+        /** Token 刷新时使用的 scope（如与授权 scope 不同则单独指定），默认复用 scopes */
+        private String refreshScopes;
     }
 }

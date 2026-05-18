@@ -42,10 +42,16 @@ landgate:
         client-id: 9d1c250a-e61b-44d9-88ed-5944d1962f5e
         scopes: anthropic_creds
       openai:
-        authorize-url: https://platform.openai.com/oauth/authorize
-        token-url: https://api.openai.com/v1/oauth/token
-        client-id: ${OPENAI_OAUTH_CLIENT_ID:}
-        scopes: openai.credentials
+        authorize-url: https://auth.openai.com/oauth/authorize
+        token-url: https://auth.openai.com/oauth/token
+        client-id: app_EMoamEEZ73f0CkXaXp7hrann
+        scopes: openid profile email offline_access
+        pkce-encoding: hex
+        user-agent: codex-cli/0.91.0
+        refresh-scopes: openid profile email
+        extra-authorize-params:
+          codex_cli_simplified_flow: "true"
+          id_token_add_organizations: "true"
   verification:
     email-code-expire-seconds: 300
     email-resend-cooldown-seconds: 60

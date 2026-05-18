@@ -126,16 +126,23 @@ public class OAuthTokenRefreshService {
 
             log.info("Refreshing OAuth token: account_id={}, provider={}", accountId, providerKey);
 
+            String refreshScopes = provider.getRefreshScopes() != null
+                    ? provider.getRefreshScopes()
+                    : provider.getScopes();
+
             String body = "grant_type=refresh_token"
                     + "&refresh_token=" + java.net.URLEncoder.encode(refreshToken, java.nio.charset.StandardCharsets.UTF_8)
-                    + "&client_id=" + java.net.URLEncoder.encode(provider.getClientId(), java.nio.charset.StandardCharsets.UTF_8);
+                    + "&client_id=" + java.net.URLEncoder.encode(provider.getClientId(), java.nio.charset.StandardCharsets.UTF_8)
+                    + "&scope=" + java.net.URLEncoder.encode(refreshScopes, java.nio.charset.StandardCharsets.UTF_8);
 
-            HttpRequest req = HttpRequest.newBuilder()
+            var reqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getTokenUrl()))
                     .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
+                    .header("Content-Type", "application/x-www-form-urlencoded");
+            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
+                reqBuilder.header("User-Agent", provider.getUserAgent());
+            }
+            HttpRequest req = reqBuilder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() != 200) {

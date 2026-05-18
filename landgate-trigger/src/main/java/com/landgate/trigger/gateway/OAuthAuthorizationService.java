@@ -67,8 +67,8 @@ public class OAuthAuthorizationService implements IOAuthService {
             throw new BadRequestException("Unsupported OAuth platform: " + platformKey);
         }
 
-        // Generate PKCE
-        String codeVerifier = generateCodeVerifier();
+        // Generate PKCE (encoding varies by platform: base64url for Anthropic, hex for OpenAI)
+        String codeVerifier = generateCodeVerifier(provider.getPkceEncoding());
         String codeChallenge = generateCodeChallenge(codeVerifier);
 
         // Generate state
@@ -117,12 +117,14 @@ public class OAuthAuthorizationService implements IOAuthService {
                     + "&code_verifier=" + URLEncoder.encode(stateData.codeVerifier, StandardCharsets.UTF_8)
                     + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8);
 
-            HttpRequest httpReq = HttpRequest.newBuilder()
+            var httpReqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getTokenUrl()))
                     .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
+                    .header("Content-Type", "application/x-www-form-urlencoded");
+            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
+                httpReqBuilder.header("User-Agent", provider.getUserAgent());
+            }
+            HttpRequest httpReq = httpReqBuilder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
             HttpResponse<String> resp = HTTP.send(httpReq, HttpResponse.BodyHandlers.ofString());
 
@@ -212,11 +214,18 @@ public class OAuthAuthorizationService implements IOAuthService {
     // ==================== PKCE ====================
 
     /**
-     * 生成 PKCE code_verifier —— 64 字节随机数，Base64URL 编码（无 padding）。
+     * 生成 PKCE code_verifier —— 64 字节随机数，按平台指定编码。
+     * <p>
+     * Anthropic 使用 Base64URL 编码，OpenAI（Codex CLI）使用 Hex 编码。
+     *
+     * @param pkceEncoding "base64url" 或 "hex"
      */
-    private String generateCodeVerifier() {
+    private String generateCodeVerifier(String pkceEncoding) {
         byte[] bytes = new byte[64];
         SECURE_RANDOM.nextBytes(bytes);
+        if ("hex".equalsIgnoreCase(pkceEncoding)) {
+            return bytesToHex(bytes);
+        }
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
@@ -278,18 +287,33 @@ public class OAuthAuthorizationService implements IOAuthService {
     // ==================== URL Builder ====================
 
     /**
-     * 构造完整的 OAuth 授权 URL，包含 PKCE 参数（code_challenge + S256）和 state。
+     * 构造完整的 OAuth 授权 URL，包含 PKCE 参数（code_challenge + S256）、state 和平台特有参数。
      */
     private String buildAuthorizeUrl(OAuthProperties.ProviderConfig provider,
                                       String codeChallenge, String state, String redirectUri) {
-        return provider.getAuthorizeUrl()
-                + "?response_type=code"
-                + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8)
-                + "&redirect_uri=" + URLEncoder.encode(redirectUri, StandardCharsets.UTF_8)
-                + "&scope=" + URLEncoder.encode(provider.getScopes(), StandardCharsets.UTF_8)
-                + "&code_challenge=" + codeChallenge
-                + "&code_challenge_method=S256"
-                + "&state=" + state;
+        StringBuilder url = new StringBuilder(provider.getAuthorizeUrl())
+                .append("?response_type=code")
+                .append("&client_id=").append(URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8))
+                .append("&redirect_uri=").append(URLEncoder.encode(redirectUri, StandardCharsets.UTF_8))
+                .append("&scope=").append(URLEncoder.encode(provider.getScopes(), StandardCharsets.UTF_8))
+                .append("&code_challenge=").append(codeChallenge)
+                .append("&code_challenge_method=S256")
+                .append("&state=").append(state);
+
+        // Platform-specific extra params (e.g., OpenAI codex_cli_simplified_flow=true)
+        provider.getExtraAuthorizeParams().forEach((key, value) ->
+                url.append("&").append(URLEncoder.encode(key, StandardCharsets.UTF_8))
+                        .append("=").append(URLEncoder.encode(value, StandardCharsets.UTF_8)));
+
+        return url.toString();
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     /** OAuth 授权流程的临时状态数据，存入 Redis 等待回调验证。 */

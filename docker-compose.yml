@@ -75,7 +75,6 @@ services:
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-http://localhost:80/oauth/callback}
-      OPENAI_OAUTH_CLIENT_ID: ${OPENAI_OAUTH_CLIENT_ID}
     depends_on:
       mysql:
         condition: service_healthy
