@@ -81,7 +81,9 @@ public class OAuthAuthorizationService implements IOAuthService {
         // Store state → {codeVerifier, platform, redirectUri} in Redis
         String redirectUri = request.redirectUri() != null
                 ? request.redirectUri()
-                : oauthProperties.getDefaultRedirectUri();
+                : provider.getRedirectUri() != null
+                    ? provider.getRedirectUri()
+                    : oauthProperties.getDefaultRedirectUri();
 
         storeState(state, codeVerifier, platformKey, redirectUri);
 
@@ -114,17 +116,33 @@ public class OAuthAuthorizationService implements IOAuthService {
         log.info("OAuth callback: platform={}, state={}", platformKey, request.state());
 
         try {
-            // Exchange code for tokens
-            String body = "grant_type=authorization_code"
-                    + "&code=" + URLEncoder.encode(request.code(), StandardCharsets.UTF_8)
-                    + "&redirect_uri=" + URLEncoder.encode(stateData.redirectUri, StandardCharsets.UTF_8)
-                    + "&code_verifier=" + URLEncoder.encode(stateData.codeVerifier, StandardCharsets.UTF_8)
-                    + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8);
+            // Exchange code for tokens (JSON for Anthropic, form-encoded for others)
+            boolean useJson = "json".equalsIgnoreCase(provider.getTokenExchangeFormat());
+            String body;
+            String contentType;
+
+            if (useJson) {
+                ObjectNode tokenReq = JSON.createObjectNode();
+                tokenReq.put("grant_type", "authorization_code");
+                tokenReq.put("code", request.code());
+                tokenReq.put("redirect_uri", stateData.redirectUri);
+                tokenReq.put("code_verifier", stateData.codeVerifier);
+                tokenReq.put("client_id", provider.getClientId());
+                body = tokenReq.toString();
+                contentType = "application/json";
+            } else {
+                body = "grant_type=authorization_code"
+                        + "&code=" + URLEncoder.encode(request.code(), StandardCharsets.UTF_8)
+                        + "&redirect_uri=" + URLEncoder.encode(stateData.redirectUri, StandardCharsets.UTF_8)
+                        + "&code_verifier=" + URLEncoder.encode(stateData.codeVerifier, StandardCharsets.UTF_8)
+                        + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8);
+                contentType = "application/x-www-form-urlencoded";
+            }
 
             var httpReqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getTokenUrl()))
                     .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", "application/x-www-form-urlencoded");
+                    .header("Content-Type", contentType);
             if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
                 httpReqBuilder.header("User-Agent", provider.getUserAgent());
             }
@@ -147,6 +165,9 @@ public class OAuthAuthorizationService implements IOAuthService {
                 throw new BadRequestException("No access_token in OAuth response");
             }
 
+            // Extract email for naming (Anthropic returns email_address, OpenAI uses id_token)
+            String email = tokenResp.has("email_address") ? tokenResp.get("email_address").asText() : null;
+
             // Encrypt tokens
             String encryptedAccess = credentialService.encrypt(accessToken);
             String encryptedRefresh = refreshToken != null ? credentialService.encrypt(refreshToken) : null;
@@ -163,8 +184,11 @@ public class OAuthAuthorizationService implements IOAuthService {
 
             // Create Account entity
             Platform platform = Platform.from(platformKey);
+            String accountName = email != null && !email.isEmpty()
+                    ? platformKey + "-" + email
+                    : "OAuth-" + platform.name() + "-" + System.currentTimeMillis();
             AccountEntity account = AccountEntity.builder()
-                    .name("OAuth-" + platform.name() + "-" + System.currentTimeMillis())
+                    .name(accountName)
                     .platform(platform)
                     .type(AccountType.OAUTH)
                     .credentials(credsNode.toString())

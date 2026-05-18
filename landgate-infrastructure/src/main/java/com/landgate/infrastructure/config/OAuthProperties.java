@@ -41,6 +41,10 @@ public class OAuthProperties {
         private String userAgent;
         /** Token 刷新时使用的 scope（如与授权 scope 不同则单独指定），默认复用 scopes */
         private String refreshScopes;
+        /** Token 请求体编码格式：form（application/x-www-form-urlencoded）或 json（application/json），默认 form */
+        private String tokenExchangeFormat = "form";
+        /** 平台默认回调地址（覆盖全局 defaultRedirectUri，如 Anthropic 使用官方回调页） */
+        private String redirectUri;
         /** Device Code Flow: 设备码请求端点 URL（仅 OpenAI） */
         private String deviceCodeUrl;
         /** Device Code Flow: 设备码轮询端点 URL（仅 OpenAI） */
