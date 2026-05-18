@@ -33,7 +33,7 @@ landgate:
   gateway:
     max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}
   oauth:
-    default-redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:80/oauth/callback}
+    default-redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:1455/auth/callback}
     state-expire-seconds: 300
     providers:
       anthropic:
@@ -42,16 +42,15 @@ landgate:
         client-id: 9d1c250a-e61b-44d9-88ed-5944d1962f5e
         scopes: anthropic_creds
       openai:
-        authorize-url: https://auth.openai.com/oauth/authorize
         token-url: https://auth.openai.com/oauth/token
         client-id: app_EMoamEEZ73f0CkXaXp7hrann
         scopes: openid profile email offline_access
-        pkce-encoding: hex
         user-agent: codex-cli/0.91.0
         refresh-scopes: openid profile email
-        extra-authorize-params:
-          codex_cli_simplified_flow: "true"
-          id_token_add_organizations: "true"
+        device-code-url: https://auth.openai.com/api/accounts/deviceauth/usercode
+        device-poll-url: https://auth.openai.com/api/accounts/deviceauth/token
+        device-verification-uri: https://auth.openai.com/codex/device
+        device-redirect-uri: https://auth.openai.com/deviceauth/callback
   verification:
     email-code-expire-seconds: 300
     email-resend-cooldown-seconds: 60

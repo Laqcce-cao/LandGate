@@ -15,7 +15,7 @@ import java.util.Map;
 public class OAuthProperties {
 
     /** 默认回调地址（前端未提供时使用） */
-    private String defaultRedirectUri = "http://localhost:80/oauth/callback";
+    private String defaultRedirectUri = "http://localhost:1455/auth/callback";
 
     /** OAuth state 临时存储有效期（秒） */
     private int stateExpireSeconds = 300;
@@ -41,5 +41,13 @@ public class OAuthProperties {
         private String userAgent;
         /** Token 刷新时使用的 scope（如与授权 scope 不同则单独指定），默认复用 scopes */
         private String refreshScopes;
+        /** Device Code Flow: 设备码请求端点 URL（仅 OpenAI） */
+        private String deviceCodeUrl;
+        /** Device Code Flow: 设备码轮询端点 URL（仅 OpenAI） */
+        private String devicePollUrl;
+        /** Device Code Flow: 用户验证页面 URL（仅 OpenAI） */
+        private String deviceVerificationUri;
+        /** Device Code Flow: token 交换时的 redirect_uri（仅 OpenAI） */
+        private String deviceRedirectUri;
     }
 }

@@ -1,5 +1,6 @@
 package com.landgate.trigger.gateway;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.api.oauth.IOAuthService;
@@ -62,6 +63,9 @@ public class OAuthAuthorizationService implements IOAuthService {
     @Override
     public OAuthAuthorizeResponse authorize(OAuthAuthorizeRequest request) {
         String platformKey = request.platform().toLowerCase();
+        if ("openai".equals(platformKey)) {
+            throw new BadRequestException("OpenAI uses Device Code Flow, please use POST /api/v1/admin/oauth/device-code instead");
+        }
         OAuthProperties.ProviderConfig provider = oauthProperties.getProviders().get(platformKey);
         if (provider == null) {
             throw new BadRequestException("Unsupported OAuth platform: " + platformKey);
@@ -211,6 +215,206 @@ public class OAuthAuthorizationService implements IOAuthService {
         log.info("Manual OAuth token refresh: account_id={}", accountId);
     }
 
+    // ==================== Device Code Flow (OpenAI) ====================
+
+    @Override
+    public DeviceCodeResponse initiateDeviceCode(DeviceCodeRequest request) {
+        String platformKey = request.platform().toLowerCase();
+        if (!"openai".equals(platformKey)) {
+            throw new BadRequestException("Device Code Flow is only supported for OpenAI");
+        }
+
+        OAuthProperties.ProviderConfig provider = oauthProperties.getProviders().get(platformKey);
+        if (provider == null) {
+            throw new BadRequestException("Unsupported OAuth platform: " + platformKey);
+        }
+        if (provider.getDeviceCodeUrl() == null) {
+            throw new BadRequestException("Device Code Flow is not configured for platform: " + platformKey);
+        }
+
+        try {
+            ObjectNode body = JSON.createObjectNode();
+            body.put("client_id", provider.getClientId());
+
+            var httpReqBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(provider.getDeviceCodeUrl()))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json");
+            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
+                httpReqBuilder.header("User-Agent", provider.getUserAgent());
+            }
+            HttpRequest httpReq = httpReqBuilder.POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
+
+            HttpResponse<String> resp = HTTP.send(httpReq, HttpResponse.BodyHandlers.ofString());
+
+            if (resp.statusCode() != 200) {
+                log.error("Device code request failed: status={}, body={}", resp.statusCode(), resp.body());
+                throw new BadRequestException("Device code request failed: HTTP " + resp.statusCode());
+            }
+
+            JsonNode json = JSON.readTree(resp.body());
+            String deviceAuthId = json.has("device_auth_id") ? json.get("device_auth_id").asText() : null;
+            String userCode = json.has("user_code") ? json.get("user_code").asText() : null;
+            int expiresIn = parseIntField(json, "expires_in", 900);
+            int interval = parseIntField(json, "interval", 5);
+            String verificationUri = provider.getDeviceVerificationUri() != null
+                    ? provider.getDeviceVerificationUri()
+                    : "https://auth.openai.com/codex/device";
+
+            if (deviceAuthId == null || userCode == null) {
+                throw new BadRequestException("Invalid device code response from upstream");
+            }
+
+            log.info("Device code generated: platform={}, device_auth_id={}", platformKey, deviceAuthId);
+
+            return new DeviceCodeResponse(deviceAuthId, userCode, verificationUri, expiresIn, interval);
+
+        } catch (Exception e) {
+            if (e instanceof BadRequestException) throw (BadRequestException) e;
+            log.error("Device code initiation error: platform={}", platformKey, e);
+            throw new RuntimeException("Device code initiation error", e);
+        }
+    }
+
+    @Override
+    public DeviceCodePollResponse pollDeviceCode(DeviceCodePollRequest request) {
+        String platformKey = "openai";
+        OAuthProperties.ProviderConfig provider = oauthProperties.getProviders().get(platformKey);
+        if (provider == null || provider.getDevicePollUrl() == null) {
+            throw new BadRequestException("Device Code Flow is not configured for OpenAI");
+        }
+
+        try {
+            // Step 1: Poll the device auth token endpoint
+            ObjectNode pollBody = JSON.createObjectNode();
+            pollBody.put("device_auth_id", request.deviceAuthId());
+            pollBody.put("user_code", request.userCode());
+
+            var pollReqBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(provider.getDevicePollUrl()))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json");
+            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
+                pollReqBuilder.header("User-Agent", provider.getUserAgent());
+            }
+            HttpRequest pollReq = pollReqBuilder.POST(HttpRequest.BodyPublishers.ofString(pollBody.toString())).build();
+
+            HttpResponse<String> pollResp = HTTP.send(pollReq, HttpResponse.BodyHandlers.ofString());
+
+            if (pollResp.statusCode() == 403 || pollResp.statusCode() == 404) {
+                return new DeviceCodePollResponse("PENDING", null);
+            }
+            if (pollResp.statusCode() == 410) {
+                return new DeviceCodePollResponse("EXPIRED", null);
+            }
+            if (pollResp.statusCode() != 200) {
+                log.error("Device code poll failed: status={}, body={}", pollResp.statusCode(), pollResp.body());
+                throw new BadRequestException("Device code poll failed: HTTP " + pollResp.statusCode());
+            }
+
+            // Step 2: Parse the authorization_code and code_verifier from poll response
+            JsonNode pollResult = JSON.readTree(pollResp.body());
+            String authCode = pollResult.has("authorization_code") ? pollResult.get("authorization_code").asText() : null;
+            String codeVerifier = pollResult.has("code_verifier") ? pollResult.get("code_verifier").asText() : null;
+
+            if (authCode == null || codeVerifier == null) {
+                log.error("Device poll response missing authorization_code or code_verifier: {}",
+                        pollResp.body());
+                throw new BadRequestException("Invalid device poll success response");
+            }
+
+            log.info("Device code authorized, exchanging code for tokens");
+
+            // Step 3: Exchange code for tokens at the OAuth token endpoint
+            String deviceRedirectUri = provider.getDeviceRedirectUri() != null
+                    ? provider.getDeviceRedirectUri()
+                    : "https://auth.openai.com/deviceauth/callback";
+
+            String tokenBody = "grant_type=authorization_code"
+                    + "&code=" + URLEncoder.encode(authCode, StandardCharsets.UTF_8)
+                    + "&redirect_uri=" + URLEncoder.encode(deviceRedirectUri, StandardCharsets.UTF_8)
+                    + "&code_verifier=" + URLEncoder.encode(codeVerifier, StandardCharsets.UTF_8)
+                    + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8);
+
+            var tokenReqBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(provider.getTokenUrl()))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/x-www-form-urlencoded");
+            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
+                tokenReqBuilder.header("User-Agent", provider.getUserAgent());
+            }
+            HttpRequest tokenReq = tokenReqBuilder.POST(
+                    HttpRequest.BodyPublishers.ofString(tokenBody)).build();
+
+            HttpResponse<String> tokenResp = HTTP.send(tokenReq, HttpResponse.BodyHandlers.ofString());
+
+            if (tokenResp.statusCode() != 200) {
+                log.error("Device code token exchange failed: status={}, body={}",
+                        tokenResp.statusCode(), tokenResp.body());
+                throw new BadRequestException("Token exchange failed: HTTP " + tokenResp.statusCode());
+            }
+
+            // Step 4: Encrypt tokens and create Account
+            JsonNode tokenJson = JSON.readTree(tokenResp.body());
+            String accessToken = tokenJson.has("access_token") ? tokenJson.get("access_token").asText() : null;
+            String refreshToken = tokenJson.has("refresh_token") ? tokenJson.get("refresh_token").asText() : null;
+            long expiresIn = tokenJson.has("expires_in") ? tokenJson.get("expires_in").asLong() : 3600;
+
+            if (accessToken == null) {
+                throw new BadRequestException("No access_token in token response");
+            }
+
+            String encryptedAccess = credentialService.encrypt(accessToken);
+            String encryptedRefresh = refreshToken != null ? credentialService.encrypt(refreshToken) : null;
+
+            ObjectNode credsNode = JSON.createObjectNode();
+            credsNode.put("access_token", encryptedAccess);
+            if (encryptedRefresh != null) {
+                credsNode.put("refresh_token", encryptedRefresh);
+            }
+            Instant expiresAt = Instant.now().plusSeconds(expiresIn);
+            credsNode.put("token_expires_at", expiresAt.toString());
+            credsNode.put("oauth_provider", platformKey);
+
+            Platform platform = Platform.from(platformKey);
+            AccountEntity account = AccountEntity.builder()
+                    .name("OAuth-" + platform.name() + "-" + System.currentTimeMillis())
+                    .platform(platform)
+                    .type(AccountType.OAUTH)
+                    .credentials(credsNode.toString())
+                    .concurrency(3)
+                    .priority(50)
+                    .status(Status.ACTIVE)
+                    .schedulable(true)
+                    .build();
+
+            AccountEntity created = accountDomainService.create(account);
+
+            if (encryptedRefresh != null) {
+                tokenRefreshService.scheduleProactiveRefresh(created.getId(), expiresAt);
+            }
+
+            log.info("Device code OAuth account created: account_id={}, platform={}, expires_at={}",
+                    created.getId(), platformKey, expiresAt);
+
+            OAuthCallbackResponse callbackResponse = new OAuthCallbackResponse(
+                    created.getId(),
+                    created.getName(),
+                    created.getPlatform(),
+                    created.getType(),
+                    created.getStatus(),
+                    expiresAt.toString()
+            );
+
+            return new DeviceCodePollResponse("SUCCESS", callbackResponse);
+
+        } catch (Exception e) {
+            if (e instanceof BadRequestException) throw (BadRequestException) e;
+            log.error("Device code poll error", e);
+            throw new RuntimeException("Device code poll error", e);
+        }
+    }
+
     // ==================== PKCE ====================
 
     /**
@@ -314,6 +518,20 @@ public class OAuthAuthorizationService implements IOAuthService {
             sb.append(String.format("%02x", b));
         }
         return sb.toString();
+    }
+
+    /**
+     * 从 JSON 节点中解析整数字段，兼容字符串和数字两种类型。
+     * 当字段不存在或无法解析时返回默认值。
+     */
+    private int parseIntField(JsonNode node, String field, int defaultVal) {
+        if (!node.has(field)) return defaultVal;
+        JsonNode fieldNode = node.get(field);
+        if (fieldNode.isNumber()) return fieldNode.asInt();
+        if (fieldNode.isTextual()) {
+            try { return Integer.parseInt(fieldNode.asText()); } catch (NumberFormatException e) { return defaultVal; }
+        }
+        return defaultVal;
     }
 
     /** OAuth 授权流程的临时状态数据，存入 Redis 等待回调验证。 */

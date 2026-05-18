@@ -55,6 +55,26 @@ public class OAuthController {
     }
 
     /**
+     * 发起 Device Code Flow 授权 —— 请求设备码和验证 URL（OpenAI）。
+     */
+    @PostMapping("/device-code")
+    public ResponseEntity<?> initiateDeviceCode(@Valid @RequestBody DeviceCodeRequest request) {
+        log.info("Device code initiate: platform={}", request.platform());
+        DeviceCodeResponse response = oauthService.initiateDeviceCode(request);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 轮询 Device Code Flow 授权状态 —— 检查用户是否已完成授权。
+     */
+    @PostMapping("/device-code/poll")
+    public ResponseEntity<?> pollDeviceCode(@Valid @RequestBody DeviceCodePollRequest request) {
+        log.info("Device code poll: device_auth_id={}", request.deviceAuthId());
+        DeviceCodePollResponse response = oauthService.pollDeviceCode(request);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
      * 统一处理 BadRequestException。
      */
     @ExceptionHandler(BadRequestException.class)
