@@ -360,10 +360,14 @@ public class OAuthAuthorizationService implements IOAuthService {
             String accessToken = tokenJson.has("access_token") ? tokenJson.get("access_token").asText() : null;
             String refreshToken = tokenJson.has("refresh_token") ? tokenJson.get("refresh_token").asText() : null;
             long expiresIn = tokenJson.has("expires_in") ? tokenJson.get("expires_in").asLong() : 3600;
+            String idToken = tokenJson.has("id_token") ? tokenJson.get("id_token").asText() : null;
 
             if (accessToken == null) {
                 throw new BadRequestException("No access_token in token response");
             }
+
+            // Extract email from id_token JWT for account naming
+            String email = extractEmailFromIdToken(idToken);
 
             String encryptedAccess = credentialService.encrypt(accessToken);
             String encryptedRefresh = refreshToken != null ? credentialService.encrypt(refreshToken) : null;
@@ -377,10 +381,13 @@ public class OAuthAuthorizationService implements IOAuthService {
             credsNode.put("token_expires_at", expiresAt.toString());
             credsNode.put("oauth_provider", platformKey);
 
-            Platform platform = Platform.from(platformKey);
+            String accountName = email != null && !email.isEmpty()
+                    ? "openai-" + email
+                    : "OAuth-" + Platform.from(platformKey).name() + "-" + System.currentTimeMillis();
+
             AccountEntity account = AccountEntity.builder()
-                    .name("OAuth-" + platform.name() + "-" + System.currentTimeMillis())
-                    .platform(platform)
+                    .name(accountName)
+                    .platform(Platform.from(platformKey))
                     .type(AccountType.OAUTH)
                     .credentials(credsNode.toString())
                     .extra("{}")
@@ -520,6 +527,33 @@ public class OAuthAuthorizationService implements IOAuthService {
             sb.append(String.format("%02x", b));
         }
         return sb.toString();
+    }
+
+    /**
+     * 从 id_token JWT 中提取 email 声明。
+     * 不验证签名，仅解码 payload 提取 email 字段。
+     *
+     * @param idToken JWT 字符串（header.payload.signature），为 null 时返回 null
+     * @return email 声明值，不存在或解析失败返回 null
+     */
+    private String extractEmailFromIdToken(String idToken) {
+        if (idToken == null || idToken.isEmpty()) return null;
+        try {
+            String[] parts = idToken.split("\\.");
+            if (parts.length < 2) return null;
+            String payload = parts[1];
+            // Add padding if needed
+            int padding = 4 - payload.length() % 4;
+            if (padding != 4) {
+                payload += "=".repeat(padding);
+            }
+            byte[] decoded = Base64.getUrlDecoder().decode(payload);
+            JsonNode claims = JSON.readTree(decoded);
+            return claims.has("email") ? claims.get("email").asText() : null;
+        } catch (Exception e) {
+            log.warn("Failed to extract email from id_token", e);
+            return null;
+        }
     }
 
     /**
