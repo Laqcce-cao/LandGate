@@ -238,6 +238,7 @@ public class GatewayService {
                 } else if (statusCode == 429 || statusCode == 529 || statusCode >= 500) {
                     log.warn("Failover error: status={}, account_id={}, attempt={}",
                             statusCode, account.getId(), failoverCount);
+                    markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
                     concurrencyService.release(account.getId());
                     failoverCount++;
                 } else {
@@ -383,5 +384,30 @@ public class GatewayService {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+    private void markAccountUnhealthy(AccountEntity account, int statusCode,
+                                       HttpResponse<InputStream> upstreamResp, int failoverCount) {
+        var now = java.time.Instant.now();
+
+        if (statusCode == 429) {
+            long retryAfterSecs = upstreamResp.headers()
+                    .firstValue("Retry-After")
+                    .map(s -> {
+                        try { return Long.parseLong(s); } catch (NumberFormatException e) { return 60L; }
+                    })
+                    .orElse(60L);
+            accountSelector.markRateLimited(account.getId(), now.plusSeconds(retryAfterSecs));
+        } else if (statusCode == 529) {
+            accountSelector.markOverloaded(account.getId(), now.plusSeconds(30));
+        } else if (statusCode == 503) {
+            accountSelector.markTempUnschedulable(account.getId(), now.plusSeconds(60),
+                    "Upstream 503 at failover=" + failoverCount);
+        } else if (statusCode >= 500) {
+            if (failoverCount >= 2) {
+                accountSelector.markTempUnschedulable(account.getId(), now.plusSeconds(120),
+                        "Consecutive 5xx at failover=" + failoverCount);
+            }
+        }
     }
 }

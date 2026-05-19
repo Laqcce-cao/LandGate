@@ -90,4 +90,50 @@ public class AccountSelector {
             accountRepository.save(a);
         });
     }
+
+    /**
+     * 标记账号被上游限流，在冷却时间内不会被选中。
+     *
+     * @param accountId 账号 ID
+     * @param resetAt   限流重置时间（通常为 now + Retry-After 秒数）
+     */
+    public void markRateLimited(Long accountId, Instant resetAt) {
+        accountRepository.findById(accountId).ifPresent(a -> {
+            a.setRateLimitedAt(Instant.now());
+            a.setRateLimitResetAt(resetAt);
+            accountRepository.save(a);
+            log.info("Account rate-limited: id={}, name={}, reset_at={}", accountId, a.getName(), resetAt);
+        });
+    }
+
+    /**
+     * 标记账号过载，在冷却时间内不会被选中。
+     *
+     * @param accountId 账号 ID
+     * @param until     过载截止时间
+     */
+    public void markOverloaded(Long accountId, Instant until) {
+        accountRepository.findById(accountId).ifPresent(a -> {
+            a.setOverloadUntil(until);
+            accountRepository.save(a);
+            log.info("Account overloaded: id={}, name={}, until={}", accountId, a.getName(), until);
+        });
+    }
+
+    /**
+     * 标记账号临时不可调度，在冷却时间内不会被选中。
+     *
+     * @param accountId 账号 ID
+     * @param until     不可调度截止时间
+     * @param reason    不可调度原因
+     */
+    public void markTempUnschedulable(Long accountId, Instant until, String reason) {
+        accountRepository.findById(accountId).ifPresent(a -> {
+            a.setTempUnschedulableUntil(until);
+            a.setTempUnschedulableReason(reason);
+            accountRepository.save(a);
+            log.info("Account temp-unschedulable: id={}, name={}, until={}, reason={}",
+                    accountId, a.getName(), until, reason);
+        });
+    }
 }
