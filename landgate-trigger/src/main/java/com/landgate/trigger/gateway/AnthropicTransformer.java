@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.types.enums.AccountType;
 import lombok.extern.slf4j.Slf4j;
@@ -21,7 +22,7 @@ import java.util.List;
  */
 @Slf4j
 @Component
-public class AnthropicTransformer {
+public class AnthropicTransformer implements IRequestTransformer {
 
     private static final String ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
     private static final String ANTHROPIC_VERSION = "2023-06-01";

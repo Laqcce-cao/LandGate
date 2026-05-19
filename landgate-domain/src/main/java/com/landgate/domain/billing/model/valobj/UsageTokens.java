@@ -34,4 +34,15 @@ public class UsageTokens {
                 .cacheReadTokens(claude.getCacheReadTokens())
                 .build();
     }
+
+    /**
+     * 合并另一个 UsageTokens 的非零值到当前对象。
+     * 用于流式 SSE 响应中逐事件行累积用量。
+     */
+    public void merge(UsageTokens other) {
+        if (other.inputTokens > 0) this.inputTokens = other.inputTokens;
+        if (other.outputTokens > 0) this.outputTokens = other.outputTokens;
+        if (other.cacheCreationTokens > 0) this.cacheCreationTokens = other.cacheCreationTokens;
+        if (other.cacheReadTokens > 0) this.cacheReadTokens = other.cacheReadTokens;
+    }
 }

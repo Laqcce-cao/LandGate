@@ -1,5 +1,8 @@
 package com.landgate.trigger.gateway;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.landgate.domain.account.model.entity.AccountEntity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -18,15 +21,17 @@ import java.util.List;
  */
 @Slf4j
 @Component
-public class OpenAiTransformer {
+public class OpenAiTransformer implements IRequestTransformer {
 
     private static final String OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
+    private static final ObjectMapper JSON = new ObjectMapper();
 
-    public HttpRequest buildChatCompletionsRequest(String body, AccountEntity account, String accessToken) {
+    @Override
+    public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
         String targetUrl = OPENAI_API_URL;
         if (account.getExtra() != null && !account.getExtra().equals("{}")) {
             try {
-                var extra = new com.fasterxml.jackson.databind.ObjectMapper().readTree(account.getExtra());
+                var extra = JSON.readTree(account.getExtra());
                 if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
                     targetUrl = extra.get("base_url").asText() + "/v1/chat/completions";
                 }
@@ -45,5 +50,27 @@ public class OpenAiTransformer {
                 .headers(headers.toArray(new String[0]))
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build();
+    }
+
+    @Override
+    public String extractModel(String body) {
+        try {
+            JsonNode root = JSON.readTree(body);
+            if (root.has("model")) return root.get("model").asText();
+        } catch (Exception e) {
+            log.debug("Failed to extract model from OpenAI request body");
+        }
+        return "unknown";
+    }
+
+    @Override
+    public boolean isStreamRequest(String body) {
+        try {
+            JsonNode root = JSON.readTree(body);
+            if (root.has("stream")) return root.get("stream").asBoolean();
+        } catch (Exception e) {
+            // ignore
+        }
+        return false;
     }
 }

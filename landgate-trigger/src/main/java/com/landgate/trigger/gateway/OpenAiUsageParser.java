@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -16,13 +17,11 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-public class OpenAiUsageParser {
+public class OpenAiUsageParser implements IUsageParser {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    /**
-     * 从非流式 OpenAI 响应体解析用量。
-     */
+    @Override
     public UsageTokens parseNonStreaming(String responseBody) {
         if (responseBody == null || responseBody.isBlank()) {
             return new UsageTokens();
@@ -43,10 +42,7 @@ public class OpenAiUsageParser {
         }
     }
 
-    /**
-     * 解析 OpenAI SSE 流式响应的单行数据。
-     * 无用量时返回 null。用量仅出现在最后一个 chunk 中。
-     */
+    @Override
     public UsageTokens parseSSELine(String sseData) {
         if (sseData == null || sseData.isBlank()) {
             return null;
@@ -67,18 +63,8 @@ public class OpenAiUsageParser {
         }
     }
 
-    /**
-     * 从 OpenAI 请求体中提取模型名称。
-     */
-    public String extractModel(String body) {
-        try {
-            JsonNode root = JSON.readTree(body);
-            if (root.has("model")) {
-                return root.get("model").asText();
-            }
-        } catch (Exception e) {
-            log.debug("Failed to extract model from OpenAI request body");
-        }
-        return "unknown";
+    @Override
+    public boolean isStreamDone(String sseLine) {
+        return "data: [DONE]".equals(sseLine);
     }
 }

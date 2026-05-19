@@ -2,7 +2,9 @@ package com.landgate.trigger.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.landgate.domain.billing.model.valobj.ClaudeUsageVO;
+import com.landgate.domain.billing.model.valobj.UsageTokens;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -13,21 +15,23 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-public class UsageParser {
+public class UsageParser implements IUsageParser {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    public ClaudeUsageVO parseSSELine(String sseEventLine) {
+    @Override
+    public UsageTokens parseSSELine(String sseEventLine) {
         if (sseEventLine == null || sseEventLine.isBlank()) return null;
         try {
             JsonNode root = JSON.readTree(sseEventLine);
             String type = root.has("type") ? root.get("type").asText() : null;
             if (type == null) return null;
-            return switch (type) {
+            ClaudeUsageVO claudeUsage = switch (type) {
                 case "message_start" -> parseMessageStart(root);
                 case "message_delta" -> parseMessageDelta(root);
                 default -> null;
             };
+            return claudeUsage != null ? UsageTokens.fromClaude(claudeUsage) : null;
         } catch (Exception e) {
             log.debug("Failed to parse SSE line: {}", sseEventLine.substring(0, Math.min(200, sseEventLine.length())));
             return null;
@@ -60,11 +64,12 @@ public class UsageParser {
                 .cacheCreationTokens(cacheCreationTokens).cacheReadTokens(cacheReadTokens).build();
     }
 
-    public ClaudeUsageVO parseNonStreaming(String responseBody) {
+    @Override
+    public UsageTokens parseNonStreaming(String responseBody) {
         try {
             JsonNode root = JSON.readTree(responseBody);
             JsonNode usage = root.path("usage");
-            return ClaudeUsageVO.builder()
+            return UsageTokens.builder()
                     .inputTokens(usage.path("input_tokens").asInt())
                     .outputTokens(usage.path("output_tokens").asInt())
                     .cacheCreationTokens(usage.path("cache_creation_input_tokens").asInt())
@@ -72,7 +77,12 @@ public class UsageParser {
                     .build();
         } catch (Exception e) {
             log.warn("Failed to parse usage from response body");
-            return new ClaudeUsageVO();
+            return new UsageTokens();
         }
+    }
+
+    @Override
+    public boolean isStreamDone(String sseLine) {
+        return "event: message_stop".equals(sseLine) || "data: [DONE]".equals(sseLine);
     }
 }
