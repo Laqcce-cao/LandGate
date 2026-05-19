@@ -118,10 +118,10 @@ public class GatewayService {
         while (failoverCount < MAX_FAILOVER_SWITCHES) {
             account = (stickyAccountId != null)
                     ? accountSelector.getById(stickyAccountId)
-                    : accountSelector.selectAccount(group);
+                    : accountSelector.selectAccount(group, model);
 
             if (account == null) {
-                account = accountSelector.selectAccount(group);
+                account = accountSelector.selectAccount(group, model);
             }
             stickyAccountId = null;
 
