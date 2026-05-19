@@ -6,7 +6,11 @@ import com.landgate.api.auth.dto.AuthDTOs.RegisterRequest;
 import com.landgate.domain.auth.model.entity.ApiKeyEntity;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.auth.service.AuthDomainService;
+import com.landgate.infrastructure.captcha.CaptchaService;
+import com.landgate.infrastructure.ratelimit.RegistrationRateLimiter;
 import com.landgate.infrastructure.security.jwt.JwtUtils;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -33,28 +37,35 @@ public class AuthController {
 
     private final AuthDomainService authDomainService;
     private final JwtUtils jwtUtils;
+    private final CaptchaService captchaService;
+    private final RegistrationRateLimiter registrationRateLimiter;
 
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody RegisterRequest req) {
+    public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest req,
+                                       HttpServletRequest request) {
         log.info("Register request: email={}", req.email());
-        UserEntity user = authDomainService.register(req.email(), req.password());
-        String accessToken = jwtUtils.generateAccessToken(
-                user.getId(), user.getEmail(), user.getRole().name(), user.getTokenVersion());
-        String refreshToken = jwtUtils.generateRefreshToken(user.getId(), UUID.randomUUID().toString());
-        log.debug("Register success: user_id={}", user.getId());
+
+        // 频率限制 —— 同IP每小时最多注册N次
+        registrationRateLimiter.checkRateLimit(request.getRemoteAddr());
+
+        // CAPTCHA 人机验证
+        captchaService.verify(req.captchaToken(), request.getRemoteAddr());
+
+        UserEntity user = authDomainService.register(req.email(), req.password(), req.username());
+        // 注册后不直接返回token —— 需要先验证邮箱
+        log.debug("Register success (pending verification): user_id={}", user.getId());
         return ResponseEntity.ok(Map.of(
-                "access_token", accessToken,
-                "refresh_token", refreshToken,
+                "message", "Registration successful. Please check your email for the verification code.",
                 "user", toUserMap(user)
         ));
     }
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginRequest req) {
+    public ResponseEntity<?> login(@Valid @RequestBody LoginRequest req) {
         log.info("Login request: email={}", req.email());
         UserEntity user = authDomainService.login(req.email(), req.password());
         String accessToken = jwtUtils.generateAccessToken(
-                user.getId(), user.getEmail(), user.getRole().name(), user.getTokenVersion());
+                user.getId(), user.getEmail(), user.getRole(), user.getTokenVersion());
         String refreshToken = jwtUtils.generateRefreshToken(user.getId(), UUID.randomUUID().toString());
         log.info("Login success: user_id={}, role={}", user.getId(), user.getRole());
         return ResponseEntity.ok(Map.of(
@@ -76,6 +87,44 @@ public class AuthController {
         log.info("Revoke all sessions: user_id={}", userId);
         authDomainService.revokeAllUserTokens(userId);
         return ResponseEntity.ok(Map.of("success", true));
+    }
+
+    @PutMapping("/password")
+    public ResponseEntity<?> updatePassword(@RequestAttribute("user_id") Long userId,
+                                            @RequestBody Map<String, String> body) {
+        String oldPassword = body.get("oldPassword");
+        String newPassword = body.get("newPassword");
+        if (oldPassword == null || oldPassword.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Current password is required"
+            ));
+        }
+        if (newPassword == null || newPassword.length() < 8) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "New password must be at least 8 characters"
+            ));
+        }
+        authDomainService.updatePassword(userId, oldPassword, newPassword);
+        return ResponseEntity.ok(Map.of("message", "Password updated successfully"));
+    }
+
+    @PutMapping("/username")
+    public ResponseEntity<?> updateUsername(@RequestAttribute("user_id") Long userId,
+                                            @RequestBody Map<String, String> body) {
+        String username = body.get("username");
+        if (username == null || username.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Username cannot be empty"
+            ));
+        }
+        authDomainService.updateUsername(userId, username);
+        return ResponseEntity.ok(Map.of(
+                "message", "Username updated successfully",
+                "username", username
+        ));
     }
 
     @GetMapping("/api-keys")
@@ -113,6 +162,40 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("success", true));
     }
 
+    @PostMapping("/verify-email")
+    public ResponseEntity<?> verifyEmail(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        String code = body.get("code");
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Email is required"
+            ));
+        }
+        if (code == null || code.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Verification code is required"
+            ));
+        }
+        authDomainService.verifyEmail(email, code);
+        return ResponseEntity.ok(Map.of("message", "Email verified successfully"));
+    }
+
+    @PostMapping("/resend-verification-code")
+    public ResponseEntity<?> resendVerificationCode(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Email is required"
+            ));
+        }
+        // generateCode 内部会自动检查冷却期，冷却期内抛出 AuthenticationException
+        authDomainService.resendVerificationCode(email);
+        return ResponseEntity.ok(Map.of("message", "Verification code resent. Please check your email."));
+    }
+
     // ==================== 工具方法 ====================
 
     private Map<String, Object> toUserMap(UserEntity u) {
@@ -120,8 +203,9 @@ public class AuthController {
                 "id", u.getId(),
                 "email", u.getEmail(),
                 "username", u.getUsername(),
-                "role", u.getRole().name(),
-                "status", u.getStatus().name(),
+                "role", u.getRole(),
+                "status", u.getStatus(),
+                "emailVerified", u.getEmailVerified(),
                 "balance", u.getBalance(),
                 "concurrency", u.getConcurrency()
         );

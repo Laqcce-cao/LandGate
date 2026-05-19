@@ -35,6 +35,7 @@
         <result column="default_mapped_model"                 property="defaultMappedModel"/>
         <result column="messages_dispatch_model_config"       property="messagesDispatchModelConfig"/>
         <result column="rpm_limit"                            property="rpmLimit"/>
+        <result column="excluded_models"                      property="excludedModels"/>
         <result column="created_at"                           property="createdAt"/>
         <result column="updated_at"                           property="updatedAt"/>
         <result column="deleted_at"                           property="deletedAt"/>
@@ -55,7 +56,7 @@
             claude_code_only, fallback_group_id, fallback_group_id_on_invalid_request,
             model_routing, model_routing_enabled, mcp_xml_inject, supported_model_scopes,
             sort_order, allow_messages_dispatch, require_oauth_only, require_privacy_set,
-            default_mapped_model, messages_dispatch_model_config, rpm_limit,
+            default_mapped_model, messages_dispatch_model_config, rpm_limit, excluded_models,
             created_at, updated_at, deleted_at
         ) VALUES (
             #{name}, #{description}, #{rateMultiplier}, #{isExclusive}, #{status}, #{platform}, #{subscriptionType},
@@ -65,7 +66,7 @@
             #{claudeCodeOnly}, #{fallbackGroupId}, #{fallbackGroupIdOnInvalidRequest},
             #{modelRouting}, #{modelRoutingEnabled}, #{mcpXmlInject}, #{supportedModelScopes},
             #{sortOrder}, #{allowMessagesDispatch}, #{requireOauthOnly}, #{requirePrivacySet},
-            #{defaultMappedModel}, #{messagesDispatchModelConfig}, #{rpmLimit},
+            #{defaultMappedModel}, #{messagesDispatchModelConfig}, #{rpmLimit}, #{excludedModels},
             NOW(), NOW(), NULL
         )
     </insert>
@@ -91,6 +92,7 @@
             default_mapped_model = #{defaultMappedModel},
             messages_dispatch_model_config = #{messagesDispatchModelConfig},
             rpm_limit = #{rpmLimit},
+            excluded_models = #{excludedModels},
             deleted_at = #{deletedAt},
             updated_at = NOW()
         WHERE id = #{id}

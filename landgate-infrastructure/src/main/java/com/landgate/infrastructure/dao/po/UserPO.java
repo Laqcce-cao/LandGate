@@ -25,12 +25,16 @@ public class UserPO extends BasePO {
     /** 邮箱地址，唯一标识 */
     private String email;
 
+    /** 邮箱是否已验证 */
+    @Builder.Default
+    private Boolean emailVerified = false;
+
     /** bcrypt 密码哈希 */
     private String passwordHash;
 
     /** 用户角色（管理员/普通用户） */
     @Builder.Default
-    private Role role = Role.USER;
+    private String role = Role.USER.getKey();
 
     /** 账户余额（USD） */
     @Builder.Default
@@ -42,7 +46,7 @@ public class UserPO extends BasePO {
 
     /** 账户状态 */
     @Builder.Default
-    private Status status = Status.ACTIVE;
+    private String status = Status.ACTIVE.getKey();
 
     /** 用户名/昵称 */
     @Builder.Default
@@ -98,8 +102,8 @@ public class UserPO extends BasePO {
     private Integer rpmLimit = 0;
 
     /** 判断是否为管理员 */
-    public boolean isAdmin() { return Role.ADMIN == role; }
+    public boolean isAdmin() { return Role.ADMIN.getKey().equals(role); }
 
     /** 判断账户是否处于激活状态 */
-    public boolean isActive() { return Status.ACTIVE == status; }
+    public boolean isActive() { return Status.ACTIVE.getKey().equals(status); }
 }

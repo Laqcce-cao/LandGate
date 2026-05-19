@@ -9,6 +9,7 @@
 CREATE TABLE IF NOT EXISTS users (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     email           VARCHAR(255) NOT NULL,
+    email_verified  TINYINT(1) NOT NULL DEFAULT 0,
     password_hash   VARCHAR(255) NOT NULL,
     role            VARCHAR(20)  NOT NULL DEFAULT 'user',
     balance         DECIMAL(20,8) NOT NULL DEFAULT 0,
@@ -219,6 +220,7 @@ CREATE TABLE IF NOT EXISTS `groups` (
     messages_dispatch_model_config  JSON DEFAULT ('{}'),
 
     rpm_limit               INTEGER NOT NULL DEFAULT 0,
+    excluded_models         TEXT DEFAULT NULL,
 
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

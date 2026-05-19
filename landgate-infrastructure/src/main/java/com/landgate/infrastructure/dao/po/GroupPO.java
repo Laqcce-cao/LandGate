@@ -136,6 +136,9 @@ public class GroupPO extends BasePO {
     @Builder.Default
     private Integer rpmLimit = 0;
 
+    /** 排除模型列表（JSON 数组），例如 ["claude-opus-4","gemini-pro"] */
+    private String excludedModels;
+
     public boolean isActive() { return Status.ACTIVE == status; }
     public boolean isExclusiveGroup() { return isExclusive != null && isExclusive; }
     public boolean hasIndependentImageRate() { return imageRateIndependent != null && imageRateIndependent; }

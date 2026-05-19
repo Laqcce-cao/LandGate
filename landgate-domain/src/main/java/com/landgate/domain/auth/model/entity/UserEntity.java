@@ -24,12 +24,16 @@ public class UserEntity {
     /** 邮箱（登录凭证） */
     private String email;
 
+    /** 邮箱是否已验证 */
+    @Builder.Default
+    private Boolean emailVerified = false;
+
     /** BCrypt 密码哈希 */
     private String passwordHash;
 
     /** 角色（admin / user） */
     @Builder.Default
-    private Role role = Role.USER;
+    private String role = Role.USER.getKey();
 
     /** 账户余额 */
     @Builder.Default
@@ -41,7 +45,7 @@ public class UserEntity {
 
     /** 账号状态 */
     @Builder.Default
-    private Status status = Status.ACTIVE;
+    private String status = Status.ACTIVE.getKey();
 
     /** 用户名（默认取邮箱 @ 前部分） */
     @Builder.Default
@@ -99,6 +103,6 @@ public class UserEntity {
     private Instant updatedAt;
     private Instant deletedAt;
 
-    public boolean isAdmin() { return Role.ADMIN == role; }
-    public boolean isActive() { return Status.ACTIVE == status; }
+    public boolean isAdmin() { return Role.ADMIN.getKey().equals(role); }
+    public boolean isActive() { return Status.ACTIVE.getKey().equals(status); }
 }

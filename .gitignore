@@ -34,3 +34,4 @@ dist/
 /.claude/
 /docs/
 /landgate-app/src/test/
+/.env-prod

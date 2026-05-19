@@ -1,5 +1,7 @@
 package com.landgate.domain.auth.service;
 
+import com.landgate.domain.auth.adapter.port.IEmailPort;
+import com.landgate.domain.auth.adapter.port.IVerificationCodePort;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.adapter.repository.IApiKeyRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
@@ -34,6 +36,8 @@ public class AuthDomainService {
     private final IUserRepository userRepository;
     private final IApiKeyRepository apiKeyRepository;
     private final PasswordDomainService passwordService;
+    private final IVerificationCodePort verificationCodePort;
+    private final IEmailPort emailPort;
 
     /**
      * 用户注册 —— 创建新用户并返回用户实体。
@@ -45,23 +49,30 @@ public class AuthDomainService {
      * @throws AuthenticationException 邮箱已存在时抛出
      */
     @Transactional
-    public UserEntity register(String email, String password) {
+    public UserEntity register(String email, String password, String username) {
         if (userRepository.existsByEmail(email)) {
             throw new AuthenticationException("Email already registered");
         }
+        String displayName = (username != null && !username.isBlank()) ? username.trim() : email.split("@")[0];
         UserEntity user = UserEntity.builder()
                 .email(email)
                 .passwordHash(passwordService.hashPassword(password))
-                .username(email.split("@")[0])
-                .role(Role.USER)
-                .status(Status.ACTIVE)
+                .username(displayName)
+                .role(Role.USER.getKey())
+                .status(Status.ACTIVE.getKey())
+                .emailVerified(false)
                 .signupSource(SignupSource.EMAIL)
-                .balance(BigDecimal.ZERO)
+                .balance(BigDecimal.ONE)
                 .concurrency(5)
                 .tokenVersion(0L)
                 .build();
         user = userRepository.save(user);
-        log.info("User registered: id={}, email={}", user.getId(), user.getEmail());
+
+        // 生成6位数字验证码存入Redis(5分钟TTL)，发送邮件
+        String code = verificationCodePort.generateCode(user.getEmail());
+        emailPort.sendVerificationCode(user.getEmail(), user.getUsername(), code);
+
+        log.info("User registered (pending verification): id={}, email={}", user.getId(), user.getEmail());
         return user;
     }
 
@@ -78,6 +89,8 @@ public class AuthDomainService {
         UserEntity user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new AuthenticationException("Invalid email or password"));
         if (!user.isActive()) throw new AuthenticationException("Account is disabled");
+        if (!user.getEmailVerified()) throw new AuthenticationException(
+                "Please verify your email first. Check your inbox for the verification code.");
         if (!passwordService.checkPassword(password, user.getPasswordHash()))
             throw new AuthenticationException("Invalid email or password");
         user.setLastLoginAt(Instant.now());
@@ -85,6 +98,41 @@ public class AuthDomainService {
         userRepository.save(user);
         log.info("User logged in: id={}, email={}", user.getId(), user.getEmail());
         return user;
+    }
+
+    /**
+     * 验证邮箱 —— 校验验证码并标记邮箱为已验证。
+     *
+     * @param email 邮箱地址
+     * @param code  6位数字验证码
+     * @throws AuthenticationException 验证码无效或过期时抛出
+     */
+    @Transactional
+    public void verifyEmail(String email, String code) {
+        if (!verificationCodePort.validateCode(email, code)) {
+            throw new AuthenticationException("Invalid or expired verification code");
+        }
+        UserEntity user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new AuthenticationException("User not found"));
+        if (user.getEmailVerified()) {
+            return; // already verified, idempotent
+        }
+        user.setEmailVerified(true);
+        userRepository.save(user);
+        log.info("Email verified: user_id={}, email={}", user.getId(), user.getEmail());
+    }
+
+    /**
+     * 重新发送邮箱验证码 —— 冷却期内会抛出异常。
+     *
+     * @param email 邮箱地址
+     * @throws AuthenticationException 冷却期内时抛出
+     */
+    public void resendVerificationCode(String email) {
+        String code = verificationCodePort.generateCode(email);
+        String username = email.split("@")[0];
+        emailPort.sendVerificationCode(email, username, code);
+        log.info("Verification code resent to: {}", email);
     }
 
     /**
@@ -111,6 +159,47 @@ public class AuthDomainService {
     public UserEntity getCurrentUser(Long userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new AuthenticationException("User not found"));
+    }
+
+    /**
+     * 修改密码 —— 验证旧密码后更新为新密码。
+     *
+     * @param userId      用户 ID
+     * @param oldPassword 旧密码（明文）
+     * @param newPassword 新密码（明文）
+     * @throws AuthenticationException 旧密码错误时抛出
+     */
+    @Transactional
+    public void updatePassword(Long userId, String oldPassword, String newPassword) {
+        UserEntity user = getCurrentUser(userId);
+        if (!passwordService.checkPassword(oldPassword, user.getPasswordHash())) {
+            throw new AuthenticationException("Current password is incorrect");
+        }
+        user.setPasswordHash(passwordService.hashPassword(newPassword));
+        user.setTokenVersion(user.getTokenVersion() + 1); // 使旧 token 失效
+        userRepository.save(user);
+        log.info("Password updated: user_id={}", userId);
+    }
+
+    /**
+     * 修改用户名 —— 昵称不为空时更新。
+     *
+     * @param userId   用户 ID
+     * @param username 新昵称
+     * @throws AuthenticationException 昵称为空时抛出
+     */
+    @Transactional
+    public void updateUsername(Long userId, String username) {
+        if (username == null || username.isBlank()) {
+            throw new AuthenticationException("Username cannot be empty");
+        }
+        if (username.length() > 100) {
+            throw new AuthenticationException("Username must be at most 100 characters");
+        }
+        UserEntity user = getCurrentUser(userId);
+        user.setUsername(username.trim());
+        userRepository.save(user);
+        log.info("Username updated: user_id={}, username={}", userId, username);
     }
 
     /**
