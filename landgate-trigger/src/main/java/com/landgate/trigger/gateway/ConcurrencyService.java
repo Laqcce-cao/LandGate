@@ -14,7 +14,8 @@ import java.util.concurrent.TimeUnit;
  * 并发控制服务 —— 基于 Redisson {@link RSemaphore} 实现分布式并发控制。
  * <p>
  * 每个上游账号的并发槽位存储在 Redis 中，支持多实例部署。
- * 等待获取槽位时使用指数退避 + jitter 避免惊群效应。
+ * 获取槽位时先做前置检查（无可用槽位直接返回false），
+ * 有可用槽位时使用指数退避 + jitter 等待，避免惊群效应。
  * 默认最大等待 30 秒。
  */
 @Slf4j
@@ -49,6 +50,13 @@ public class ConcurrencyService {
 
         // 确保信号量已按正确的并发数初始化
         ensurePermits(semaphore, accountId, maxConcurrency);
+
+        // 前置检查：无可用槽位时直接返回，不做无效等待
+        int available = semaphore.availablePermits();
+        if (available <= 0) {
+            log.debug("Concurrency slot full (skip wait): account_id={}, max={}", accountId, maxConcurrency);
+            return false;
+        }
 
         long baseWaitMs = BASE_WAIT_MS;
         long deadline = System.currentTimeMillis() + MAX_WAIT_SECONDS * 1000L;

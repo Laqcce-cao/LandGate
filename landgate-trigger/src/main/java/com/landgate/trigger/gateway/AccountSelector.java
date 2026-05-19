@@ -10,13 +10,23 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
- * 上游账号选择器 —— 按优先级从分组绑定的账号中选取可用账号。
+ * 上游账号选择器 —— 负载感知的账户选择。
  * <p>
- * 选择逻辑：遍历分组关联账号（按优先级排序）→ 跳过已删除/未激活/不可调度/被限流/过载的账号 →
- * 返回第一个可用账号。
+ * 选择逻辑：
+ * <ol>
+ *   <li>加载分组关联的全部候选账户</li>
+ *   <li>过滤：跳过已删除/未激活/不可调度/被限流/过载的账户</li>
+ *   <li>排序：优先级(高→低) → 负载率(低→高) → 最后使用时间(远→近)</li>
+ *   <li>返回排序后的第一个账户</li>
+ * </ol>
+ * <p>
+ * 负载率 = 当前活跃并发数 / (maxConcurrency × loadFactor/100)，
+ * 实现同等优先级下负载均匀分摊。
  */
 @Slf4j
 @Component
@@ -25,6 +35,7 @@ public class AccountSelector {
 
     private final IAccountGroupRepository accountGroupRepository;
     private final IAccountRepository accountRepository;
+    private final ConcurrencyService concurrencyService;
 
     public AccountEntity getById(Long accountId) {
         if (accountId == null) return null;
@@ -49,6 +60,8 @@ public class AccountSelector {
 
         log.debug("Selecting account for group: group_id={}, candidates={}", group.getId(), links.size());
 
+        // 加载全部候选账户并过滤不健康的
+        List<Candidate> candidates = new ArrayList<>();
         for (AccountGroupEntity link : links) {
             AccountEntity account = accountRepository.findById(link.getAccountId())
                     .filter(a -> a.getDeletedAt() == null)
@@ -75,14 +88,48 @@ public class AccountSelector {
                 continue;
             }
 
-            log.info("Account selected: account_id={}, name={}, platform={}, priority={}",
-                    account.getId(), account.getName(), account.getPlatform(), link.getPriority());
-            return account;
+            double loadRate = calcLoadRate(account);
+            candidates.add(new Candidate(account, link.getPriority(), loadRate));
         }
 
-        log.warn("No available account for group: group_id={}", group.getId());
-        return null;
+        if (candidates.isEmpty()) {
+            log.warn("No available account for group: group_id={}", group.getId());
+            return null;
+        }
+
+        // 排序：优先级(高→低) → 负载率(低→高) → 最后使用时间(远→近)
+        candidates.sort(Comparator
+                .comparingInt(Candidate::priority).reversed()
+                .thenComparingDouble(Candidate::loadRate)
+                .thenComparing(c -> c.account.getLastUsedAt() == null
+                        ? Instant.EPOCH : c.account.getLastUsedAt()));
+
+        AccountEntity selected = candidates.get(0).account;
+        log.info("Account selected: account_id={}, name={}, platform={}, priority={}, load_rate={}",
+                selected.getId(), selected.getName(), selected.getPlatform(),
+                candidates.get(0).priority,
+                String.format("%.2f", candidates.get(0).loadRate));
+        return selected;
     }
+
+    /**
+     * 计算负载率 = 当前活跃并发数 / 有效并发上限。
+     * <p>
+     * 有效并发上限 = maxConcurrency × loadFactor / 100。
+     * 负载率为 0 表示空闲，1.0 表示满载，> 1.0 表示超载。
+     */
+    private double calcLoadRate(AccountEntity account) {
+        int active = concurrencyService.getActiveCount(account.getId());
+        int max = account.getConcurrency();
+        int loadFactor = account.getLoadFactor() != null ? account.getLoadFactor() : 100;
+        int effectiveMax = max * loadFactor / 100;
+        if (effectiveMax <= 0) return Double.MAX_VALUE;
+        return (double) active / effectiveMax;
+    }
+
+    // ---- 内部候选记录 ----
+
+    private record Candidate(AccountEntity account, int priority, double loadRate) {}
 
     public void updateLastUsed(Long accountId) {
         accountRepository.findById(accountId).ifPresent(a -> {
