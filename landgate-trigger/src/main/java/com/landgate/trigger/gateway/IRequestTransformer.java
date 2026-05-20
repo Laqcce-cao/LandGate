@@ -14,4 +14,16 @@ public interface IRequestTransformer {
     String extractModel(String body);
 
     boolean isStreamRequest(String body);
+
+    /**
+     * 从请求 body 中提取终端用户标识符，用于会话 hash 的细粒度粘滞。
+     * <p>
+     * Anthropic: body.metadata.user_id; OpenAI: body.user; Gemini: 无此概念返回 null。
+     *
+     * @param body 请求体 JSON 字符串
+     * @return 用户标识符，无法提取时返回 null
+     */
+    default String extractUserId(String body) {
+        return null;
+    }
 }

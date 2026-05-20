@@ -29,12 +29,14 @@ public class OpenAiGatewayHandler extends AbstractGatewayHandler {
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
             OAuthTokenRefreshService oauthTokenRefreshService,
+            ErrorPassthroughService errorPassthroughService,
             OpenAiTransformer transformer,
             OpenAiUsageParser usageParser,
             OpenAiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
-                concurrencyService, sessionHashService, oauthTokenRefreshService);
+                concurrencyService, sessionHashService, oauthTokenRefreshService,
+                errorPassthroughService);
         this.transformer = transformer;
         this.usageParser = usageParser;
         this.errorWriter = errorWriter;

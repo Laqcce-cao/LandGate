@@ -51,6 +51,7 @@ public class GatewayService {
     private final ConcurrencyService concurrencyService;
     private final SessionHashService sessionHashService;
     private final OAuthTokenRefreshService oauthTokenRefreshService;
+    private final ErrorPassthroughService errorPassthroughService;
 
     private static final int MAX_FAILOVER_SWITCHES = 3;
 
@@ -91,7 +92,8 @@ public class GatewayService {
                 apiKeyId, userId, group.getId(), group.getName(), group.getPlatform());
 
         // Step 3: Session stickiness
-        String sessionHash = sessionHashService.generateHash(request, apiKeyId);
+        String bodyUserId = transformer.extractUserId(body);
+        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId);
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
 
         // Step 4: Stream detection
@@ -242,9 +244,26 @@ public class GatewayService {
                     concurrencyService.release(account.getId());
                     failoverCount++;
                 } else {
-                    concurrencyService.release(account.getId());
-                    handleUpstreamError(upstreamResp, response, statusCode);
-                    return;
+                    // 读取上游错误 body，经 ErrorPassthroughService 裁决
+                    String errorBody;
+                    try (var input = upstreamResp.body()) {
+                        errorBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                    }
+
+                    ErrorPassthroughService.ErrorAction action =
+                            errorPassthroughService.decide(statusCode, errorBody, "ANTHROPIC");
+
+                    if (action == ErrorPassthroughService.ErrorAction.RETRY) {
+                        log.warn("Error passthrough RETRY: status={}, account_id={}, attempt={}",
+                                statusCode, account.getId(), failoverCount);
+                        markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
+                        concurrencyService.release(account.getId());
+                        failoverCount++;
+                    } else {
+                        concurrencyService.release(account.getId());
+                        writeMaskedUpstreamError(response, statusCode, errorBody);
+                        return;
+                    }
                 }
 
             } finally {
@@ -340,6 +359,30 @@ public class GatewayService {
         return usageParser.parseNonStreaming(responseBody);
     }
 
+    private void writeMaskedUpstreamError(HttpServletResponse response,
+                                          int upstreamStatus, String errorBody) throws IOException {
+        log.warn("Upstream error (masked): status={}, body={}",
+                upstreamStatus, errorBody.substring(0, Math.min(500, errorBody.length())));
+
+        String safeMessage = errorPassthroughService.extractSafeMessage(upstreamStatus, errorBody);
+        String errorCode = switch (upstreamStatus) {
+            case 400 -> "invalid_request_error";
+            case 401 -> "authentication_error";
+            case 402 -> "insufficient_quota";
+            case 403 -> "permission_error";
+            case 404 -> "not_found_error";
+            case 422 -> "unprocessable_error";
+            case 429 -> "rate_limit_error";
+            case 529 -> "overloaded_error";
+            default -> "upstream_error";
+        };
+        writeAnthropicError(response, upstreamStatus, errorCode, safeMessage);
+    }
+
+    /**
+     * @deprecated 使用 {@link #writeMaskedUpstreamError} 替代。
+     */
+    @Deprecated
     private void handleUpstreamError(HttpResponse<InputStream> upstreamResp,
                                       HttpServletResponse response,
                                       int upstreamStatus) throws IOException {
@@ -347,26 +390,7 @@ public class GatewayService {
         try (var input = upstreamResp.body()) {
             errorBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
-
-        log.warn("Upstream error: status={}, body={}", upstreamStatus, errorBody.substring(0, Math.min(500, errorBody.length())));
-
-        if (upstreamStatus == 429) {
-            response.setStatus(429);
-            response.setContentType("application/json;charset=UTF-8");
-            response.getWriter().write("{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Rate limited by upstream API\"}}");
-            return;
-        }
-
-        if (upstreamStatus == 529) {
-            response.setStatus(503);
-            response.setContentType("application/json;charset=UTF-8");
-            response.getWriter().write("{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Upstream API is overloaded\"}}");
-            return;
-        }
-
-        response.setStatus(upstreamStatus);
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write(errorBody);
+        writeMaskedUpstreamError(response, upstreamStatus, errorBody);
     }
 
     public static void writeAnthropicError(HttpServletResponse response, int status, String errorType, String message) throws IOException {

@@ -29,12 +29,14 @@ public class GeminiGatewayHandler extends AbstractGatewayHandler {
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
             OAuthTokenRefreshService oauthTokenRefreshService,
+            ErrorPassthroughService errorPassthroughService,
             GeminiTransformer transformer,
             GeminiUsageParser usageParser,
             GeminiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
-                concurrencyService, sessionHashService, oauthTokenRefreshService);
+                concurrencyService, sessionHashService, oauthTokenRefreshService,
+                errorPassthroughService);
         this.transformer = transformer;
         this.usageParser = usageParser;
         this.errorWriter = errorWriter;

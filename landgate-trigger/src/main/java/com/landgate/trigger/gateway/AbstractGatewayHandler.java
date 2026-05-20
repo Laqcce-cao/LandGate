@@ -45,6 +45,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final ConcurrencyService concurrencyService;
     protected final SessionHashService sessionHashService;
     protected final OAuthTokenRefreshService oauthTokenRefreshService;
+    protected final ErrorPassthroughService errorPassthroughService;
 
     private static final int MAX_FAILOVER_SWITCHES = 3;
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
@@ -60,7 +61,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             BalanceDomainService balanceDomainService,
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
-            OAuthTokenRefreshService oauthTokenRefreshService) {
+            OAuthTokenRefreshService oauthTokenRefreshService,
+            ErrorPassthroughService errorPassthroughService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -71,6 +73,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.concurrencyService = concurrencyService;
         this.sessionHashService = sessionHashService;
         this.oauthTokenRefreshService = oauthTokenRefreshService;
+        this.errorPassthroughService = errorPassthroughService;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -116,7 +119,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 apiKeyId, userId, group.getId(), group.getName(), getPlatformName());
 
         // Step 3: Session 粘滞
-        String sessionHash = sessionHashService.generateHash(request, apiKeyId);
+        String bodyUserId = getTransformer().extractUserId(body);
+        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId);
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
 
         // Step 4: 流式检测 + 模型名提取
@@ -272,11 +276,29 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     failoverCount++;
                 }
 
-                // --- 非重试错误 ---
+                // --- 非重试错误（含选择性透传裁决）---
                 else {
-                    concurrencyService.release(account.getId());
-                    handleUpstreamError(upstreamResp, response, statusCode);
-                    return;
+                    // 读取上游错误 body
+                    String errorBody;
+                    try (var input = upstreamResp.body()) {
+                        errorBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                    }
+
+                    ErrorPassthroughService.ErrorAction action =
+                            errorPassthroughService.decide(statusCode, errorBody, getPlatformName());
+
+                    if (action == ErrorPassthroughService.ErrorAction.RETRY) {
+                        log.warn("Error passthrough RETRY: status={}, account_id={}, attempt={}",
+                                statusCode, account.getId(), failoverCount);
+                        markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
+                        concurrencyService.release(account.getId());
+                        failoverCount++;
+                        // 回到 failover 循环
+                    } else {
+                        concurrencyService.release(account.getId());
+                        writeMaskedUpstreamError(response, statusCode, errorBody);
+                        return;
+                    }
                 }
 
             } finally {
@@ -371,6 +393,24 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return getUsageParser().parseNonStreaming(responseBody);
     }
 
+    /**
+     * 安全格式化上游错误 —— 不暴露原始 body，通过 {@link IErrorWriter} 输出平台格式错误。
+     */
+    private void writeMaskedUpstreamError(HttpServletResponse response,
+                                          int upstreamStatus, String errorBody) throws IOException {
+        log.warn("Upstream error (masked): status={}, body={}",
+                upstreamStatus, errorBody.substring(0, Math.min(500, errorBody.length())));
+
+        String safeMessage = errorPassthroughService.extractSafeMessage(upstreamStatus, errorBody);
+        String errorCode = mapStatusToErrorCode(upstreamStatus);
+        getErrorWriter().writeError(response, upstreamStatus, errorCode, safeMessage);
+    }
+
+    /**
+     * @deprecated 使用 {@link #writeMaskedUpstreamError} 替代，避免盲透传上游 body。
+     * 保留以兼容子类自定义调用。
+     */
+    @Deprecated
     protected void handleUpstreamError(HttpResponse<InputStream> upstreamResp,
                                         HttpServletResponse response,
                                         int upstreamStatus) throws IOException {
@@ -378,13 +418,22 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         try (var input = upstreamResp.body()) {
             errorBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
+        writeMaskedUpstreamError(response, upstreamStatus, errorBody);
+    }
 
-        log.warn("Upstream error: status={}, body={}",
-                upstreamStatus, errorBody.substring(0, Math.min(500, errorBody.length())));
-
-        response.setStatus(upstreamStatus);
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write(errorBody);
+    /** HTTP 状态码 → 网关错误类型码映射 */
+    private String mapStatusToErrorCode(int statusCode) {
+        return switch (statusCode) {
+            case 400 -> "invalid_request_error";
+            case 401 -> "authentication_error";
+            case 402 -> "insufficient_quota";
+            case 403 -> "permission_error";
+            case 404 -> "not_found_error";
+            case 422 -> "unprocessable_error";
+            case 429 -> "rate_limit_error";
+            case 529 -> "overloaded_error";
+            default -> "upstream_error";
+        };
     }
 
     /**

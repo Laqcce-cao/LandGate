@@ -53,6 +53,20 @@ public class OpenAiTransformer implements IRequestTransformer {
     }
 
     @Override
+    public String extractUserId(String body) {
+        try {
+            JsonNode root = JSON.readTree(body);
+            if (root.has("user")) {
+                JsonNode userNode = root.get("user");
+                if (userNode.isTextual()) return userNode.asText();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to extract user from OpenAI request body");
+        }
+        return null;
+    }
+
+    @Override
     public String extractModel(String body) {
         try {
             JsonNode root = JSON.readTree(body);

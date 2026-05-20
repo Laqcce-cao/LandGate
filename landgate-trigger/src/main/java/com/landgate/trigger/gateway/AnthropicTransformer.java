@@ -68,6 +68,19 @@ public class AnthropicTransformer implements IRequestTransformer {
         return headers.toArray(new String[0]);
     }
 
+    @Override
+    public String extractUserId(String body) {
+        try {
+            JsonNode root = JSON.readTree(body);
+            if (root.has("metadata") && root.get("metadata").has("user_id")) {
+                return root.get("metadata").get("user_id").asText();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to extract user_id from Anthropic request body");
+        }
+        return null;
+    }
+
     public String extractModel(String body) {
         try {
             JsonNode root = JSON.readTree(body);

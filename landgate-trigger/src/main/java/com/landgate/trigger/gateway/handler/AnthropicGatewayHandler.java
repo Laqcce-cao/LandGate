@@ -29,12 +29,14 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
             OAuthTokenRefreshService oauthTokenRefreshService,
+            ErrorPassthroughService errorPassthroughService,
             AnthropicTransformer transformer,
             UsageParser usageParser,
             AnthropicErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
-                concurrencyService, sessionHashService, oauthTokenRefreshService);
+                concurrencyService, sessionHashService, oauthTokenRefreshService,
+                errorPassthroughService);
         this.transformer = transformer;
         this.usageParser = usageParser;
         this.errorWriter = errorWriter;
