@@ -69,6 +69,14 @@ public class UsageLogPO {
     @Builder.Default
     private Integer cacheReadTokens = 0;
 
+    /** 5 分钟有效期缓存写入 token 数 */
+    @Builder.Default
+    private Integer cacheCreation5mTokens = 0;
+
+    /** 1 小时有效期缓存写入 token 数 */
+    @Builder.Default
+    private Integer cacheCreation1hTokens = 0;
+
     /** 输入费用（USD） */
     @Builder.Default
     private BigDecimal inputCost = BigDecimal.ZERO;
@@ -84,6 +92,14 @@ public class UsageLogPO {
     /** 缓存读取费用（USD） */
     @Builder.Default
     private BigDecimal cacheReadCost = BigDecimal.ZERO;
+
+    /** 5 分钟缓存写入费用（USD） */
+    @Builder.Default
+    private BigDecimal cacheCreation5mCost = BigDecimal.ZERO;
+
+    /** 1 小时缓存写入费用（USD） */
+    @Builder.Default
+    private BigDecimal cacheCreation1hCost = BigDecimal.ZERO;
 
     /** 总费用（分组倍率后，USD） */
     @Builder.Default

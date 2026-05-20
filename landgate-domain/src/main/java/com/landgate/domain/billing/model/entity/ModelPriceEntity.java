@@ -23,6 +23,12 @@ public class ModelPriceEntity {
     private BigDecimal cacheWritePrice = BigDecimal.ZERO;
     @Builder.Default
     private BigDecimal cacheReadPrice = BigDecimal.ZERO;
+    @Builder.Default
+    private BigDecimal cacheWrite5mPrice = BigDecimal.ZERO;
+    @Builder.Default
+    private BigDecimal cacheWrite1hPrice = BigDecimal.ZERO;
+    @Builder.Default
+    private Boolean supportsCacheBreakdown = false;
 
     private Long groupId;
 

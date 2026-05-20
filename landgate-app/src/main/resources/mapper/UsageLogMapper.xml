@@ -19,10 +19,14 @@
         <result column="output_tokens"           property="outputTokens"/>
         <result column="cache_creation_tokens"   property="cacheCreationTokens"/>
         <result column="cache_read_tokens"       property="cacheReadTokens"/>
+        <result column="cache_creation_5m_tokens" property="cacheCreation5mTokens"/>
+        <result column="cache_creation_1h_tokens" property="cacheCreation1hTokens"/>
         <result column="input_cost"              property="inputCost"/>
         <result column="output_cost"             property="outputCost"/>
         <result column="cache_creation_cost"     property="cacheCreationCost"/>
         <result column="cache_read_cost"         property="cacheReadCost"/>
+        <result column="cache_creation_5m_cost" property="cacheCreation5mCost"/>
+        <result column="cache_creation_1h_cost" property="cacheCreation1hCost"/>
         <result column="total_cost"              property="totalCost"/>
         <result column="actual_cost"             property="actualCost"/>
         <result column="rate_multiplier"         property="rateMultiplier"/>
@@ -46,14 +50,18 @@
             user_id, api_key_id, account_id, group_id, subscription_id,
             request_id, model, platform, requested_model, upstream_model, billing_mode,
             input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+            cache_creation_5m_tokens, cache_creation_1h_tokens,
             input_cost, output_cost, cache_creation_cost, cache_read_cost,
+            cache_creation_5m_cost, cache_creation_1h_cost,
             total_cost, actual_cost, rate_multiplier, account_rate_multiplier,
             stream, duration_ms, first_token_ms, user_agent, ip_address, created_at
         ) VALUES (
             #{userId}, #{apiKeyId}, #{accountId}, #{groupId}, #{subscriptionId},
             #{requestId}, #{model}, #{platform}, #{requestedModel}, #{upstreamModel}, #{billingMode},
             #{inputTokens}, #{outputTokens}, #{cacheCreationTokens}, #{cacheReadTokens},
+            #{cacheCreation5mTokens}, #{cacheCreation1hTokens},
             #{inputCost}, #{outputCost}, #{cacheCreationCost}, #{cacheReadCost},
+            #{cacheCreation5mCost}, #{cacheCreation1hCost},
             #{totalCost}, #{actualCost}, #{rateMultiplier}, #{accountRateMultiplier},
             #{stream}, #{durationMs}, #{firstTokenMs}, #{userAgent}, #{ipAddress}, NOW()
         )
