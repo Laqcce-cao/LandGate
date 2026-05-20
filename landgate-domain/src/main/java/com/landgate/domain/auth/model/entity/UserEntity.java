@@ -104,5 +104,7 @@ public class UserEntity {
     private Instant deletedAt;
 
     public boolean isAdmin() { return Role.ADMIN.getKey().equals(role); }
+    public boolean isBetaTester() { return Role.BETA_TESTER.getKey().equals(role); }
+    public boolean isPrivileged() { return isAdmin() || isBetaTester(); }
     public boolean isActive() { return Status.ACTIVE.getKey().equals(status); }
 }

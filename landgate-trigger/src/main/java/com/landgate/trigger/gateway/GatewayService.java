@@ -107,7 +107,7 @@ public class GatewayService {
             writeAnthropicError(response, 401, "authentication_error", "User not found");
             return;
         }
-        if (!balanceDomainService.hasBalance(userId)) {
+        if (!user.isPrivileged() && !balanceDomainService.hasBalance(userId)) {
             writeAnthropicError(response, 402, "insufficient_balance",
                     "Insufficient balance. Please recharge your account.");
             return;
@@ -213,7 +213,9 @@ public class GatewayService {
                                     request.getHeader("User-Agent"),
                                     request.getRemoteAddr());
 
-                            balanceDomainService.deduct(userId, log.getActualCost());
+                            if (!user.isPrivileged()) {
+                                balanceDomainService.deduct(userId, log.getActualCost());
+                            }
                         } catch (Exception e) {
                             log.error("Billing/deduction failed after response sent: user_id={}, model={}",
                                     userId, model, e);

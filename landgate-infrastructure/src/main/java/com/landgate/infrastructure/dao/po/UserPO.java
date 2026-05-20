@@ -104,6 +104,12 @@ public class UserPO extends BasePO {
     /** 判断是否为管理员 */
     public boolean isAdmin() { return Role.ADMIN.getKey().equals(role); }
 
+    /** 判断是否为内测玩家 */
+    public boolean isBetaTester() { return Role.BETA_TESTER.getKey().equals(role); }
+
+    /** 判断是否为特权角色（管理员或内测玩家），免余额检查与扣费 */
+    public boolean isPrivileged() { return isAdmin() || isBetaTester(); }
+
     /** 判断账户是否处于激活状态 */
     public boolean isActive() { return Status.ACTIVE.getKey().equals(status); }
 }

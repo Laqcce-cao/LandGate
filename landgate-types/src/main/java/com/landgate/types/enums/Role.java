@@ -15,7 +15,9 @@ public enum Role {
     /** 管理员 */
     ADMIN("admin", 1, "管理员"),
     /** 普通用户 */
-    USER("user", 2, "普通用户");
+    USER("user", 2, "普通用户"),
+    /** 内测玩家 */
+    BETA_TESTER("beta_tester", 3, "内测玩家");
 
     /** 代码标识 */
     private final String key;

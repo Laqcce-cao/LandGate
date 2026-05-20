@@ -139,7 +139,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             getErrorWriter().writeError(response, 401, "authentication_error", "User not found");
             return;
         }
-        if (!balanceDomainService.hasBalance(userId)) {
+        if (!user.isPrivileged() && !balanceDomainService.hasBalance(userId)) {
             getErrorWriter().writeError(response, 402, "insufficient_balance",
                     "Insufficient balance. Please recharge your account.");
             return;
@@ -241,7 +241,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                     stream, durationMs,
                                     request.getHeader("User-Agent"),
                                     request.getRemoteAddr());
-                            balanceDomainService.deduct(userId, logEntry.getActualCost());
+                            if (!user.isPrivileged()) {
+                                balanceDomainService.deduct(userId, logEntry.getActualCost());
+                            }
                         } catch (Exception e) {
                             log.error("Billing/deduction failed after response sent: user_id={}, model={}",
                                     userId, model, e);
