@@ -107,6 +107,10 @@ public class AccountSelector {
                 log.debug("Account overloaded: account_id={}, until={}", account.getId(), account.getOverloadUntil());
                 continue;
             }
+            if (model != null && !isModelSupportedByAccount(account, model)) {
+                log.debug("Account does not support model: account_id={}, model={}", account.getId(), model);
+                continue;
+            }
 
             double loadRate = calcLoadRate(account);
             candidates.add(new Candidate(account, link.getPriority(), loadRate));
@@ -306,6 +310,27 @@ public class AccountSelector {
      */
     private Platform scopeToPlatform(String scope) {
         return SCOPE_PLATFORM.get(scope);
+    }
+
+    /**
+     * 检查号是否支持指定模型。
+     * <p>
+     * 若 {@code supportedModels} 为 {@code null} 或空 JSON 数组，表示不限制，
+     * 返回 {@code true}。否则 model 必须在白名单中。
+     */
+    private boolean isModelSupportedByAccount(AccountEntity account, String model) {
+        String supportedJson = account.getSupportedModels();
+        if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {
+            return true;
+        }
+        try {
+            List<String> supported = MODEL_ROUTING_MAPPER.readValue(
+                    supportedJson, new TypeReference<List<String>>() {});
+            return supported.contains(model);
+        } catch (Exception e) {
+            log.debug("Failed to parse supportedModels for account: account_id={}", account.getId(), e);
+            return true; // 解析失败时放行
+        }
     }
 
     // ---- 内部候选记录 ----
