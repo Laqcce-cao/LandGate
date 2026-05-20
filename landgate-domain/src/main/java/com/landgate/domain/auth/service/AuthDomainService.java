@@ -61,7 +61,7 @@ public class AuthDomainService {
                 .role(Role.USER.getKey())
                 .status(Status.ACTIVE.getKey())
                 .emailVerified(false)
-                .signupSource(SignupSource.EMAIL)
+                .signupSource(SignupSource.EMAIL.getKey())
                 .balance(BigDecimal.ONE)
                 .concurrency(5)
                 .tokenVersion(0L)

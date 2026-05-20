@@ -65,7 +65,7 @@ public class UserEntity {
 
     /** 注册来源 */
     @Builder.Default
-    private SignupSource signupSource = SignupSource.EMAIL;
+    private String signupSource = SignupSource.EMAIL.getKey();
 
     /** 最后登录时间 */
     private Instant lastLoginAt;
