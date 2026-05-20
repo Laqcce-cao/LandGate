@@ -1,7 +1,9 @@
 package com.landgate.domain.billing.adapter.repository;
 
+import com.landgate.api.billing.dto.UserUsageSummary;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -98,4 +100,15 @@ public interface IUsageLogRepository {
      * @return 日志总数
      */
     long count();
+
+    /**
+     * 按用户聚合用量统计（指定时间窗口，按指定维度排序）。
+     *
+     * @param start   时间窗口起始（包含）
+     * @param end     时间窗口结束（不包含）
+     * @param sortBy  排序字段（totalCost / totalTokens）
+     * @param sortDir 排序方向（ASC / DESC）
+     * @return 用户用量汇总列表
+     */
+    List<UserUsageSummary> aggregateUsageByUser(Instant start, Instant end, String sortBy, String sortDir);
 }

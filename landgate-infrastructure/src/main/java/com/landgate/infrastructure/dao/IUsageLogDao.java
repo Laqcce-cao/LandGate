@@ -1,9 +1,11 @@
 package com.landgate.infrastructure.dao;
 
 import com.landgate.infrastructure.dao.po.UsageLogPO;
+import com.landgate.infrastructure.dao.po.UserUsageSummaryPO;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -44,4 +46,12 @@ public interface IUsageLogDao {
 
     /** 统计指定账号的日志数 */
     long countByAccountId(@Param("accountId") Long accountId);
+
+    /** 按用户聚合用量统计（支持时间范围 + 排序维度） */
+    List<UserUsageSummaryPO> aggregateByUser(
+            @Param("start") Instant start,
+            @Param("end") Instant end,
+            @Param("sortBy") String sortBy,
+            @Param("sortDir") String sortDir
+    );
 }
