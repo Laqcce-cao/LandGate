@@ -522,30 +522,3 @@ CREATE TABLE IF NOT EXISTS model_prices (
     INDEX idx_mdl_price_platform (platform),
     INDEX idx_mdl_price_group (group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Seed data: Anthropic (per-M-token prices)
-INSERT INTO model_prices (model, platform, input_price, output_price, cache_write_price, cache_read_price) VALUES
-('claude-opus-4-20250514',    'ANTHROPIC', 15, 75, 18.75, 1.5),
-('claude-sonnet-4-20250514',  'ANTHROPIC', 3,  15, 3.75,  0.3),
-('claude-opus-4-5-20251101',  'ANTHROPIC', 5,  25, 6.25,  0.5),
-('claude-sonnet-4-5-20250929','ANTHROPIC', 3,  15, 3.75,  0.3),
-('claude-haiku-4-5-20251001', 'ANTHROPIC', 1,  5,  1.25,  0.1);
-
--- Seed data: OpenAI (per-M-token prices)
-INSERT INTO model_prices (model, platform, input_price, output_price) VALUES
-('gpt-4o',              'OPENAI', 2.5,   10),
-('gpt-4o-mini',         'OPENAI', 0.15,  0.6),
-('gpt-4-turbo',         'OPENAI', 10,    30),
-('gpt-4',               'OPENAI', 30,    60),
-('gpt-3.5-turbo',       'OPENAI', 0.5,   1.5),
-('o1',                  'OPENAI', 15,    60),
-('o1-mini',             'OPENAI', 3,     12),
-('o3-mini',             'OPENAI', 1.1,   4.4);
-
--- Seed data: Gemini (per-M-token prices)
-INSERT INTO model_prices (model, platform, input_price, output_price) VALUES
-('gemini-2.5-flash',    'GEMINI', 0.15,  0.6),
-('gemini-2.5-pro',      'GEMINI', 1.25,  10),
-('gemini-2.0-flash',    'GEMINI', 0.1,   0.4),
-('gemini-1.5-flash',    'GEMINI', 0.075, 0.3),
-('gemini-1.5-pro',      'GEMINI', 1.25,  5);
