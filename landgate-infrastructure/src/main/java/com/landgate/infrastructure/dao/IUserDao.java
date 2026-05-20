@@ -41,4 +41,12 @@ public interface IUserDao {
 
     /** 直接更新用户余额（批量刷库，避免全量 update） */
     int updateBalance(@Param("id") Long id, @Param("balance") java.math.BigDecimal balance);
+
+    /** 搜索用户（按用户名或邮箱模糊匹配），分页 */
+    List<UserPO> selectBySearch(@Param("search") String search,
+                                @Param("offset") int offset,
+                                @Param("limit") int limit);
+
+    /** 统计搜索匹配的用户总数 */
+    long countBySearch(@Param("search") String search);
 }

@@ -60,6 +60,24 @@ public interface IUserRepository {
     long count();
 
     /**
+     * 搜索用户（用户名/邮箱模糊匹配）并分页
+     *
+     * @param search   搜索关键词（匹配 username 或 email）
+     * @param page     页码（0-based）
+     * @param pageSize 每页条数
+     * @return 匹配的用户列表
+     */
+    java.util.List<UserEntity> findBySearch(String search, int page, int pageSize);
+
+    /**
+     * 统计搜索匹配的用户总数
+     *
+     * @param search 搜索关键词
+     * @return 匹配数
+     */
+    long countBySearch(String search);
+
+    /**
      * 更新用户余额
      *
      * @param id         用户ID

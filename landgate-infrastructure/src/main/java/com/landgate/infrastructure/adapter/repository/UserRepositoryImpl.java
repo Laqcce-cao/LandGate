@@ -8,6 +8,7 @@ import com.landgate.infrastructure.dao.po.UserPO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -59,6 +60,19 @@ public class UserRepositoryImpl implements IUserRepository {
     @Override
     public long count() {
         return userDao.countAll();
+    }
+
+    @Override
+    public java.util.List<UserEntity> findBySearch(String search, int page, int pageSize) {
+        int offset = page * pageSize;
+        return userDao.selectBySearch(search, offset, pageSize).stream()
+                .map(userConverter::toEntity)
+                .toList();
+    }
+
+    @Override
+    public long countBySearch(String search) {
+        return userDao.countBySearch(search);
     }
 
     @Override

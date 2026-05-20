@@ -101,4 +101,26 @@
         WHERE id = #{id}
     </update>
 
+    <!-- ==================== 管理后台查询 ==================== -->
+
+    <select id="selectBySearch" resultMap="UserResultMap">
+        SELECT * FROM users
+        WHERE deleted_at IS NULL
+        <if test="search != null and search != ''">
+            AND (username LIKE CONCAT('%', #{search}, '%')
+                 OR email LIKE CONCAT('%', #{search}, '%'))
+        </if>
+        ORDER BY id DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countBySearch" resultType="long">
+        SELECT COUNT(*) FROM users
+        WHERE deleted_at IS NULL
+        <if test="search != null and search != ''">
+            AND (username LIKE CONCAT('%', #{search}, '%')
+                 OR email LIKE CONCAT('%', #{search}, '%'))
+        </if>
+    </select>
+
 </mapper>
