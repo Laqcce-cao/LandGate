@@ -1,13 +1,16 @@
 package com.landgate.infrastructure.adapter.repository;
 
+import com.landgate.api.billing.dto.UserUsageSummary;
 import com.landgate.domain.billing.adapter.repository.IUsageLogRepository;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.infrastructure.adapter.mapper.UsageLogMapper;
 import com.landgate.infrastructure.dao.IUsageLogDao;
 import com.landgate.infrastructure.dao.po.UsageLogPO;
+import com.landgate.infrastructure.dao.po.UserUsageSummaryPO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -93,5 +96,23 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
     @Override
     public long count() {
         return usageLogDao.countAll();
+    }
+
+    @Override
+    public List<UserUsageSummary> aggregateUsageByUser(Instant start, Instant end, String sortBy, String sortDir) {
+        return usageLogDao.aggregateByUser(start, end, sortBy, sortDir).stream()
+                .map(this::toUserUsageSummary)
+                .collect(Collectors.toList());
+    }
+
+    private UserUsageSummary toUserUsageSummary(UserUsageSummaryPO po) {
+        return new UserUsageSummary(
+                po.getUserId(),
+                po.getUsername(),
+                po.getEmail(),
+                po.getTotalCost(),
+                po.getTotalTokens(),
+                po.getCallCount()
+        );
     }
 }

@@ -19,10 +19,14 @@
         <result column="output_tokens"           property="outputTokens"/>
         <result column="cache_creation_tokens"   property="cacheCreationTokens"/>
         <result column="cache_read_tokens"       property="cacheReadTokens"/>
+        <result column="cache_creation_5m_tokens" property="cacheCreation5mTokens"/>
+        <result column="cache_creation_1h_tokens" property="cacheCreation1hTokens"/>
         <result column="input_cost"              property="inputCost"/>
         <result column="output_cost"             property="outputCost"/>
         <result column="cache_creation_cost"     property="cacheCreationCost"/>
         <result column="cache_read_cost"         property="cacheReadCost"/>
+        <result column="cache_creation_5m_cost" property="cacheCreation5mCost"/>
+        <result column="cache_creation_1h_cost" property="cacheCreation1hCost"/>
         <result column="total_cost"              property="totalCost"/>
         <result column="actual_cost"             property="actualCost"/>
         <result column="rate_multiplier"         property="rateMultiplier"/>
@@ -46,14 +50,18 @@
             user_id, api_key_id, account_id, group_id, subscription_id,
             request_id, model, platform, requested_model, upstream_model, billing_mode,
             input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+            cache_creation_5m_tokens, cache_creation_1h_tokens,
             input_cost, output_cost, cache_creation_cost, cache_read_cost,
+            cache_creation_5m_cost, cache_creation_1h_cost,
             total_cost, actual_cost, rate_multiplier, account_rate_multiplier,
             stream, duration_ms, first_token_ms, user_agent, ip_address, created_at
         ) VALUES (
             #{userId}, #{apiKeyId}, #{accountId}, #{groupId}, #{subscriptionId},
             #{requestId}, #{model}, #{platform}, #{requestedModel}, #{upstreamModel}, #{billingMode},
             #{inputTokens}, #{outputTokens}, #{cacheCreationTokens}, #{cacheReadTokens},
+            #{cacheCreation5mTokens}, #{cacheCreation1hTokens},
             #{inputCost}, #{outputCost}, #{cacheCreationCost}, #{cacheReadCost},
+            #{cacheCreation5mCost}, #{cacheCreation1hCost},
             #{totalCost}, #{actualCost}, #{rateMultiplier}, #{accountRateMultiplier},
             #{stream}, #{durationMs}, #{firstTokenMs}, #{userAgent}, #{ipAddress}, NOW()
         )
@@ -100,6 +108,49 @@
 
     <select id="countByAccountId" resultType="long">
         SELECT COUNT(*) FROM usage_logs WHERE account_id = #{accountId}
+    </select>
+
+    <!-- ==================== 聚合统计 ==================== -->
+
+    <resultMap id="UserUsageSummaryResultMap" type="com.landgate.infrastructure.dao.po.UserUsageSummaryPO">
+        <result column="user_id"      property="userId"/>
+        <result column="username"     property="username"/>
+        <result column="email"        property="email"/>
+        <result column="total_cost"   property="totalCost"/>
+        <result column="total_tokens" property="totalTokens"/>
+        <result column="call_count"   property="callCount"/>
+    </resultMap>
+
+    <select id="aggregateByUser" resultMap="UserUsageSummaryResultMap">
+        SELECT
+            u.id AS user_id,
+            u.username,
+            u.email,
+            COALESCE(SUM(ul.total_cost), 0) AS total_cost,
+            COALESCE(SUM(
+                ul.input_tokens + ul.output_tokens
+                + CASE
+                    WHEN COALESCE(ul.cache_creation_5m_tokens, 0) > 0
+                      OR COALESCE(ul.cache_creation_1h_tokens, 0) > 0
+                    THEN COALESCE(ul.cache_creation_5m_tokens, 0)
+                       + COALESCE(ul.cache_creation_1h_tokens, 0)
+                    ELSE COALESCE(ul.cache_creation_tokens, 0)
+                  END
+                + COALESCE(ul.cache_read_tokens, 0)
+            ), 0) AS total_tokens,
+            COUNT(ul.id) AS call_count
+        FROM users u
+        LEFT JOIN usage_logs ul ON u.id = ul.user_id
+            AND ul.created_at &gt;= #{start} AND ul.created_at &lt; #{end}
+        WHERE u.deleted_at IS NULL
+        GROUP BY u.id, u.username, u.email
+        HAVING COUNT(ul.id) &gt; 0
+        ORDER BY
+            <choose>
+                <when test="sortBy == 'totalTokens'">total_tokens</when>
+                <otherwise>total_cost</otherwise>
+            </choose>
+            ${sortDir}
     </select>
 
 </mapper>

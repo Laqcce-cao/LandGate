@@ -103,6 +103,9 @@ public class AccountPO extends BasePO {
     /** 会话窗口状态 */
     private String sessionWindowStatus;
 
+    /** 号支持的模型白名单（JSON 数组），NULL 或空表示不限制 */
+    private String supportedModels;
+
     /** 判断账号是否处于激活状态 */
     public boolean isActive() { return Status.ACTIVE == status; }
 

@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.types.enums.AccountType;
 import lombok.extern.slf4j.Slf4j;
@@ -21,7 +22,7 @@ import java.util.List;
  */
 @Slf4j
 @Component
-public class AnthropicTransformer {
+public class AnthropicTransformer implements IRequestTransformer {
 
     private static final String ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
     private static final String ANTHROPIC_VERSION = "2023-06-01";
@@ -65,6 +66,19 @@ public class AnthropicTransformer {
             headers.addAll(List.of("anthropic-beta", "oauth-2025-04-20"));
         }
         return headers.toArray(new String[0]);
+    }
+
+    @Override
+    public String extractUserId(String body) {
+        try {
+            JsonNode root = JSON.readTree(body);
+            if (root.has("metadata") && root.get("metadata").has("user_id")) {
+                return root.get("metadata").get("user_id").asText();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to extract user_id from Anthropic request body");
+        }
+        return null;
     }
 
     public String extractModel(String body) {

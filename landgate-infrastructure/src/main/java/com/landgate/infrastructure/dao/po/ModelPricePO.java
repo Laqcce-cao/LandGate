@@ -41,6 +41,18 @@ public class ModelPricePO extends BasePO {
     @Builder.Default
     private BigDecimal cacheReadPrice = BigDecimal.ZERO;
 
+    /** 缓存写入 5m token 单价（USD） */
+    @Builder.Default
+    private BigDecimal cacheWrite5mPrice = BigDecimal.ZERO;
+
+    /** 缓存写入 1h token 单价（USD） */
+    @Builder.Default
+    private BigDecimal cacheWrite1hPrice = BigDecimal.ZERO;
+
+    /** 是否支持缓存写入 5m/1h 分类计费 */
+    @Builder.Default
+    private Boolean supportsCacheBreakdown = false;
+
     /** 分组 ID（NULL = 全局默认价格） */
     private Long groupId;
 

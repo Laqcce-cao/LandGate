@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -15,14 +16,12 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-public class GeminiUsageParser {
+public class GeminiUsageParser implements IUsageParser {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    /**
-     * 从 Gemini 响应体解析用量（同时支持流式和非流式）。
-     */
-    public UsageTokens parse(String responseBody) {
+    @Override
+    public UsageTokens parseNonStreaming(String responseBody) {
         if (responseBody == null || responseBody.isBlank()) {
             return new UsageTokens();
         }
@@ -40,5 +39,17 @@ public class GeminiUsageParser {
             log.debug("Failed to parse Gemini usage", e);
             return new UsageTokens();
         }
+    }
+
+    @Override
+    public UsageTokens parseSSELine(String sseData) {
+        // Gemini 流式暂不支持，返回 null
+        return null;
+    }
+
+    @Override
+    public boolean isStreamDone(String sseLine) {
+        // Gemini 流式暂不支持
+        return false;
     }
 }

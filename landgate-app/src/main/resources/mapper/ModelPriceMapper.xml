@@ -10,6 +10,9 @@
         <result column="output_price"      property="outputPrice"/>
         <result column="cache_write_price" property="cacheWritePrice"/>
         <result column="cache_read_price"  property="cacheReadPrice"/>
+        <result column="cache_write_5m_price" property="cacheWrite5mPrice"/>
+        <result column="cache_write_1h_price" property="cacheWrite1hPrice"/>
+        <result column="supports_cache_breakdown" property="supportsCacheBreakdown"/>
         <result column="group_id"          property="groupId"/>
         <result column="enabled"           property="enabled"/>
         <result column="notes"             property="notes"/>
@@ -56,9 +59,11 @@
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO model_prices (
             model, platform, input_price, output_price, cache_write_price, cache_read_price,
+            cache_write_5m_price, cache_write_1h_price, supports_cache_breakdown,
             group_id, enabled, notes, created_at, updated_at, deleted_at
         ) VALUES (
             #{model}, #{platform}, #{inputPrice}, #{outputPrice}, #{cacheWritePrice}, #{cacheReadPrice},
+            #{cacheWrite5mPrice}, #{cacheWrite1hPrice}, #{supportsCacheBreakdown},
             #{groupId}, #{enabled}, #{notes}, NOW(), NOW(), NULL
         )
     </insert>
@@ -68,6 +73,8 @@
             model = #{model}, platform = #{platform},
             input_price = #{inputPrice}, output_price = #{outputPrice},
             cache_write_price = #{cacheWritePrice}, cache_read_price = #{cacheReadPrice},
+            cache_write_5m_price = #{cacheWrite5mPrice}, cache_write_1h_price = #{cacheWrite1hPrice},
+            supports_cache_breakdown = #{supportsCacheBreakdown},
             group_id = #{groupId}, enabled = #{enabled}, notes = #{notes},
             updated_at = NOW()
         WHERE id = #{id}

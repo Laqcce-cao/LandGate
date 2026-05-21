@@ -80,6 +80,9 @@ public class AccountEntity {
     private Instant sessionWindowEnd;
     private String sessionWindowStatus;
 
+    /** 号支持的模型白名单（JSON 数组），NULL 或空表示不限制 */
+    private String supportedModels;
+
     private Instant createdAt;
     private Instant updatedAt;
     private Instant deletedAt;

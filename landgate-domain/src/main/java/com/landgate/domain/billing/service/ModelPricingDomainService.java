@@ -30,10 +30,13 @@ public class ModelPricingDomainService {
 
     private static final Price DEFAULT_PRICE = new Price(
             new BigDecimal("3"), new BigDecimal("15"),
-            new BigDecimal("3.75"), new BigDecimal("0.3"));
+            new BigDecimal("3.75"), new BigDecimal("0.3"),
+            new BigDecimal("3.75"), new BigDecimal("3.75"), false);
 
     public record Price(BigDecimal inputPrice, BigDecimal outputPrice,
-                        BigDecimal cacheWritePrice, BigDecimal cacheReadPrice) {}
+                        BigDecimal cacheWritePrice, BigDecimal cacheReadPrice,
+                        BigDecimal cacheWrite5mPrice, BigDecimal cacheWrite1hPrice,
+                        boolean supportsCacheBreakdown) {}
 
     private record CachedPrice(Price price, Instant expiresAt) {}
 
@@ -70,7 +73,28 @@ public class ModelPricingDomainService {
     }
 
     /**
-     * 解析模型的全套价格（含缓存读写），优先查缓存，未命中则查数据库。
+     * 获取 5 分钟有效期缓存写入价格（$/百万 tokens）。
+     */
+    public BigDecimal getCacheWrite5mPrice(String model, Long groupId) {
+        return resolve(model, groupId).cacheWrite5mPrice;
+    }
+
+    /**
+     * 获取 1 小时有效期缓存写入价格（$/百万 tokens）。
+     */
+    public BigDecimal getCacheWrite1hPrice(String model, Long groupId) {
+        return resolve(model, groupId).cacheWrite1hPrice;
+    }
+
+    /**
+     * 是否支持缓存写入 5m/1h 分类计费。
+     */
+    public boolean supportsCacheBreakdown(String model, Long groupId) {
+        return resolve(model, groupId).supportsCacheBreakdown;
+    }
+
+    /**
+     * 解析模型的全套价格（含缓存读写 + 5m/1h），优先查缓存，未命中则查数据库。
      *
      * @param model   模型名称
      * @param groupId 分组 ID（null 表示全局价格）
@@ -90,7 +114,9 @@ public class ModelPricingDomainService {
 
         Price price = entity != null
                 ? new Price(entity.getInputPrice(), entity.getOutputPrice(),
-                            entity.getCacheWritePrice(), entity.getCacheReadPrice())
+                            entity.getCacheWritePrice(), entity.getCacheReadPrice(),
+                            entity.getCacheWrite5mPrice(), entity.getCacheWrite1hPrice(),
+                            Boolean.TRUE.equals(entity.getSupportsCacheBreakdown()))
                 : DEFAULT_PRICE;
 
         cache.put(key, new CachedPrice(price, Instant.now().plus(CACHE_TTL)));

@@ -52,7 +52,7 @@ services:
       - landgate-net
 
   app:
-    image: ${APP_IMAGE:-your-registry.example.com/landgate:latest}
+    image: ${DOCKER_HUB_USER:-landgate}/landgate:latest
     container_name: landgate-app
     ports:
       - "8080:8080"

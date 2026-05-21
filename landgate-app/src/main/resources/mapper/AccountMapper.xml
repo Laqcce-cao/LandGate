@@ -29,6 +29,7 @@
         <result column="session_window_start"        property="sessionWindowStart"/>
         <result column="session_window_end"          property="sessionWindowEnd"/>
         <result column="session_window_status"       property="sessionWindowStatus"/>
+        <result column="supported_models"            property="supportedModels"/>
         <result column="created_at"                  property="createdAt"/>
         <result column="updated_at"                  property="updatedAt"/>
         <result column="deleted_at"                  property="deletedAt"/>
@@ -48,6 +49,7 @@
             rate_limited_at, rate_limit_reset_at, overload_until,
             temp_unschedulable_until, temp_unschedulable_reason,
             session_window_start, session_window_end, session_window_status,
+            supported_models,
             created_at, updated_at, deleted_at
         ) VALUES (
             #{name}, #{notes}, #{platform}, #{type}, #{credentials}, #{extra}, #{proxyId},
@@ -56,6 +58,7 @@
             #{rateLimitedAt}, #{rateLimitResetAt}, #{overloadUntil},
             #{tempUnschedulableUntil}, #{tempUnschedulableReason},
             #{sessionWindowStart}, #{sessionWindowEnd}, #{sessionWindowStatus},
+            #{supportedModels},
             NOW(), NOW(), NULL
         )
     </insert>
@@ -76,6 +79,7 @@
             session_window_start = #{sessionWindowStart},
             session_window_end = #{sessionWindowEnd},
             session_window_status = #{sessionWindowStatus},
+            supported_models = #{supportedModels},
             deleted_at = #{deletedAt},
             updated_at = NOW()
         WHERE id = #{id}

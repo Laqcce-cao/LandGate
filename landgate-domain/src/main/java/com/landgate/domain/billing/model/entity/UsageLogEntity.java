@@ -56,6 +56,12 @@ public class UsageLogEntity {
     /** 缓存读取 Token 数 */
     @Builder.Default
     private Integer cacheReadTokens = 0;
+    /** 5 分钟有效期缓存写入 Token 数 */
+    @Builder.Default
+    private Integer cacheCreation5mTokens = 0;
+    /** 1 小时有效期缓存写入 Token 数 */
+    @Builder.Default
+    private Integer cacheCreation1hTokens = 0;
 
     @Builder.Default
     private BigDecimal inputCost = BigDecimal.ZERO;
@@ -65,6 +71,10 @@ public class UsageLogEntity {
     private BigDecimal cacheCreationCost = BigDecimal.ZERO;
     @Builder.Default
     private BigDecimal cacheReadCost = BigDecimal.ZERO;
+    @Builder.Default
+    private BigDecimal cacheCreation5mCost = BigDecimal.ZERO;
+    @Builder.Default
+    private BigDecimal cacheCreation1hCost = BigDecimal.ZERO;
     @Builder.Default
     private BigDecimal totalCost = BigDecimal.ZERO;
     @Builder.Default

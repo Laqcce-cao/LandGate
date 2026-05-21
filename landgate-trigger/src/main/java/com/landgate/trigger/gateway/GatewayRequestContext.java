@@ -22,6 +22,8 @@ public class GatewayRequestContext {
     private boolean stream;
     private String requestedModel;
     private String upstreamModel;
+    /** Gemini 专用的上游路径（完整 servlet path），其他平台为 null */
+    private String upstreamPath;
 
     private static final ThreadLocal<GatewayRequestContext> HOLDER = new ThreadLocal<>();
 
