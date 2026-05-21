@@ -1,5 +1,7 @@
 package com.landgate.trigger.scheduler;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.adapter.repository.IAccountRepository;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.types.enums.Platform;
@@ -41,6 +43,7 @@ public class ChannelMonitorService {
 
     private static final int MAX_FAILURES = 3;
     private static final long CHECK_INTERVAL_MS = 60_000;
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     @Scheduled(fixedDelay = CHECK_INTERVAL_MS)
     public void checkAllAccounts() {
@@ -113,10 +116,37 @@ public class ChannelMonitorService {
         Platform platform = account.getPlatform();
         if (platform == null) return null;
 
+        String baseUrl = resolveBaseUrl(account);
+        if (baseUrl == null) return null;
+
         return switch (platform) {
-            case ANTHROPIC -> "https://api.anthropic.com/v1/messages";
-            case OPENAI -> "https://api.openai.com/v1/models";
-            case GEMINI -> "https://generativelanguage.googleapis.com/v1beta/models";
+            case ANTHROPIC -> baseUrl + "/v1/messages";
+            case OPENAI -> baseUrl + "/v1/models";
+            case GEMINI -> baseUrl + "/v1beta/models";
+            default -> null;
+        };
+    }
+
+    /**
+     * 解析账号的实际 base URL —— 优先使用 extra.base_url，否则使用平台默认地址。
+     */
+    private String resolveBaseUrl(AccountEntity account) {
+        String extra = account.getExtra();
+        if (extra != null && !extra.equals("{}")) {
+            try {
+                JsonNode node = JSON.readTree(extra);
+                if (node.has("base_url") && !node.get("base_url").asText().isEmpty()) {
+                    return node.get("base_url").asText();
+                }
+            } catch (Exception e) {
+                log.warn("Failed to parse extra.base_url for account: id={}", account.getId());
+            }
+        }
+
+        return switch (account.getPlatform()) {
+            case ANTHROPIC -> "https://api.anthropic.com";
+            case OPENAI -> "https://api.openai.com";
+            case GEMINI -> "https://generativelanguage.googleapis.com";
             default -> null;
         };
     }
