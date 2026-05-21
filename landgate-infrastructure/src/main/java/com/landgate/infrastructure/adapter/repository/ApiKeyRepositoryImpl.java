@@ -51,6 +51,12 @@ public class ApiKeyRepositoryImpl implements IApiKeyRepository {
     }
 
     @Override
+    public Optional<ApiKeyEntity> findById(Long id) {
+        return Optional.ofNullable(apiKeyDao.selectById(id))
+                .map(apiKeyMapper::toEntity);
+    }
+
+    @Override
     public void deleteById(Long id) {
         ApiKeyPO po = apiKeyDao.selectById(id);
         if (po != null) {

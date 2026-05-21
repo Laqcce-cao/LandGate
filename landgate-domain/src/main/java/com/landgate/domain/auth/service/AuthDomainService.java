@@ -1,5 +1,7 @@
 package com.landgate.domain.auth.service;
 
+import com.landgate.api.admin.dto.ApiKeyAdminDTOs.CreateApiKeyAdminRequest;
+import com.landgate.api.admin.dto.ApiKeyAdminDTOs.UpdateApiKeyAdminRequest;
 import com.landgate.domain.auth.adapter.port.IEmailPort;
 import com.landgate.domain.auth.adapter.port.IVerificationCodePort;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
@@ -246,6 +248,66 @@ public class AuthDomainService {
                 .orElseThrow(() -> new AuthenticationException("API key not found"));
         apiKeyRepository.deleteById(apiKeyId);
         log.info("API key deleted: id={}, user_id={}", apiKeyId, userId);
+    }
+
+    /**
+     * 管理员创建 API Key —— 支持设置完整字段（配额、速率限制、IP 黑白名单等）。
+     *
+     * @param userId 管理员用户 ID
+     * @param req    创建请求（含完整字段）
+     * @return 新创建的 API Key 实体
+     */
+    @Transactional
+    public ApiKeyEntity createApiKeyAdmin(Long userId, CreateApiKeyAdminRequest req) {
+        UserEntity user = getCurrentUser(userId);
+        String keyStr = "ak-" + generateSecureToken(32);
+        ApiKeyEntity.ApiKeyEntityBuilder builder = ApiKeyEntity.builder()
+                .userId(user.getId()).key(keyStr).name(req.name()).groupId(req.groupId());
+
+        if (req.status() != null) {
+            builder.status(Status.valueOf(req.status().toUpperCase()));
+        }
+        if (req.quota() != null) builder.quota(req.quota());
+        if (req.rateLimit5h() != null) builder.rateLimit5h(req.rateLimit5h());
+        if (req.rateLimit1d() != null) builder.rateLimit1d(req.rateLimit1d());
+        if (req.rateLimit7d() != null) builder.rateLimit7d(req.rateLimit7d());
+        if (req.ipWhitelist() != null) builder.ipWhitelist(req.ipWhitelist());
+        if (req.ipBlacklist() != null) builder.ipBlacklist(req.ipBlacklist());
+        if (req.expiresAt() != null) builder.expiresAt(req.expiresAt());
+
+        ApiKeyEntity apiKey = apiKeyRepository.save(builder.build());
+        log.info("Admin API key created: id={}, user_id={}, name={}", apiKey.getId(), userId, req.name());
+        return apiKey;
+    }
+
+    /**
+     * 管理员更新 API Key —— 按非 null 字段部分更新。
+     *
+     * @param userId    管理员用户 ID
+     * @param apiKeyId  API Key ID
+     * @param req       更新请求（仅非 null 字段会更新）
+     * @throws AuthenticationException API Key 不存在或不属于该用户时抛出
+     */
+    @Transactional
+    public ApiKeyEntity updateApiKey(Long userId, Long apiKeyId, UpdateApiKeyAdminRequest req) {
+        ApiKeyEntity key = apiKeyRepository.findById(apiKeyId)
+                .filter(k -> k.getUserId().equals(userId))
+                .orElseThrow(() -> new AuthenticationException("API key not found"));
+
+        if (req.name() != null) key.setName(req.name());
+        if (req.groupId() != null) key.setGroupId(req.groupId());
+        if (req.status() != null) key.setStatus(Status.valueOf(req.status().toUpperCase()));
+        if (req.quota() != null) key.setQuota(req.quota());
+        if (req.rateLimit5h() != null) key.setRateLimit5h(req.rateLimit5h());
+        if (req.rateLimit1d() != null) key.setRateLimit1d(req.rateLimit1d());
+        if (req.rateLimit7d() != null) key.setRateLimit7d(req.rateLimit7d());
+        if (req.ipWhitelist() != null) key.setIpWhitelist(req.ipWhitelist());
+        if (req.ipBlacklist() != null) key.setIpBlacklist(req.ipBlacklist());
+        if (req.expiresAt() != null) key.setExpiresAt(req.expiresAt());
+
+        ApiKeyEntity updated = apiKeyRepository.save(key);
+        log.info("Admin API key updated: id={}, user_id={}", apiKeyId, userId);
+        return updated;
     }
 
     private String generateSecureToken(int byteLength) {

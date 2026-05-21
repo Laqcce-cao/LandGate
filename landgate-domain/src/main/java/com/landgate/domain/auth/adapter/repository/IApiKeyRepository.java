@@ -38,6 +38,14 @@ public interface IApiKeyRepository {
     ApiKeyEntity save(ApiKeyEntity entity);
 
     /**
+     * 根据ID查询API密钥
+     *
+     * @param id 主键ID
+     * @return 查询到的密钥实体，不存在返回 Optional.empty()
+     */
+    Optional<ApiKeyEntity> findById(Long id);
+
+    /**
      * 根据ID删除API密钥
      *
      * @param id 主键ID
