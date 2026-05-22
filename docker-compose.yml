@@ -52,10 +52,12 @@ services:
       - landgate-net
 
   app:
-    image: ${DOCKER_HUB_USER:-landgate}/landgate:latest
+    image: ${APP_IMAGE}/landgate:latest
     container_name: landgate-app
     ports:
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
       DB_HOST: mysql
@@ -75,6 +77,9 @@ services:
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-http://localhost:80/oauth/callback}
+      # 访问宿主机 Mihomo 代理
+      http_proxy: http://host.docker.internal:1080
+      https_proxy: http://host.docker.internal:1080
     depends_on:
       mysql:
         condition: service_healthy
@@ -85,7 +90,7 @@ services:
       - landgate-net
 
   web:
-    image: ${DOCKER_HUB_USER:-landgate}/landgate-web:latest
+    image: ${APP_IMAGE}/landgate-web:latest
     container_name: landgate-web
     ports:
       - "80:80"
