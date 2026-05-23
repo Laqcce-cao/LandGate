@@ -92,5 +92,9 @@ public class UsageLogEntity {
     private String userAgent;
     private String ipAddress;
 
+    @Builder.Default
+    private Integer imageCount = 0;
+    private String imageSize;
+
     private Instant createdAt;
 }

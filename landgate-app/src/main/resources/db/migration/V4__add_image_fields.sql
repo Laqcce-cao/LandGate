@@ -1,0 +1,2 @@
+ALTER TABLE usage_logs ADD COLUMN image_count INT DEFAULT 0;
+ALTER TABLE usage_logs ADD COLUMN image_size VARCHAR(16) DEFAULT NULL;

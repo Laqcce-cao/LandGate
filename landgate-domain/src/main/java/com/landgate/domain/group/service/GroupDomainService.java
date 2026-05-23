@@ -84,6 +84,10 @@ public class GroupDomainService {
         if (updates.getDefaultValidityDays() != null) existing.setDefaultValidityDays(updates.getDefaultValidityDays());
         if (updates.getAllowImageGeneration() != null) existing.setAllowImageGeneration(updates.getAllowImageGeneration());
         if (updates.getImageRateIndependent() != null) existing.setImageRateIndependent(updates.getImageRateIndependent());
+        if (updates.getImageRateMultiplier() != null) existing.setImageRateMultiplier(updates.getImageRateMultiplier());
+        if (updates.getImagePrice1k() != null) existing.setImagePrice1k(updates.getImagePrice1k());
+        if (updates.getImagePrice2k() != null) existing.setImagePrice2k(updates.getImagePrice2k());
+        if (updates.getImagePrice4k() != null) existing.setImagePrice4k(updates.getImagePrice4k());
         if (updates.getRpmLimit() != null) existing.setRpmLimit(updates.getRpmLimit());
         if (updates.getSortOrder() != null) existing.setSortOrder(updates.getSortOrder());
         if (updates.getExcludedModels() != null) existing.setExcludedModels(updates.getExcludedModels());

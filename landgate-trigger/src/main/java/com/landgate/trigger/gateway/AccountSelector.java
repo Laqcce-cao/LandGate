@@ -389,4 +389,81 @@ public class AccountSelector {
                     accountId, a.getName(), until, reason);
         });
     }
+
+    /**
+     * 图片生成专用账户选择 —— 直接按 OpenAI 平台过滤，不依赖模型名 scope 映射。
+     * <p>
+     * 图片 API（/images/*）固定属于 OpenAI 平台，无需通过 determineModelScope() 猜测。
+     * 支持 capability 降级：优先 API Key 账户（Native），无可用时降级 OAuth 账户（Basic）。
+     *
+     * @param group          分组实体
+     * @param model          请求的图片模型名称
+     * @param capability     所需能力（"images-native" 或 "images-basic"）
+     * @param excludedIds    已排除的账户 ID 集合（failover 用）
+     * @return 选中的账户，无可用时返回 null
+     */
+    public AccountEntity selectAccountForImages(GroupEntity group, String model,
+                                                  String capability, Set<Long> excludedIds) {
+        if (group == null || group.getId() == null) {
+            log.warn("Group is null or has no ID, cannot select image account");
+            return null;
+        }
+
+        List<AccountGroupEntity> links = accountGroupRepository.findByGroupIdOrderByPriority(group.getId());
+        if (links.isEmpty()) {
+            log.warn("No accounts bound to group: group_id={}", group.getId());
+            return null;
+        }
+
+        // Step 1: 过滤可用账户 —— 必须属于 OpenAI 平台
+        List<Candidate> candidates = new ArrayList<>();
+        for (AccountGroupEntity link : links) {
+            AccountEntity account = accountRepository.findById(link.getAccountId())
+                    .filter(a -> a.getDeletedAt() == null)
+                    .orElse(null);
+
+            if (account == null) continue;
+            // 图片 API 固定走 OpenAI 平台
+            if (account.getPlatform() != Platform.OPENAI) continue;
+            // 排除已失败的账户（failover 用）
+            if (excludedIds != null && excludedIds.contains(account.getId())) continue;
+            if (!account.isActive()) continue;
+            if (!account.isSchedulable()) continue;
+            if (account.isRateLimited()) continue;
+            if (account.isOverloaded()) continue;
+            // 如果账户有模型白名单，检查模型是否在白名单中
+            if (model != null && !isModelSupportedByAccount(account, model)) continue;
+
+            // 根据 capability 过滤账户类型
+            // Native 路径：需要 API Key 类型账户
+            // Basic 路径：需要 OAuth 类型账户
+            String accountType = account.getType() != null ? account.getType().name() : "";
+            if ("images-native".equals(capability)) {
+                if (!"API_KEY".equals(accountType) && !"UPSTREAM".equals(accountType)) continue;
+            } else if ("images-basic".equals(capability)) {
+                if (!"OAUTH".equals(accountType) && !"SETUP_TOKEN".equals(accountType)) continue;
+            }
+
+            double loadRate = calcLoadRate(account);
+            candidates.add(new Candidate(account, link.getPriority(), loadRate));
+        }
+
+        if (candidates.isEmpty()) {
+            log.debug("No available image accounts: group_id={}, capability={}", group.getId(), capability);
+            return null;
+        }
+
+        // Step 2: 排序 —— 优先级(高→低) → 负载率(低→高) → 最后使用时间(远→近)
+        candidates.sort(Comparator
+                .comparingInt(Candidate::priority).reversed()
+                .thenComparingDouble(Candidate::loadRate)
+                .thenComparing(c -> c.account.getLastUsedAt() == null
+                        ? Instant.EPOCH : c.account.getLastUsedAt()));
+
+        AccountEntity selected = candidates.get(0).account;
+        log.info("Image account selected: account_id={}, name={}, type={}, capability={}, load_rate={}",
+                selected.getId(), selected.getName(), selected.getType(), capability,
+                String.format("%.2f", candidates.get(0).loadRate));
+        return selected;
+    }
 }

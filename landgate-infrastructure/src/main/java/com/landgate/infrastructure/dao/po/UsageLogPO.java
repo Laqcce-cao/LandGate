@@ -132,6 +132,13 @@ public class UsageLogPO {
     /** 客户端 IP */
     private String ipAddress;
 
+    /** 图片生成数量 */
+    @Builder.Default
+    private Integer imageCount = 0;
+
+    /** 图片尺寸等级（1K / 2K / 4K） */
+    private String imageSize;
+
     /** 创建时间 */
     private Instant createdAt;
 }

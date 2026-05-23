@@ -36,6 +36,8 @@
         <result column="first_token_ms"          property="firstTokenMs"/>
         <result column="user_agent"              property="userAgent"/>
         <result column="ip_address"              property="ipAddress"/>
+        <result column="image_count"             property="imageCount"/>
+        <result column="image_size"             property="imageSize"/>
         <result column="created_at"              property="createdAt"/>
     </resultMap>
 
@@ -54,7 +56,8 @@
             input_cost, output_cost, cache_creation_cost, cache_read_cost,
             cache_creation_5m_cost, cache_creation_1h_cost,
             total_cost, actual_cost, rate_multiplier, account_rate_multiplier,
-            stream, duration_ms, first_token_ms, user_agent, ip_address, created_at
+            stream, duration_ms, first_token_ms, user_agent, ip_address,
+            image_count, image_size, created_at
         ) VALUES (
             #{userId}, #{apiKeyId}, #{accountId}, #{groupId}, #{subscriptionId},
             #{requestId}, #{model}, #{platform}, #{requestedModel}, #{upstreamModel}, #{billingMode},
@@ -63,7 +66,8 @@
             #{inputCost}, #{outputCost}, #{cacheCreationCost}, #{cacheReadCost},
             #{cacheCreation5mCost}, #{cacheCreation1hCost},
             #{totalCost}, #{actualCost}, #{rateMultiplier}, #{accountRateMultiplier},
-            #{stream}, #{durationMs}, #{firstTokenMs}, #{userAgent}, #{ipAddress}, NOW()
+            #{stream}, #{durationMs}, #{firstTokenMs}, #{userAgent}, #{ipAddress},
+            #{imageCount}, #{imageSize}, NOW()
         )
     </insert>
 

@@ -8,6 +8,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import com.landgate.domain.group.model.entity.GroupEntity;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.UUID;
@@ -137,6 +139,118 @@ public class BillingDomainService {
                 usage.getCacheCreation5mTokens(), usage.getCacheCreation1hTokens(),
                 totalCost, actualCost);
         return logEntry;
+    }
+
+    /** 图片 1K 默认单价（USD） */
+    private static final BigDecimal DEFAULT_IMAGE_PRICE_1K = new BigDecimal("0.04");
+    /** 图片 2K 尺寸倍率 */
+    private static final BigDecimal SIZE_MULTIPLIER_2K = new BigDecimal("1.5");
+    /** 图片 4K 尺寸倍率 */
+    private static final BigDecimal SIZE_MULTIPLIER_4K = new BigDecimal("2.0");
+
+    /**
+     * 图片生成计费 —— 按图片数量和尺寸等级计算费用。
+     * <p>
+     * 定价优先级：
+     * <ol>
+     *   <li>组级自定义价格（imagePrice1k / imagePrice2k / imagePrice4k）</li>
+     *   <li>硬编码默认价格 $0.04 / 张（1K）</li>
+     * </ol>
+     * 尺寸倍率：1K = 1x, 2K = 1.5x, 4K = 2x。
+     * 实际费用 = 总费用 × 倍率（rateMultiplier）。
+     *
+     * @param model           模型名称
+     * @param imageSize       图片尺寸等级（"1K" / "2K" / "4K"）
+     * @param imageCount      生成的图片数量
+     * @param group           分组实体（用于获取组级图片定价）
+     * @param rateMultiplier  费率倍率
+     * @param userId          用户 ID
+     * @param apiKeyId        API Key ID
+     * @param accountId       上游账号 ID
+     * @param requestId       请求唯一标识
+     * @param stream          是否流式请求
+     * @param durationMs      请求耗时（毫秒）
+     * @param userAgent       客户端 User-Agent
+     * @param ipAddress       客户端 IP 地址
+     * @return 保存后的用量日志实体
+     */
+    public UsageLogEntity calculateImageCost(String model, String imageSize, int imageCount,
+                                              GroupEntity group, BigDecimal rateMultiplier,
+                                              Long userId, Long apiKeyId, Long accountId,
+                                              String requestId, boolean stream, long durationMs,
+                                              String userAgent, String ipAddress) {
+        // 获取图片单价（优先组级定价，兜底默认价格）
+        BigDecimal unitPrice = resolveImageUnitPrice(group, imageSize);
+
+        // 计算尺寸倍率
+        BigDecimal sizeMultiplier = getSizeMultiplier(imageSize);
+
+        // 总费用 = 单价 × 图片数量 × 尺寸倍率
+        BigDecimal totalCost = unitPrice.multiply(BigDecimal.valueOf(imageCount))
+                .multiply(sizeMultiplier)
+                .setScale(10, RoundingMode.HALF_UP);
+
+        // 实际费用 = 总费用 × 倍率
+        BigDecimal multiplier = rateMultiplier != null && rateMultiplier.compareTo(BigDecimal.ZERO) >= 0
+                ? rateMultiplier : BigDecimal.ZERO;
+        BigDecimal actualCost = totalCost.multiply(multiplier).setScale(10, RoundingMode.HALF_UP);
+
+        UsageLogEntity logEntry = UsageLogEntity.builder()
+                .requestId(requestId != null ? requestId : UUID.randomUUID().toString())
+                .userId(userId).apiKeyId(apiKeyId).accountId(accountId)
+                .groupId(group != null ? group.getId() : null)
+                .model(model).platform("OPENAI").billingMode("image")
+                .imageCount(imageCount).imageSize(imageSize)
+                .totalCost(totalCost).actualCost(actualCost)
+                .rateMultiplier(multiplier.setScale(4, RoundingMode.HALF_UP))
+                .accountRateMultiplier(BigDecimal.ONE)
+                .stream(stream).durationMs((int) durationMs)
+                .userAgent(userAgent).ipAddress(ipAddress)
+                .build();
+
+        usageLogRepository.save(logEntry);
+        log.info("Image billing: model={}, size={}, count={}, unit_price=${}, total=${}, actual=${}",
+                model, imageSize, imageCount, unitPrice, totalCost, actualCost);
+        return logEntry;
+    }
+
+    /**
+     * 解析图片单价 —— 优先组级定价，兜底默认价格。
+     */
+    private BigDecimal resolveImageUnitPrice(GroupEntity group, String imageSize) {
+        if (group != null) {
+            BigDecimal groupPrice = getGroupImagePrice(group, imageSize);
+            if (groupPrice != null && groupPrice.compareTo(BigDecimal.ZERO) > 0) {
+                return groupPrice;
+            }
+        }
+        // 兜底：1K 默认 $0.04，其他尺寸通过倍率调整
+        return DEFAULT_IMAGE_PRICE_1K;
+    }
+
+    /**
+     * 从分组配置获取指定尺寸的图片单价。
+     */
+    private BigDecimal getGroupImagePrice(GroupEntity group, String imageSize) {
+        if (imageSize == null) return null;
+        return switch (imageSize) {
+            case "1K" -> group.getImagePrice1k();
+            case "2K" -> group.getImagePrice2k();
+            case "4K" -> group.getImagePrice4k();
+            default -> null;
+        };
+    }
+
+    /**
+     * 获取尺寸倍率：1K = 1x, 2K = 1.5x, 4K = 2x。
+     */
+    private BigDecimal getSizeMultiplier(String imageSize) {
+        if (imageSize == null) return BigDecimal.ONE;
+        return switch (imageSize) {
+            case "2K" -> SIZE_MULTIPLIER_2K;
+            case "4K" -> SIZE_MULTIPLIER_4K;
+            default -> BigDecimal.ONE;
+        };
     }
 
     /**
