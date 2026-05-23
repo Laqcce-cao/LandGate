@@ -14,7 +14,6 @@ import java.util.Map;
 /**
  * 模型价格管理控制器 —— 模型定价的 CRUD 管理接口。
  * <p>
- * 支持全局价格（groupId=null）和分组覆盖价格（groupId=分组ID）。
  * 路由前缀：{@code /api/v1/admin/model-prices}，需要管理员 JWT 认证。
  */
 @Slf4j
@@ -42,10 +41,10 @@ public class ModelPriceAdminController {
 
     @PostMapping
     public ResponseEntity<?> create(@RequestBody ModelPriceEntity price) {
-        log.info("Create model price: model={}, platform={}, group_id={}",
-                price.getModel(), price.getPlatform(), price.getGroupId());
+        log.info("Create model price: model={}, platform={}",
+                price.getModel(), price.getPlatform());
         ModelPriceEntity created = modelPriceRepository.save(price);
-        pricingDomainService.invalidateCache(price.getModel(), price.getGroupId());
+        pricingDomainService.invalidateCache(price.getModel());
         return ResponseEntity.ok(created);
     }
 
@@ -58,10 +57,9 @@ public class ModelPriceAdminController {
         }
         updates.setId(id);
         ModelPriceEntity updated = modelPriceRepository.save(updates);
-        pricingDomainService.invalidateCache(existing.getModel(), existing.getGroupId());
-        if (!existing.getModel().equals(updates.getModel())
-                || !java.util.Objects.equals(existing.getGroupId(), updates.getGroupId())) {
-            pricingDomainService.invalidateCache(updates.getModel(), updates.getGroupId());
+        pricingDomainService.invalidateCache(existing.getModel());
+        if (!existing.getModel().equals(updates.getModel())) {
+            pricingDomainService.invalidateCache(updates.getModel());
         }
         return ResponseEntity.ok(updated);
     }
@@ -74,7 +72,7 @@ public class ModelPriceAdminController {
             return ResponseEntity.notFound().build();
         }
         modelPriceRepository.deleteById(id);
-        pricingDomainService.invalidateCache(existing.getModel(), existing.getGroupId());
+        pricingDomainService.invalidateCache(existing.getModel());
         return ResponseEntity.ok(Map.of("success", true));
     }
 

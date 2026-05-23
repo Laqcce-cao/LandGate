@@ -53,9 +53,6 @@ public class ModelPricePO extends BasePO {
     @Builder.Default
     private Boolean supportsCacheBreakdown = false;
 
-    /** 分组 ID（NULL = 全局默认价格） */
-    private Long groupId;
-
     /** 是否启用 */
     @Builder.Default
     private Boolean enabled = true;

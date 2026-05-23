@@ -30,8 +30,6 @@ public class ModelPriceEntity {
     @Builder.Default
     private Boolean supportsCacheBreakdown = false;
 
-    private Long groupId;
-
     @Builder.Default
     private Boolean enabled = true;
     private String notes;
@@ -40,11 +38,4 @@ public class ModelPriceEntity {
     private Instant updatedAt;
     private Instant deletedAt;
 
-    public boolean isGroupOverride() {
-        return groupId != null;
-    }
-
-    public boolean isGlobal() {
-        return groupId == null;
-    }
 }

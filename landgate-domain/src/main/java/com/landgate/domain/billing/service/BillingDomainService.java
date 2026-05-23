@@ -64,10 +64,10 @@ public class BillingDomainService {
                                                 BigDecimal groupRateMultiplier,
                                                 boolean stream, long durationMs,
                                                 String userAgent, String ipAddress) {
-        BigDecimal inputPrice = pricingService.getInputPrice(model, groupId);
-        BigDecimal outputPrice = pricingService.getOutputPrice(model, groupId);
-        BigDecimal cacheWritePrice = pricingService.getCacheWritePrice(model, groupId);
-        BigDecimal cacheReadPrice = pricingService.getCacheReadPrice(model, groupId);
+        BigDecimal inputPrice = pricingService.getInputPrice(model);
+        BigDecimal outputPrice = pricingService.getOutputPrice(model);
+        BigDecimal cacheWritePrice = pricingService.getCacheWritePrice(model);
+        BigDecimal cacheReadPrice = pricingService.getCacheReadPrice(model);
 
         BigDecimal inputCost = inputPrice.multiply(BigDecimal.valueOf(usage.getInputTokens()))
                 .divide(ONE_MILLION, 10, RoundingMode.HALF_UP);
@@ -79,9 +79,9 @@ public class BillingDomainService {
         BigDecimal cacheCreation5mCost = BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP);
         BigDecimal cacheCreation1hCost = BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP);
 
-        boolean supportsBreakdown = pricingService.supportsCacheBreakdown(model, groupId);
-        BigDecimal cacheWrite5mPrice = pricingService.getCacheWrite5mPrice(model, groupId);
-        BigDecimal cacheWrite1hPrice = pricingService.getCacheWrite1hPrice(model, groupId);
+        boolean supportsBreakdown = pricingService.supportsCacheBreakdown(model);
+        BigDecimal cacheWrite5mPrice = pricingService.getCacheWrite5mPrice(model);
+        BigDecimal cacheWrite1hPrice = pricingService.getCacheWrite1hPrice(model);
 
         if (supportsBreakdown && (cacheWrite5mPrice.compareTo(BigDecimal.ZERO) > 0
                 || cacheWrite1hPrice.compareTo(BigDecimal.ZERO) > 0)) {

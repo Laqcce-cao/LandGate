@@ -13,7 +13,6 @@
         <result column="cache_write_5m_price" property="cacheWrite5mPrice"/>
         <result column="cache_write_1h_price" property="cacheWrite1hPrice"/>
         <result column="supports_cache_breakdown" property="supportsCacheBreakdown"/>
-        <result column="group_id"          property="groupId"/>
         <result column="enabled"           property="enabled"/>
         <result column="notes"             property="notes"/>
         <result column="created_at"        property="createdAt"/>
@@ -27,14 +26,12 @@
         SELECT * FROM model_prices WHERE id = #{id} AND deleted_at IS NULL
     </select>
 
-    <!-- 查询模型价格：优先分组覆盖（group_id 非空），回退全局默认（group_id IS NULL） -->
-    <select id="selectByModelAndGroup" resultMap="ModelPriceResultMap">
+    <!-- 根据模型名查询启用的价格 -->
+    <select id="selectByModel" resultMap="ModelPriceResultMap">
         SELECT * FROM model_prices
         WHERE model = #{model}
-          AND (group_id = #{groupId} OR group_id IS NULL)
           AND deleted_at IS NULL
           AND enabled = 1
-        ORDER BY group_id IS NULL ASC
         LIMIT 1
     </select>
 
@@ -60,11 +57,11 @@
         INSERT INTO model_prices (
             model, platform, input_price, output_price, cache_write_price, cache_read_price,
             cache_write_5m_price, cache_write_1h_price, supports_cache_breakdown,
-            group_id, enabled, notes, created_at, updated_at, deleted_at
+            enabled, notes, created_at, updated_at, deleted_at
         ) VALUES (
             #{model}, #{platform}, #{inputPrice}, #{outputPrice}, #{cacheWritePrice}, #{cacheReadPrice},
             #{cacheWrite5mPrice}, #{cacheWrite1hPrice}, #{supportsCacheBreakdown},
-            #{groupId}, #{enabled}, #{notes}, NOW(), NOW(), NULL
+            #{enabled}, #{notes}, NOW(), NOW(), NULL
         )
     </insert>
 
@@ -75,7 +72,7 @@
             cache_write_price = #{cacheWritePrice}, cache_read_price = #{cacheReadPrice},
             cache_write_5m_price = #{cacheWrite5mPrice}, cache_write_1h_price = #{cacheWrite1hPrice},
             supports_cache_breakdown = #{supportsCacheBreakdown},
-            group_id = #{groupId}, enabled = #{enabled}, notes = #{notes},
+            enabled = #{enabled}, notes = #{notes},
             updated_at = NOW()
         WHERE id = #{id}
     </update>

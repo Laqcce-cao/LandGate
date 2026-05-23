@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 模型价格查询服务 —— 替代硬编码的定价逻辑。
  * <p>
- * 通过 {@link IModelPriceRepository} 从数据库查询模型价格，支持分组覆盖（group-specific override）。
+ * 通过 {@link IModelPriceRepository} 从数据库查询模型价格。
  * 内置内存缓存（TTL 5 分钟），避免每次请求都查询数据库。
  * 缓存未命中时返回硬编码默认价格。
  */
@@ -45,72 +45,67 @@ public class ModelPricingDomainService {
     // ---- Public API ----
 
     /**
-     * 获取模型输入价格（$/百万 tokens），优先分组覆盖。
+     * 获取模型输入价格（$/百万 tokens）。
      */
-    public BigDecimal getInputPrice(String model, Long groupId) {
-        return resolve(model, groupId).inputPrice;
+    public BigDecimal getInputPrice(String model) {
+        return resolve(model).inputPrice;
     }
 
     /**
-     * 获取模型输出价格（$/百万 tokens），优先分组覆盖。
+     * 获取模型输出价格（$/百万 tokens）。
      */
-    public BigDecimal getOutputPrice(String model, Long groupId) {
-        return resolve(model, groupId).outputPrice;
+    public BigDecimal getOutputPrice(String model) {
+        return resolve(model).outputPrice;
     }
 
     /**
-     * 获取缓存写入价格（$/百万 tokens），优先分组覆盖。
+     * 获取缓存写入价格（$/百万 tokens）。
      */
-    public BigDecimal getCacheWritePrice(String model, Long groupId) {
-        return resolve(model, groupId).cacheWritePrice;
+    public BigDecimal getCacheWritePrice(String model) {
+        return resolve(model).cacheWritePrice;
     }
 
     /**
-     * 获取缓存读取价格（$/百万 tokens），优先分组覆盖。
+     * 获取缓存读取价格（$/百万 tokens）。
      */
-    public BigDecimal getCacheReadPrice(String model, Long groupId) {
-        return resolve(model, groupId).cacheReadPrice;
+    public BigDecimal getCacheReadPrice(String model) {
+        return resolve(model).cacheReadPrice;
     }
 
     /**
      * 获取 5 分钟有效期缓存写入价格（$/百万 tokens）。
      */
-    public BigDecimal getCacheWrite5mPrice(String model, Long groupId) {
-        return resolve(model, groupId).cacheWrite5mPrice;
+    public BigDecimal getCacheWrite5mPrice(String model) {
+        return resolve(model).cacheWrite5mPrice;
     }
 
     /**
      * 获取 1 小时有效期缓存写入价格（$/百万 tokens）。
      */
-    public BigDecimal getCacheWrite1hPrice(String model, Long groupId) {
-        return resolve(model, groupId).cacheWrite1hPrice;
+    public BigDecimal getCacheWrite1hPrice(String model) {
+        return resolve(model).cacheWrite1hPrice;
     }
 
     /**
      * 是否支持缓存写入 5m/1h 分类计费。
      */
-    public boolean supportsCacheBreakdown(String model, Long groupId) {
-        return resolve(model, groupId).supportsCacheBreakdown;
+    public boolean supportsCacheBreakdown(String model) {
+        return resolve(model).supportsCacheBreakdown;
     }
 
     /**
      * 解析模型的全套价格（含缓存读写 + 5m/1h），优先查缓存，未命中则查数据库。
      *
-     * @param model   模型名称
-     * @param groupId 分组 ID（null 表示全局价格）
+     * @param model 模型名称
      * @return 模型价格对象
      */
-    public Price resolve(String model, Long groupId) {
-        String key = model + ":" + (groupId != null ? groupId : "global");
-        CachedPrice cached = cache.get(key);
+    public Price resolve(String model) {
+        CachedPrice cached = cache.get(model);
         if (cached != null && Instant.now().isBefore(cached.expiresAt)) {
             return cached.price;
         }
 
-        ModelPriceEntity entity = priceRepository.findByModelAndGroup(model, groupId).orElse(null);
-        if (entity == null && groupId != null) {
-            entity = priceRepository.findByModelAndGroup(model, null).orElse(null);
-        }
+        ModelPriceEntity entity = priceRepository.findByModel(model).orElse(null);
 
         Price price = entity != null
                 ? new Price(entity.getInputPrice(), entity.getOutputPrice(),
@@ -119,20 +114,18 @@ public class ModelPricingDomainService {
                             Boolean.TRUE.equals(entity.getSupportsCacheBreakdown()))
                 : DEFAULT_PRICE;
 
-        cache.put(key, new CachedPrice(price, Instant.now().plus(CACHE_TTL)));
+        cache.put(model, new CachedPrice(price, Instant.now().plus(CACHE_TTL)));
         return price;
     }
 
     /**
-     * 清除指定模型和分组的缓存 —— 管理员修改价格后调用。
+     * 清除指定模型的缓存 —— 管理员修改价格后调用。
      *
-     * @param model   模型名称
-     * @param groupId 分组 ID
+     * @param model 模型名称
      */
-    public void invalidateCache(String model, Long groupId) {
-        String key = model + ":" + (groupId != null ? groupId : "global");
-        cache.remove(key);
-        log.debug("Price cache invalidated: key={}", key);
+    public void invalidateCache(String model) {
+        cache.remove(model);
+        log.debug("Price cache invalidated: model={}", model);
     }
 
     /**
