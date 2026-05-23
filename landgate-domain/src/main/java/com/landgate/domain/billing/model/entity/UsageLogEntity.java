@@ -82,7 +82,6 @@ public class UsageLogEntity {
 
     @Builder.Default
     private BigDecimal rateMultiplier = BigDecimal.ONE;
-    private BigDecimal accountRateMultiplier;
 
     @Builder.Default
     private Boolean stream = false;

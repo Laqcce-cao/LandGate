@@ -30,7 +30,6 @@
         <result column="total_cost"              property="totalCost"/>
         <result column="actual_cost"             property="actualCost"/>
         <result column="rate_multiplier"         property="rateMultiplier"/>
-        <result column="account_rate_multiplier" property="accountRateMultiplier"/>
         <result column="stream"                  property="stream"/>
         <result column="duration_ms"             property="durationMs"/>
         <result column="first_token_ms"          property="firstTokenMs"/>
@@ -55,7 +54,7 @@
             cache_creation_5m_tokens, cache_creation_1h_tokens,
             input_cost, output_cost, cache_creation_cost, cache_read_cost,
             cache_creation_5m_cost, cache_creation_1h_cost,
-            total_cost, actual_cost, rate_multiplier, account_rate_multiplier,
+            total_cost, actual_cost, rate_multiplier,
             stream, duration_ms, first_token_ms, user_agent, ip_address,
             image_count, image_size, created_at
         ) VALUES (
@@ -65,7 +64,7 @@
             #{cacheCreation5mTokens}, #{cacheCreation1hTokens},
             #{inputCost}, #{outputCost}, #{cacheCreationCost}, #{cacheReadCost},
             #{cacheCreation5mCost}, #{cacheCreation1hCost},
-            #{totalCost}, #{actualCost}, #{rateMultiplier}, #{accountRateMultiplier},
+            #{totalCost}, #{actualCost}, #{rateMultiplier},
             #{stream}, #{durationMs}, #{firstTokenMs}, #{userAgent}, #{ipAddress},
             #{imageCount}, #{imageSize}, NOW()
         )

@@ -14,7 +14,6 @@
         <result column="concurrency"                 property="concurrency"/>
         <result column="load_factor"                 property="loadFactor"/>
         <result column="priority"                    property="priority"/>
-        <result column="rate_multiplier"             property="rateMultiplier"/>
         <result column="status"                      property="status"/>
         <result column="error_message"               property="errorMessage"/>
         <result column="last_used_at"                property="lastUsedAt"/>
@@ -44,7 +43,7 @@
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO accounts (
             name, notes, platform, type, credentials, extra, proxy_id,
-            concurrency, load_factor, priority, rate_multiplier, status, error_message,
+            concurrency, load_factor, priority, status, error_message,
             last_used_at, expires_at, auto_pause_on_expired, schedulable,
             rate_limited_at, rate_limit_reset_at, overload_until,
             temp_unschedulable_until, temp_unschedulable_reason,
@@ -53,7 +52,7 @@
             created_at, updated_at, deleted_at
         ) VALUES (
             #{name}, #{notes}, #{platform}, #{type}, #{credentials}, #{extra}, #{proxyId},
-            #{concurrency}, #{loadFactor}, #{priority}, #{rateMultiplier}, #{status}, #{errorMessage},
+            #{concurrency}, #{loadFactor}, #{priority}, #{status}, #{errorMessage},
             #{lastUsedAt}, #{expiresAt}, #{autoPauseOnExpired}, #{schedulable},
             #{rateLimitedAt}, #{rateLimitResetAt}, #{overloadUntil},
             #{tempUnschedulableUntil}, #{tempUnschedulableReason},
@@ -68,7 +67,7 @@
             name = #{name}, notes = #{notes}, platform = #{platform}, type = #{type},
             credentials = #{credentials}, extra = #{extra}, proxy_id = #{proxyId},
             concurrency = #{concurrency}, load_factor = #{loadFactor},
-            priority = #{priority}, rate_multiplier = #{rateMultiplier},
+            priority = #{priority},
             status = #{status}, error_message = #{errorMessage},
             last_used_at = #{lastUsedAt}, expires_at = #{expiresAt},
             auto_pause_on_expired = #{autoPauseOnExpired}, schedulable = #{schedulable},

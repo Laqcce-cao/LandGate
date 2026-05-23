@@ -237,7 +237,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             var logEntry = billingDomainService.calculateAndBuildLog(
                                     usage, model, getPlatformName(),
                                     userId, apiKeyId, account.getId(), group.getId(),
-                                    account.getRateMultiplier(),
+                                    group.getRateMultiplier(),
                                     stream, durationMs,
                                     request.getHeader("User-Agent"),
                                     request.getRemoteAddr());

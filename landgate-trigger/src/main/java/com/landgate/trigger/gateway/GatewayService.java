@@ -89,7 +89,7 @@ public class GatewayService {
         }
 
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, platform={}",
-                apiKeyId, userId, group.getId(), group.getName(), group.getPlatform());
+                apiKeyId, userId, group.getId(), group.getName());
 
         // Step 3: Session stickiness
         String bodyUserId = transformer.extractUserId(body);
@@ -208,7 +208,7 @@ public class GatewayService {
                             var log = billingDomainService.calculateAndBuildLog(
                                     usage, model, "ANTHROPIC",
                                     userId, apiKeyId, account.getId(), group.getId(),
-                                    account.getRateMultiplier(),
+                                    group.getRateMultiplier(),
                                     stream, durationMs,
                                     request.getHeader("User-Agent"),
                                     request.getRemoteAddr());

@@ -1,8 +1,6 @@
 package com.landgate.trigger.http.gateway;
 
 import com.landgate.trigger.gateway.IGatewayHandler;
-import com.landgate.domain.group.adapter.repository.IGroupRepository;
-import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.trigger.gateway.GatewayHandlerFactory;
 import com.landgate.types.enums.Platform;
 import jakarta.servlet.http.HttpServletRequest;
@@ -22,7 +20,6 @@ import java.io.IOException;
 public class AntigravityGatewayController {
 
     private final GatewayHandlerFactory factory;
-    private final IGroupRepository groupRepository;
 
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
     private static final String ATTR_GATEWAY_UPSTREAM_PATH = "gateway_upstream_path";
@@ -66,12 +63,12 @@ public class AntigravityGatewayController {
     }
 
     private IGatewayHandler resolveHandler(HttpServletRequest request) {
-        Long groupId = (Long) request.getAttribute("group_id");
-        if (groupId == null) return null;
-        GroupEntity group = groupRepository.findById(groupId)
-                .filter(g -> g.getDeletedAt() == null)
-                .orElse(null);
-        if (group == null) return null;
-        return factory.getHandler(group.getPlatform());
+        // 根据 URL 路径决定平台处理器
+        String path = request.getServletPath();
+        if (path.contains("/chat/completions")) {
+            return factory.getHandler(Platform.OPENAI);
+        }
+        // 默认使用 Anthropic 处理器（/v1/messages）
+        return factory.getHandler(Platform.ANTHROPIC);
     }
 }

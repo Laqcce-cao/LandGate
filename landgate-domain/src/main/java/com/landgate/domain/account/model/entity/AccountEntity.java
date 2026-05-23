@@ -5,7 +5,6 @@ import com.landgate.types.enums.Platform;
 import com.landgate.types.enums.Status;
 import lombok.*;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
@@ -52,9 +51,6 @@ public class AccountEntity {
 
     @Builder.Default
     private Integer priority = 50;
-
-    @Builder.Default
-    private BigDecimal rateMultiplier = BigDecimal.ONE;
 
     @Builder.Default
     private Status status = Status.ACTIVE;

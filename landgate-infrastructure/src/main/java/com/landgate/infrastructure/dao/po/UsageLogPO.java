@@ -113,9 +113,6 @@ public class UsageLogPO {
     @Builder.Default
     private BigDecimal rateMultiplier = BigDecimal.ONE;
 
-    /** 账号倍率 */
-    private BigDecimal accountRateMultiplier;
-
     /** 是否流式请求 */
     @Builder.Default
     private Boolean stream = false;

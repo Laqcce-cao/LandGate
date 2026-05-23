@@ -42,7 +42,7 @@ public class BillingDomainService {
      * 计算费用并保存用量日志 —— 协议无关的统一入口。
      * <p>
      * 价格单位为 $/百万 tokens，费用 = 价格 × token数 ÷ 1,000,000。
-     * 实际费用 = 总费用 × 账号倍率（accountRateMultiplier）。
+     * 实际费用 = 总费用 × 分组倍率（groupRateMultiplier）。
      *
      * @param usage                  Token 用量统计
      * @param model                  使用的模型名称
@@ -51,7 +51,7 @@ public class BillingDomainService {
      * @param apiKeyId               API Key ID
      * @param accountId              上游账号 ID
      * @param groupId                分组 ID
-     * @param accountRateMultiplier  账号倍率
+     * @param groupRateMultiplier    分组倍率（业务加价）
      * @param stream                 是否流式请求
      * @param durationMs             请求耗时（毫秒）
      * @param userAgent              客户端 User-Agent
@@ -61,7 +61,7 @@ public class BillingDomainService {
     public UsageLogEntity calculateAndBuildLog(UsageTokens usage, String model,
                                                 String platform, Long userId, Long apiKeyId,
                                                 Long accountId, Long groupId,
-                                                BigDecimal accountRateMultiplier,
+                                                BigDecimal groupRateMultiplier,
                                                 boolean stream, long durationMs,
                                                 String userAgent, String ipAddress) {
         BigDecimal inputPrice = pricingService.getInputPrice(model, groupId);
@@ -107,8 +107,8 @@ public class BillingDomainService {
                 .divide(ONE_MILLION, 10, RoundingMode.HALF_UP);
         BigDecimal totalCost = inputCost.add(outputCost).add(cacheCreationCost).add(cacheReadCost);
 
-        BigDecimal acctMultiplier = accountRateMultiplier != null ? accountRateMultiplier : BigDecimal.ONE;
-        BigDecimal actualCost = totalCost.multiply(acctMultiplier).setScale(10, RoundingMode.HALF_UP);
+        BigDecimal groupMultiplier = groupRateMultiplier != null ? groupRateMultiplier : BigDecimal.ONE;
+        BigDecimal actualCost = totalCost.multiply(groupMultiplier).setScale(10, RoundingMode.HALF_UP);
 
         UsageLogEntity logEntry = UsageLogEntity.builder()
                 .requestId(UUID.randomUUID().toString())
@@ -126,8 +126,7 @@ public class BillingDomainService {
                 .cacheCreation1hCost(cacheCreation1hCost.setScale(10, RoundingMode.HALF_UP))
                 .totalCost(totalCost.setScale(10, RoundingMode.HALF_UP))
                 .actualCost(actualCost)
-                .rateMultiplier(BigDecimal.ONE.setScale(4, RoundingMode.HALF_UP))
-                .accountRateMultiplier(acctMultiplier)
+                .rateMultiplier(groupMultiplier.setScale(4, RoundingMode.HALF_UP))
                 .stream(stream).durationMs((int) durationMs)
                 .userAgent(userAgent).ipAddress(ipAddress)
                 .build();
@@ -203,7 +202,6 @@ public class BillingDomainService {
                 .imageCount(imageCount).imageSize(imageSize)
                 .totalCost(totalCost).actualCost(actualCost)
                 .rateMultiplier(multiplier.setScale(4, RoundingMode.HALF_UP))
-                .accountRateMultiplier(BigDecimal.ONE)
                 .stream(stream).durationMs((int) durationMs)
                 .userAgent(userAgent).ipAddress(ipAddress)
                 .build();
@@ -262,7 +260,7 @@ public class BillingDomainService {
      * @param apiKeyId              API Key ID
      * @param accountId             上游账号 ID
      * @param groupId               分组 ID
-     * @param accountRateMultiplier 账号倍率
+     * @param groupRateMultiplier   分组倍率（业务加价）
      * @param stream                是否流式请求
      * @param durationMs            请求耗时（毫秒）
      * @param userAgent             客户端 User-Agent
@@ -271,11 +269,11 @@ public class BillingDomainService {
      */
     public UsageLogEntity calculateAndBuildLog(ClaudeUsageVO usage, String model,
                                                 Long userId, Long apiKeyId, Long accountId, Long groupId,
-                                                BigDecimal accountRateMultiplier,
+                                                BigDecimal groupRateMultiplier,
                                                 boolean stream, long durationMs,
                                                 String userAgent, String ipAddress) {
         return calculateAndBuildLog(UsageTokens.fromClaude(usage), model, "ANTHROPIC",
                 userId, apiKeyId, accountId, groupId,
-                accountRateMultiplier, stream, durationMs, userAgent, ipAddress);
+                groupRateMultiplier, stream, durationMs, userAgent, ipAddress);
     }
 }

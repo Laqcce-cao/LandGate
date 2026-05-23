@@ -30,14 +30,6 @@ public interface IGroupRepository {
     Optional<GroupEntity> findByName(String name);
 
     /**
-     * 根据平台查询分组列表
-     *
-     * @param platform 平台标识
-     * @return 该平台下的分组列表
-     */
-    List<GroupEntity> findByPlatform(String platform);
-
-    /**
      * 根据状态查询分组列表
      *
      * @param status 分组状态

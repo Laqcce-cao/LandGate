@@ -83,7 +83,6 @@ public class AccountDomainService {
         if (updates.getProxyId() != null) existing.setProxyId(updates.getProxyId());
         if (updates.getConcurrency() != null) existing.setConcurrency(updates.getConcurrency());
         if (updates.getPriority() != null) existing.setPriority(updates.getPriority());
-        if (updates.getRateMultiplier() != null) existing.setRateMultiplier(updates.getRateMultiplier());
         if (updates.getLoadFactor() != null) existing.setLoadFactor(updates.getLoadFactor());
         if (updates.getSchedulable() != null) existing.setSchedulable(updates.getSchedulable());
         if (updates.getExpiresAt() != null) existing.setExpiresAt(updates.getExpiresAt());

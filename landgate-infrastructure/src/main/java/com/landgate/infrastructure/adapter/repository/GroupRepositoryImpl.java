@@ -5,7 +5,6 @@ import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.infrastructure.adapter.mapper.GroupMapper;
 import com.landgate.infrastructure.dao.IGroupDao;
 import com.landgate.infrastructure.dao.po.GroupPO;
-import com.landgate.types.enums.Platform;
 import com.landgate.types.enums.Status;
 import com.landgate.types.enums.SubscriptionType;
 import lombok.RequiredArgsConstructor;
@@ -40,14 +39,6 @@ public class GroupRepositoryImpl implements IGroupRepository {
     public Optional<GroupEntity> findByName(String name) {
         return Optional.ofNullable(groupDao.selectByName(name))
                 .map(groupMapper::toEntity);
-    }
-
-    @Override
-    public List<GroupEntity> findByPlatform(String platform) {
-        Platform p = Platform.valueOf(platform.toUpperCase());
-        return groupDao.selectByPlatform(p.name()).stream()
-                .map(groupMapper::toEntity)
-                .collect(Collectors.toList());
     }
 
     @Override
