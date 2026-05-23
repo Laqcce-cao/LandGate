@@ -1,9 +1,11 @@
 package com.landgate.domain.billing.adapter.repository;
 
+import com.landgate.api.billing.dto.DailyUsageStats;
 import com.landgate.api.billing.dto.UserUsageSummary;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 
@@ -111,4 +113,17 @@ public interface IUsageLogRepository {
      * @return 用户用量汇总列表
      */
     List<UserUsageSummary> aggregateUsageByUser(Instant start, Instant end, String sortBy, String sortDir);
+
+    /**
+     * 按天聚合指定用户的用量统计（指定日期范围）。
+     * <p>
+     * 用于前端 Token 用量趋势图表，后端直接返回按天分组的结果，
+     * 避免前端拉取大量原始日志后二次聚合。
+     *
+     * @param userId 用户 ID
+     * @param start  起始日期（包含）
+     * @param end    结束日期（不包含）
+     * @return 按天聚合的用量统计列表
+     */
+    List<DailyUsageStats> aggregateByUserAndDate(Long userId, LocalDate start, LocalDate end);
 }

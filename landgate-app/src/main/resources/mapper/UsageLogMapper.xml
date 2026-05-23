@@ -153,4 +153,34 @@
             ${sortDir}
     </select>
 
+    <!-- ==================== 按天聚合统计 ==================== -->
+
+    <resultMap id="DailyStatsResultMap" type="com.landgate.infrastructure.dao.po.DailyUsageStatsPO">
+        <result column="date"              property="date"/>
+        <result column="input_tokens"      property="inputTokens"/>
+        <result column="output_tokens"     property="outputTokens"/>
+        <result column="cache_read_tokens" property="cacheReadTokens"/>
+        <result column="call_count"        property="callCount"/>
+    </resultMap>
+
+    <!--
+        按天聚合指定用户的用量统计。
+        走 idx_usage_logs_user_created (user_id, created_at) 复合索引，
+        数据库直接完成 GROUP BY，返回每天一条记录，无需前端二次聚合。
+    -->
+    <select id="aggregateByUserAndDate" resultMap="DailyStatsResultMap">
+        SELECT
+            DATE(created_at) AS date,
+            COALESCE(SUM(input_tokens), 0)      AS input_tokens,
+            COALESCE(SUM(output_tokens), 0)      AS output_tokens,
+            COALESCE(SUM(cache_read_tokens), 0)  AS cache_read_tokens,
+            COUNT(*) AS call_count
+        FROM usage_logs
+        WHERE user_id = #{userId}
+          AND created_at &gt;= #{start}
+          AND created_at &lt; #{end}
+        GROUP BY DATE(created_at)
+        ORDER BY date
+    </select>
+
 </mapper>

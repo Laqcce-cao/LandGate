@@ -1,5 +1,6 @@
 package com.landgate.infrastructure.dao;
 
+import com.landgate.infrastructure.dao.po.DailyUsageStatsPO;
 import com.landgate.infrastructure.dao.po.UsageLogPO;
 import com.landgate.infrastructure.dao.po.UserUsageSummaryPO;
 import org.apache.ibatis.annotations.Mapper;
@@ -53,5 +54,22 @@ public interface IUsageLogDao {
             @Param("end") Instant end,
             @Param("sortBy") String sortBy,
             @Param("sortDir") String sortDir
+    );
+
+    /**
+     * 按天聚合指定用户的用量统计（支持日期范围）。
+     * <p>
+     * 用于前端 Token 用量趋势图表，后端直接返回按 DATE(created_at) 分组的结果，
+     * 走 {@code idx_usage_logs_user_created (user_id, created_at)} 复合索引。
+     *
+     * @param userId 用户 ID
+     * @param start  起始日期（包含，格式 yyyy-MM-dd）
+     * @param end    结束日期（不包含，格式 yyyy-MM-dd）
+     * @return 按天聚合的用量列表
+     */
+    List<DailyUsageStatsPO> aggregateByUserAndDate(
+            @Param("userId") Long userId,
+            @Param("start") String start,
+            @Param("end") String end
     );
 }

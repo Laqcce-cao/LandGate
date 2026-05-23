@@ -1,16 +1,19 @@
 package com.landgate.infrastructure.adapter.repository;
 
+import com.landgate.api.billing.dto.DailyUsageStats;
 import com.landgate.api.billing.dto.UserUsageSummary;
 import com.landgate.domain.billing.adapter.repository.IUsageLogRepository;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.infrastructure.adapter.mapper.UsageLogMapper;
 import com.landgate.infrastructure.dao.IUsageLogDao;
+import com.landgate.infrastructure.dao.po.DailyUsageStatsPO;
 import com.landgate.infrastructure.dao.po.UsageLogPO;
 import com.landgate.infrastructure.dao.po.UserUsageSummaryPO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -105,6 +108,13 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
                 .collect(Collectors.toList());
     }
 
+    @Override
+    public List<DailyUsageStats> aggregateByUserAndDate(Long userId, LocalDate start, LocalDate end) {
+        return usageLogDao.aggregateByUserAndDate(userId, start.toString(), end.toString()).stream()
+                .map(this::toDailyUsageStats)
+                .collect(Collectors.toList());
+    }
+
     private UserUsageSummary toUserUsageSummary(UserUsageSummaryPO po) {
         return new UserUsageSummary(
                 po.getUserId(),
@@ -112,6 +122,19 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
                 po.getEmail(),
                 po.getTotalCost(),
                 po.getTotalTokens(),
+                po.getCallCount()
+        );
+    }
+
+    /**
+     * 将按天聚合的 PO 转换为领域 DTO。
+     */
+    private DailyUsageStats toDailyUsageStats(DailyUsageStatsPO po) {
+        return new DailyUsageStats(
+                po.getDate(),
+                po.getInputTokens(),
+                po.getOutputTokens(),
+                po.getCacheReadTokens(),
                 po.getCallCount()
         );
     }
