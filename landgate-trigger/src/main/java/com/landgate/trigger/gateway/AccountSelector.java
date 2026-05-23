@@ -194,21 +194,27 @@ public class AccountSelector {
     /**
      * 检查号是否支持指定模型。
      * <p>
-     * 若 {@code supportedModels} 为 {@code null} 或空 JSON 数组，表示不限制，返回 {@code true}。
-     * 否则 model 必须在白名单中。
+     * {@code null} / 空字符串 / {@code "[]"}（空数组）→ 不支持任何模型，返回 {@code false}。
+     * {@code ["*"]} → 通配符，支持所有模型，返回 {@code true}。
+     * 其他 → model 必须在白名单中。
      */
     private boolean isModelSupportedByAccount(AccountEntity account, String model) {
         String supportedJson = account.getSupportedModels();
+        // null / 空字符串 / 空数组 [] = 不支持任何模型
         if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {
-            return true;
+            return false;
         }
         try {
             List<String> supported = OBJECT_MAPPER.readValue(
                     supportedJson, new TypeReference<List<String>>() {});
+            // ["*"] 通配符 = 支持所有模型
+            if (supported.contains("*")) {
+                return true;
+            }
             return supported.contains(model);
         } catch (Exception e) {
             log.debug("Failed to parse supportedModels for account: account_id={}", account.getId(), e);
-            return true; // 解析失败时放行
+            return false;
         }
     }
 

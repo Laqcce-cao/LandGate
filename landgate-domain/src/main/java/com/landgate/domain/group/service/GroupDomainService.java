@@ -265,13 +265,18 @@ public class GroupDomainService {
             if (account == null) continue;
 
             String supportedJson = account.getSupportedModels();
+            // null / 空字符串 / [] 空数组 = 该号未配置或不支持任何模型 → 跳过
             if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {
-                return WILDCARD_ALL; // 有一个不限制 → 分组不限制
+                continue;
             }
 
             try {
                 List<String> models = OBJECT_MAPPER.readValue(
                         supportedJson, new TypeReference<List<String>>() {});
+                // ["*"] 通配符 = 该号不限制 → 分组也不限制
+                if (models.contains("*")) {
+                    return WILDCARD_ALL;
+                }
                 allModels.addAll(models);
             } catch (Exception e) {
                 log.debug("Failed to parse supportedModels for account: account_id={}", account.getId(), e);
