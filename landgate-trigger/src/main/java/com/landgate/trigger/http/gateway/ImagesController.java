@@ -148,6 +148,17 @@ public class ImagesController {
             return;
         }
 
+        // ---- Step 3.5: API Key 配额校验 ----
+        try {
+            billingDomainService.checkQuota(apiKeyId);
+        } catch (com.landgate.types.exception.AuthenticationException e) {
+            response.setStatus(429);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(
+                    "{\"error\":{\"message\":\"" + e.getMessage() + "\",\"type\":\"quota_exceeded\",\"param\":null,\"code\":null}}");
+            return;
+        }
+
         // ---- Step 4: 解析请求 ----
         OpenAIImagesRequest parsed = imagesService.parseImagesRequest(body, contentType, path);
 
@@ -275,11 +286,12 @@ public class ImagesController {
                                 request.getHeader("User-Agent"),
                                 request.getRemoteAddr());
 
-                        // 扣减余额
+                        // 扣减余额 + 累加 API Key 已用额度
                         if (imageCount > 0) {
                             BigDecimal actualCost = calculateActualImageCost(
                                     group, imageSize, imageCount, rateMultiplier);
                             balanceDomainService.deduct(userId, actualCost);
+                            billingDomainService.accumulateQuota(apiKeyId, actualCost);
                         }
 
                         return; // Success

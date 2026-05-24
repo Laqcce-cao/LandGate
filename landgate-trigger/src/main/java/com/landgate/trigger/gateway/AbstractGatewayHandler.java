@@ -115,6 +115,14 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             return;
         }
 
+        // Step 2.5: API Key 配额校验
+        try {
+            billingDomainService.checkQuota(apiKeyId);
+        } catch (com.landgate.types.exception.AuthenticationException e) {
+            getErrorWriter().writeError(response, 429, "quota_exceeded", e.getMessage());
+            return;
+        }
+
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, platform={}",
                 apiKeyId, userId, group.getId(), group.getName(), getPlatformName());
 
@@ -245,6 +253,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             if (!user.isPrivileged()) {
                                 balanceDomainService.deduct(userId, logEntry.getActualCost());
                             }
+                            // 累加 API Key 已用额度
+                            billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
                         } catch (Exception e) {
                             log.error("Billing/deduction failed after response sent: user_id={}, model={}",
                                     userId, model, e);

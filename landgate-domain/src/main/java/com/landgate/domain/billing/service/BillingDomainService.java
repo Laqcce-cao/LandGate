@@ -1,9 +1,12 @@
 package com.landgate.domain.billing.service;
 
+import com.landgate.domain.auth.adapter.repository.IApiKeyRepository;
+import com.landgate.domain.auth.model.entity.ApiKeyEntity;
 import com.landgate.domain.billing.adapter.repository.IUsageLogRepository;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.model.valobj.ClaudeUsageVO;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
+import com.landgate.types.exception.AuthenticationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -35,6 +38,7 @@ public class BillingDomainService {
 
     private final ModelPricingDomainService pricingService;
     private final IUsageLogRepository usageLogRepository;
+    private final IApiKeyRepository apiKeyRepository;
 
     private static final BigDecimal ONE_MILLION = new BigDecimal("1000000");
 
@@ -275,5 +279,45 @@ public class BillingDomainService {
         return calculateAndBuildLog(UsageTokens.fromClaude(usage), model, "ANTHROPIC",
                 userId, apiKeyId, accountId, groupId,
                 groupRateMultiplier, stream, durationMs, userAgent, ipAddress);
+    }
+
+    // ---- API Key 配额管理 ----
+
+    /**
+     * 校验 API Key 配额 —— 若配置了限额（quota > 0）且已用额度 >= 限额，则拒绝请求。
+     *
+     * @param apiKeyId API Key ID
+     * @throws AuthenticationException 配额已用完
+     */
+    public void checkQuota(Long apiKeyId) {
+        if (apiKeyId == null) return;
+        ApiKeyEntity apiKey = apiKeyRepository.findById(apiKeyId).orElse(null);
+        if (apiKey == null) return;
+
+        BigDecimal quota = apiKey.getQuota();
+        BigDecimal quotaUsed = apiKey.getQuotaUsed();
+        if (quota != null && quota.compareTo(BigDecimal.ZERO) > 0) {
+            if (quotaUsed != null && quotaUsed.compareTo(quota) >= 0) {
+                throw new AuthenticationException("API key quota exceeded. Limit: $" + quota
+                        + ", Used: $" + quotaUsed);
+            }
+        }
+    }
+
+    /**
+     * 累加 API Key 已用额度 —— 始终累加，无论是否配置限额。
+     *
+     * @param apiKeyId   API Key ID
+     * @param actualCost 本次请求的实际费用（USD）
+     */
+    public void accumulateQuota(Long apiKeyId, BigDecimal actualCost) {
+        if (apiKeyId == null || actualCost == null) return;
+        apiKeyRepository.findById(apiKeyId).ifPresent(apiKey -> {
+            BigDecimal current = apiKey.getQuotaUsed() != null ? apiKey.getQuotaUsed() : BigDecimal.ZERO;
+            apiKey.setQuotaUsed(current.add(actualCost));
+            apiKeyRepository.save(apiKey);
+            log.debug("API key quota accumulated: api_key_id={}, used=${}, total=${}",
+                    apiKeyId, actualCost, apiKey.getQuotaUsed());
+        });
     }
 }
