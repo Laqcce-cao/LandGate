@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class SessionHashService {
 
-    private static final long TTL_HOURS = 1;
+    private static final long TTL_MINUTES = 30;
     private static final String CACHE_KEY = "session:sticky";
 
     private final RMapCache<String, Long> sessionCache;
@@ -68,20 +68,20 @@ public class SessionHashService {
         Long accountId = sessionCache.get(sessionHash);
         if (accountId != null) {
             // 滑动过期：每次读取刷新 TTL
-            sessionCache.put(sessionHash, accountId, TTL_HOURS, TimeUnit.HOURS);
+            sessionCache.put(sessionHash, accountId, TTL_MINUTES, TimeUnit.MINUTES);
             log.debug("Session TTL refreshed: hash={}, account_id={}", sessionHash, accountId);
         }
         return accountId;
     }
 
     /**
-     * 绑定会话到上游账号，设置 1 小时 TTL。
+     * 绑定会话到上游账号，设置 30 分钟 TTL。
      *
      * @param sessionHash 会话哈希
      * @param accountId   上游账号 ID
      */
     public void bindSession(String sessionHash, Long accountId) {
-        sessionCache.put(sessionHash, accountId, TTL_HOURS, TimeUnit.HOURS);
+        sessionCache.put(sessionHash, accountId, TTL_MINUTES, TimeUnit.MINUTES);
         log.debug("Session bound: hash={}, account_id={}", sessionHash, accountId);
     }
 
