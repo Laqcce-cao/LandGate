@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
  * <p>
  * 选择流程：
  * <ol>
- *   <li>加载分组关联的全部候选账户</li>
+ *   <li>加载分组关联的全部候选账户（批量查询，避免 N+1）</li>
  *   <li>责任链过滤：删除 → 健康 → 模型白名单 → 显式路由</li>
  *   <li>排序：优先级(高→低) → 负载率(低→高) → 最后使用时间(远→近)</li>
  *   <li>返回排序后的第一个账户</li>
@@ -42,31 +42,56 @@ public class AccountSelector {
     // ---- 过滤器接口 ----
 
     /** 账户过滤器，每个过滤条件独立实现，可插拔可测试 */
-    @FunctionalInterface
     interface AccountFilter {
         /** @return true 表示通过，false 表示排除 */
         boolean pass(AccountEntity account, GroupEntity group, String model);
+
+        /** 过滤器名称，用于日志排查 */
+        String name();
     }
 
     /** 过滤器：跳过已删除的账户 */
-    private static final AccountFilter DELETED_FILTER = (account, group, model) ->
-            account.getDeletedAt() == null;
+    private static final AccountFilter DELETED_FILTER = new AccountFilter() {
+        @Override
+        public boolean pass(AccountEntity account, GroupEntity group, String model) {
+            return account.getDeletedAt() == null;
+        }
+        @Override
+        public String name() { return "DELETED"; }
+    };
 
     /** 过滤器：跳过不健康 / 不可调度的账户 */
-    private static final AccountFilter HEALTH_FILTER = (account, group, model) ->
-            account.isActive() && account.isSchedulable()
+    private static final AccountFilter HEALTH_FILTER = new AccountFilter() {
+        @Override
+        public boolean pass(AccountEntity account, GroupEntity group, String model) {
+            return account.isActive() && account.isSchedulable()
                     && !account.isRateLimited() && !account.isOverloaded();
+        }
+        @Override
+        public String name() { return "HEALTH"; }
+    };
 
     /** 过滤器：根据账户的 supportedModels 白名单过滤 */
-    private final AccountFilter modelWhitelistFilter = (account, group, model) ->
-            model == null || isModelSupportedByAccount(account, model);
+    private final AccountFilter modelWhitelistFilter = new AccountFilter() {
+        @Override
+        public boolean pass(AccountEntity account, GroupEntity group, String model) {
+            return model == null || isModelSupportedByAccount(account, model);
+        }
+        @Override
+        public String name() { return "MODEL_WHITELIST"; }
+    };
 
     /** 过滤器：显式路由（modelRouting），启用时优先按路由表匹配，无匹配时放行 */
-    private final AccountFilter explicitRouteFilter = (account, group, model) -> {
-        if (model == null || !group.hasModelRoutingEnabled()) return true;
-        Set<Long> routedIds = getRoutedAccountIds(group, model);
-        if (routedIds == null) return true;  // 路由表无匹配 → 放行全部
-        return routedIds.contains(account.getId());
+    private final AccountFilter explicitRouteFilter = new AccountFilter() {
+        @Override
+        public boolean pass(AccountEntity account, GroupEntity group, String model) {
+            if (model == null || !group.hasModelRoutingEnabled()) return true;
+            Set<Long> routedIds = getRoutedAccountIds(group, model);
+            if (routedIds == null) return true;  // 路由表无匹配 → 放行全部
+            return routedIds.contains(account.getId());
+        }
+        @Override
+        public String name() { return "EXPLICIT_ROUTE"; }
     };
 
     /** 过滤器链，按顺序执行 */
@@ -118,20 +143,26 @@ public class AccountSelector {
         log.debug("Selecting account for group: group_id={}, candidates={}, model={}",
                 group.getId(), links.size(), model);
 
-        // 加载账户 → 跑过滤器链 → 计算负载率
+        // 批量加载账户，避免 N+1 查询
+        List<Long> accountIds = links.stream()
+                .map(AccountGroupEntity::getAccountId)
+                .toList();
+        Map<Long, AccountEntity> accountMap = accountRepository.findByIds(accountIds).stream()
+                .collect(Collectors.toMap(AccountEntity::getId, a -> a));
+
+        // 遍历候选 → 跑过滤器链 → 计算负载率
         List<Candidate> candidates = new ArrayList<>();
         for (AccountGroupEntity link : links) {
-            AccountEntity account = accountRepository.findById(link.getAccountId()).orElse(null);
+            AccountEntity account = accountMap.get(link.getAccountId());
+            if (account == null) continue;   // 账号已被删除或不存在
 
             // 跑过滤器链
             boolean passed = true;
             for (AccountFilter filter : filterChain) {
                 if (!filter.pass(account, group, model)) {
                     passed = false;
-                    if (account != null) {
-                        log.debug("Account filtered out by {}: account_id={}, name={}",
-                                filter.getClass().getSimpleName(), account.getId(), account.getName());
-                    }
+                    log.debug("Account filtered out by {}: account_id={}, name={}",
+                            filter.name(), account.getId(), account.getName());
                     break;
                 }
             }
@@ -276,13 +307,18 @@ public class AccountSelector {
             return null;
         }
 
+        // 批量加载账户
+        List<Long> accountIds = links.stream()
+                .map(AccountGroupEntity::getAccountId)
+                .toList();
+        Map<Long, AccountEntity> accountMap = accountRepository.findByIds(accountIds).stream()
+                .collect(Collectors.toMap(AccountEntity::getId, a -> a));
+
         List<Candidate> candidates = new ArrayList<>();
         for (AccountGroupEntity link : links) {
-            AccountEntity account = accountRepository.findById(link.getAccountId())
-                    .filter(a -> a.getDeletedAt() == null)
-                    .orElse(null);
-
+            AccountEntity account = accountMap.get(link.getAccountId());
             if (account == null) continue;
+
             // 图片 API 固定走 OpenAI 平台
             if (account.getPlatform() != com.landgate.types.enums.Platform.OPENAI) continue;
             if (excludedIds != null && excludedIds.contains(account.getId())) continue;

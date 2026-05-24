@@ -41,6 +41,14 @@ public class AccountRepositoryImpl implements IAccountRepository {
     }
 
     @Override
+    public List<AccountEntity> findByIds(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return List.of();
+        return accountDao.selectByIds(ids).stream()
+                .map(accountMapper::toEntity)
+                .collect(Collectors.toList());
+    }
+
+    @Override
     public AccountEntity save(AccountEntity entity) {
         AccountPO po = accountMapper.toPO(entity);
         if (po.getId() == null) {

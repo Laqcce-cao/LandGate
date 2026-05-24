@@ -18,6 +18,9 @@ public interface IAccountDao {
     /** 根据 ID 查询未删除的账号 */
     AccountPO selectById(@Param("id") Long id);
 
+    /** 批量根据 ID 查询未删除的账号 */
+    List<AccountPO> selectByIds(@Param("ids") List<Long> ids);
+
     /** 插入账号，useGeneratedKeys 回填 ID */
     int insert(AccountPO account);
 
