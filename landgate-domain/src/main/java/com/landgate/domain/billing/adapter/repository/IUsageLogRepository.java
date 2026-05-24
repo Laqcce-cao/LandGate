@@ -36,6 +36,19 @@ public interface IUsageLogRepository {
     List<UsageLogEntity> findByUserId(Long userId, int page, int size);
 
     /**
+     * 分页查询指定用户在日期范围内的用量日志。
+     *
+     * @param userId 用户ID
+     * @param page   页码（从0开始）
+     * @param size   每页数量
+     * @param start  起始日期（包含），null 表示不限
+     * @param end    结束日期（不包含），null 表示不限
+     * @return 该用户的用量日志列表
+     */
+    List<UsageLogEntity> findByUserIdWithDate(Long userId, int page, int size, LocalDate start, LocalDate end);
+    long countByUserIdWithDate(Long userId, LocalDate start, LocalDate end);
+
+    /**
      * 分页查询指定API密钥的用量日志
      *
      * @param apiKeyId API密钥ID

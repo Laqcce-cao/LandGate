@@ -113,6 +113,30 @@
         SELECT COUNT(*) FROM usage_logs WHERE account_id = #{accountId}
     </select>
 
+    <select id="selectByUserIdAndDate" resultMap="UsageLogResultMap">
+        SELECT * FROM usage_logs
+        WHERE user_id = #{userId}
+        <if test="start != null and start != ''">
+            AND created_at &gt;= #{start}
+        </if>
+        <if test="end != null and end != ''">
+            AND created_at &lt; #{end}
+        </if>
+        ORDER BY created_at DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countByUserIdAndDate" resultType="long">
+        SELECT COUNT(*) FROM usage_logs
+        WHERE user_id = #{userId}
+        <if test="start != null and start != ''">
+            AND created_at &gt;= #{start}
+        </if>
+        <if test="end != null and end != ''">
+            AND created_at &lt; #{end}
+        </if>
+    </select>
+
     <!-- ==================== 聚合统计 ==================== -->
 
     <resultMap id="UserUsageSummaryResultMap" type="com.landgate.infrastructure.dao.po.UserUsageSummaryPO">

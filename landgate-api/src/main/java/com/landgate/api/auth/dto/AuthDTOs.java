@@ -1,5 +1,6 @@
 package com.landgate.api.auth.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -31,5 +32,6 @@ public final class AuthDTOs {
             @NotBlank(message = "Password is required")
             String password
     ) {}
-    public record CreateApiKeyRequest(String name, Long groupId) {}
+    public record CreateApiKeyRequest(String name, Long groupId, BigDecimal quota) {}
+    public record UpdateApiKeyRequest(String name, Long groupId, BigDecimal quota) {}
 }

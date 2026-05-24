@@ -77,6 +77,24 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
     }
 
     @Override
+    public List<UsageLogEntity> findByUserIdWithDate(Long userId, int page, int size,
+                                                      LocalDate start, LocalDate end) {
+        int offset = page * size;
+        String startStr = start != null ? start.toString() : null;
+        String endStr = end != null ? end.toString() : null;
+        return usageLogDao.selectByUserIdAndDate(userId, offset, size, startStr, endStr).stream()
+                .map(usageLogMapper::toEntity)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public long countByUserIdWithDate(Long userId, LocalDate start, LocalDate end) {
+        String startStr = start != null ? start.toString() : null;
+        String endStr = end != null ? end.toString() : null;
+        return usageLogDao.countByUserIdAndDate(userId, startStr, endStr);
+    }
+
+    @Override
     public UsageLogEntity save(UsageLogEntity entity) {
         UsageLogPO po = usageLogMapper.toPO(entity);
         if (po.getId() == null) {

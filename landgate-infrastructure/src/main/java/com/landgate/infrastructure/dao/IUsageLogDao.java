@@ -33,6 +33,11 @@ public interface IUsageLogDao {
     /** 根据用户 ID 查询日志，按创建时间降序（分页） */
     List<UsageLogPO> selectByUserId(@Param("userId") Long userId, @Param("offset") int offset, @Param("size") int size);
 
+    /** 根据用户 ID + 日期范围查询日志，按创建时间降序（分页），end 为排他边界 */
+    List<UsageLogPO> selectByUserIdAndDate(@Param("userId") Long userId, @Param("offset") int offset,
+                                           @Param("size") int size, @Param("start") String start,
+                                           @Param("end") String end);
+
     /** 根据 API Key ID 查询日志，按创建时间降序（分页） */
     List<UsageLogPO> selectByApiKeyId(@Param("apiKeyId") Long apiKeyId, @Param("offset") int offset, @Param("size") int size);
 
@@ -41,6 +46,10 @@ public interface IUsageLogDao {
 
     /** 统计指定用户的日志数 */
     long countByUserId(@Param("userId") Long userId);
+
+    /** 统计指定用户在日期范围内的日志数，end 为排他边界 */
+    long countByUserIdAndDate(@Param("userId") Long userId, @Param("start") String start,
+                              @Param("end") String end);
 
     /** 统计指定 API Key 的日志数 */
     long countByApiKeyId(@Param("apiKeyId") Long apiKeyId);

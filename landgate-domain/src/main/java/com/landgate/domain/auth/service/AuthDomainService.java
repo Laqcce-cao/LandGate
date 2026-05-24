@@ -2,6 +2,7 @@ package com.landgate.domain.auth.service;
 
 import com.landgate.api.admin.dto.ApiKeyAdminDTOs.CreateApiKeyAdminRequest;
 import com.landgate.api.admin.dto.ApiKeyAdminDTOs.UpdateApiKeyAdminRequest;
+import com.landgate.api.auth.dto.AuthDTOs.UpdateApiKeyRequest;
 import com.landgate.domain.auth.adapter.port.IEmailPort;
 import com.landgate.domain.auth.adapter.port.IVerificationCodePort;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
@@ -213,13 +214,16 @@ public class AuthDomainService {
      * @return 新创建的 API Key 实体
      */
     @Transactional
-    public ApiKeyEntity createApiKey(Long userId, String name, Long groupId) {
+    public ApiKeyEntity createApiKey(Long userId, String name, Long groupId, BigDecimal quota) {
         UserEntity user = getCurrentUser(userId);
         String keyStr = "ak-" + generateSecureToken(32);
-        ApiKeyEntity apiKey = ApiKeyEntity.builder()
-                .userId(user.getId()).key(keyStr).name(name).groupId(groupId).build();
-        apiKey = apiKeyRepository.save(apiKey);
-        log.info("API key created: id={}, user_id={}, name={}", apiKey.getId(), userId, name);
+        ApiKeyEntity.ApiKeyEntityBuilder builder = ApiKeyEntity.builder()
+                .userId(user.getId()).key(keyStr).name(name).groupId(groupId);
+        if (quota != null && quota.compareTo(BigDecimal.ZERO) > 0) {
+            builder.quota(quota);
+        }
+        ApiKeyEntity apiKey = apiKeyRepository.save(builder.build());
+        log.info("API key created: id={}, user_id={}, name={}, quota={}", apiKey.getId(), userId, name, quota);
         return apiKey;
     }
 
@@ -248,6 +252,30 @@ public class AuthDomainService {
                 .orElseThrow(() -> new AuthenticationException("API key not found"));
         apiKeyRepository.deleteById(apiKeyId);
         log.info("API key deleted: id={}, user_id={}", apiKeyId, userId);
+    }
+
+    /**
+     * 用户更新自己的 API Key —— 按非 null 字段部分更新（name、groupId、quota）。
+     *
+     * @param userId   用户 ID
+     * @param apiKeyId API Key ID
+     * @param req      更新请求（仅非 null 字段会更新）
+     * @return 更新后的 API Key 实体
+     * @throws AuthenticationException API Key 不存在或不属于该用户时抛出
+     */
+    @Transactional
+    public ApiKeyEntity updateApiKey(Long userId, Long apiKeyId, UpdateApiKeyRequest req) {
+        ApiKeyEntity key = apiKeyRepository.findById(apiKeyId)
+                .filter(k -> k.getUserId().equals(userId))
+                .orElseThrow(() -> new AuthenticationException("API key not found"));
+
+        if (req.name() != null) key.setName(req.name());
+        if (req.groupId() != null) key.setGroupId(req.groupId());
+        if (req.quota() != null) key.setQuota(req.quota());
+
+        ApiKeyEntity updated = apiKeyRepository.save(key);
+        log.info("API key updated: id={}, user_id={}", apiKeyId, userId);
+        return updated;
     }
 
     /**
