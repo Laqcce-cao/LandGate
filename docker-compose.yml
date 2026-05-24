@@ -78,8 +78,10 @@ services:
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-http://localhost:80/oauth/callback}
       # 访问宿主机 Mihomo 代理
-      http_proxy: http://host.docker.internal:1080
-      https_proxy: http://host.docker.internal:1080
+      http_proxy: http://host.docker.internal:10801
+      https_proxy: http://host.docker.internal:10801
+      # java虚拟机环境变量JVM
+      JAVA_TOOL_OPTIONS: "-Djava.net.preferIPv4Stack=true -Dhttp.proxyHost=host.docker.internal -Dhttp.proxyPort=10801 -Dhttps.proxyHost=host.docker.internal -Dhttps.proxyPort=10801 -Dhttp.nonProxyHosts=localhost|127.0.0.1|mysql|redis"
     depends_on:
       mysql:
         condition: service_healthy
