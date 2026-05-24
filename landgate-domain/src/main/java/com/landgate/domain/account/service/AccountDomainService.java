@@ -2,6 +2,7 @@ package com.landgate.domain.account.service;
 
 import com.landgate.domain.account.adapter.repository.IAccountRepository;
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.types.enums.AccountType;
 import com.landgate.types.exception.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -78,7 +79,10 @@ public class AccountDomainService {
         if (updates.getNotes() != null) existing.setNotes(updates.getNotes());
         if (updates.getPlatform() != null) existing.setPlatform(updates.getPlatform());
         if (updates.getType() != null) existing.setType(updates.getType());
-        if (updates.getCredentials() != null) existing.setCredentials(updates.getCredentials());
+        // OAuth 账号凭证由系统管理，不允许通过通用编辑接口覆盖，防止加密 token 被破坏
+        if (updates.getCredentials() != null && existing.getType() != AccountType.OAUTH) {
+            existing.setCredentials(updates.getCredentials());
+        }
         if (updates.getExtra() != null) existing.setExtra(updates.getExtra());
         if (updates.getProxyId() != null) existing.setProxyId(updates.getProxyId());
         if (updates.getConcurrency() != null) existing.setConcurrency(updates.getConcurrency());

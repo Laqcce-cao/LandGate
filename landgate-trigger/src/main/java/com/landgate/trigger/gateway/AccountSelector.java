@@ -116,7 +116,7 @@ public class AccountSelector {
     /**
      * 选择最佳账户处理指定模型的请求。
      * <p>
-     * 不按 platform 过滤，只管"这个号能不能服务这个模型"。
+     * 不按 platform 过滤。AccountSelector 只管"这个号能不能服务这个模型"。
      *
      * @param group 分组实体
      * @param model 请求的模型名称
@@ -363,6 +363,24 @@ public class AccountSelector {
     private record Candidate(AccountEntity account, int priority, double loadRate) {}
 
     // ---- 健康标记方法 ----
+
+    /**
+     * 更新最后使用时间 + Rate Limit 窗口状态（合并写入，避免每次请求两次 DB 操作）。
+     *
+     * @param accountId 账号 ID
+     * @param snapshot  上游 Rate Limit 快照（OAUTH 账号传入，其他类型传 null）
+     */
+    public void updateLastUsedAndRateLimits(Long accountId, RateLimitSnapshot snapshot) {
+        accountRepository.findById(accountId).ifPresent(a -> {
+            a.setLastUsedAt(Instant.now());
+            if (snapshot != null && snapshot.hasData()) {
+                a.setSessionWindowStart(snapshot.windowStart());
+                a.setSessionWindowEnd(snapshot.windowEnd());
+                a.setSessionWindowStatus(snapshot.statusJson());
+            }
+            accountRepository.save(a);
+        });
+    }
 
     public void updateLastUsed(Long accountId) {
         accountRepository.findById(accountId).ifPresent(a -> {

@@ -8,6 +8,7 @@ import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.domain.images.service.ImageGenerationIntent;
 import com.landgate.trigger.images.ImagesService;
 import com.landgate.trigger.gateway.*;
+import com.landgate.types.enums.AccountType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -53,6 +54,7 @@ public class ImagesController {
     private final BillingDomainService billingDomainService;
     private final BalanceDomainService balanceDomainService;
     private final IGroupRepository groupRepository;
+    private final RateLimitHeaderParser rateLimitHeaderParser;
 
     /** 最大 failover 切换次数 */
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -267,8 +269,13 @@ public class ImagesController {
 
                         // 绑定会话
                         sessionHashService.bindSession(sessionHash, account.getId());
-                        // 更新最后使用时间
-                        accountSelector.updateLastUsed(account.getId());
+                        // 更新最后使用时间 + 捕获 Rate Limit 头（仅 OAUTH 账号）
+                        RateLimitSnapshot rateLimitSnapshot = null;
+                        if (account.getType() == AccountType.OAUTH) {
+                            rateLimitSnapshot = rateLimitHeaderParser.parse(
+                                    upstreamResp.headers(), account.getPlatform());
+                        }
+                        accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
 
                         // 记录用量日志
                         log.info("Image request completed: model={}, account={}, images={}, size={}, stream={}, duration={}ms",
