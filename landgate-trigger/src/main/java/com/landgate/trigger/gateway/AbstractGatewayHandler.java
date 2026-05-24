@@ -408,21 +408,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         getErrorWriter().writeError(response, upstreamStatus, errorCode, safeMessage);
     }
 
-    /**
-     * @deprecated 使用 {@link #writeMaskedUpstreamError} 替代，避免盲透传上游 body。
-     * 保留以兼容子类自定义调用。
-     */
-    @Deprecated
-    protected void handleUpstreamError(HttpResponse<InputStream> upstreamResp,
-                                        HttpServletResponse response,
-                                        int upstreamStatus) throws IOException {
-        String errorBody;
-        try (var input = upstreamResp.body()) {
-            errorBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        writeMaskedUpstreamError(response, upstreamStatus, errorBody);
-    }
-
     /** HTTP 状态码 → 网关错误类型码映射 */
     private String mapStatusToErrorCode(int statusCode) {
         return switch (statusCode) {

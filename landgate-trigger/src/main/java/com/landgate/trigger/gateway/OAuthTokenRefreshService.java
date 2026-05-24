@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  * <p>
  * 刷新策略：
  * <ul>
- *   <li>按需刷新 —— GatewayService 检测到 401 时调用 {@link #refreshAccessToken(Long)}</li>
+ *   <li>按需刷新 —— AbstractGatewayHandler 检测到 401 时调用 {@link #refreshAccessToken(Long)}</li>
  *   <li>主动刷新 —— {@code OAuthTokenRefreshScheduler} 通过 Redis Sorted Set 定期扫描即将过期的 token</li>
  * </ul>
  * 使用 Redisson RLock 防止同一账号并发刷新。
