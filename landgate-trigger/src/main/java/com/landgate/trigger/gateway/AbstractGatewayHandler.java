@@ -128,9 +128,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         boolean stream = getTransformer().isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
 
-        // Step 4: Session 粘滞（包含 model，不同模型粘到不同账号）
-        String bodyUserId = getTransformer().extractUserId(body);
-        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId, model);
+        // Step 4: Session 粘滞（IP + UA + API Key）
+        String sessionHash = sessionHashService.generateHash(request, apiKeyId);
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
 
         // Step 5: 余额预检查

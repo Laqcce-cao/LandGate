@@ -162,10 +162,10 @@ public class ImagesController {
         }
 
         try {
-            // ---- Step 6: 会话粘性（包含 model，不同模型粘到不同账号） ----
+            // ---- Step 6: 会话粘性（IP + UA + API Key） ----
             String capability = imagesService.classifyCapability(parsed);
             String model = parsed.getModel();
-            String sessionHash = sessionHashService.generateHash(request, userId, null, model);
+            String sessionHash = sessionHashService.generateHash(request, apiKeyId);
             Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
 
             // ---- Step 7: 账户选择 + failover 循环 ----
