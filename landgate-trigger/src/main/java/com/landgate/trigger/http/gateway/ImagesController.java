@@ -151,11 +151,7 @@ public class ImagesController {
         // ---- Step 4: 解析请求 ----
         OpenAIImagesRequest parsed = imagesService.parseImagesRequest(body, contentType, path);
 
-        // ---- Step 5: 会话粘性 ----
-        String sessionHash = sessionHashService.generateHash(request, userId, null);
-        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
-
-        // ---- Step 6: 并发控制（全局图片并发槽位） ----
+        // ---- Step 5: 并发控制（全局图片并发槽位） ----
         boolean slotAcquired = concurrencyService.tryAcquire(IMAGE_CONCURRENCY_ID, IMAGE_MAX_CONCURRENCY);
         if (!slotAcquired) {
             response.setStatus(503);
@@ -166,9 +162,13 @@ public class ImagesController {
         }
 
         try {
-            // ---- Step 7: 账户选择 + failover 循环 ----
+            // ---- Step 6: 会话粘性（包含 model，不同模型粘到不同账号） ----
             String capability = imagesService.classifyCapability(parsed);
             String model = parsed.getModel();
+            String sessionHash = sessionHashService.generateHash(request, userId, null, model);
+            Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
+
+            // ---- Step 7: 账户选择 + failover 循环 ----
             AccountEntity account = null;
             Set<Long> excludedAccountIds = new HashSet<>();
 

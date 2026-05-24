@@ -31,24 +31,30 @@ public class SessionHashService {
     }
 
     /**
-     * 生成会话哈希 —— 基于客户端 IP、归一化 User-Agent、LandGate 用户 ID 和请求 body 中的终端用户标识。
+     * 生成会话哈希 —— 基于客户端 IP、归一化 User-Agent、LandGate 用户 ID、
+     * 请求 body 中的终端用户标识和请求模型名。
      * <p>
      * 使用 {@code userId} 替代 {@code apiKeyId}，使同一 LandGate 用户的多个 API Key
      * 共享同一上游账户的会话粘性，从而复用上游 prompt cache。
      * {@code bodyUserId} 提供更细粒度的隔离（同一用户的不同终端用户路由到不同账户）。
+     * {@code model} 确保不同模型的请求粘到各自合适的账号上。
      *
      * @param request     HTTP 请求
      * @param userId      LandGate 用户 ID
      * @param bodyUserId  请求 body 中的终端用户标识（无则为 null）
+     * @param model       请求的模型名
      * @return 16 位十六进制会话哈希
      */
-    public String generateHash(HttpServletRequest request, Long userId, String bodyUserId) {
+    public String generateHash(HttpServletRequest request, Long userId, String bodyUserId, String model) {
         String clientIp = request.getRemoteAddr();
         String userAgent = normalizeUserAgent(request.getHeader("User-Agent"));
         StringBuilder sb = new StringBuilder();
         sb.append(clientIp).append('|').append(userAgent).append('|').append(userId);
         if (bodyUserId != null && !bodyUserId.isEmpty()) {
             sb.append('|').append(bodyUserId);
+        }
+        if (model != null && !model.isEmpty()) {
+            sb.append('|').append(model);
         }
         String raw = sb.toString();
         try {

@@ -91,15 +91,15 @@ public class GatewayService {
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, platform={}",
                 apiKeyId, userId, group.getId(), group.getName());
 
-        // Step 3: Session stickiness
-        String bodyUserId = transformer.extractUserId(body);
-        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId);
-        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
-
-        // Step 4: Stream detection
+        // Step 3: 模型名提取
         boolean stream = transformer.isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
         String model = transformer.extractModel(body);
+
+        // Step 3.5: Session 粘性（包含 model，不同模型粘到不同账号）
+        String bodyUserId = transformer.extractUserId(body);
+        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId, model);
+        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
 
         // Step 4.5: Balance pre-check — reject zero-balance users before upstream call
         UserEntity user = userRepository.findById(userId).orElse(null);

@@ -118,12 +118,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, platform={}",
                 apiKeyId, userId, group.getId(), group.getName(), getPlatformName());
 
-        // Step 3: Session 粘滞
-        String bodyUserId = getTransformer().extractUserId(body);
-        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId);
-        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
-
-        // Step 4: 流式检测 + 模型名提取
+        // Step 3: 流式检测 + 模型名提取
         // 优先从 request attribute 读取（Gemini 场景：模型名来自 URL path）
         String model = (String) request.getAttribute(ATTR_GATEWAY_MODEL);
         if (model == null) {
@@ -132,6 +127,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
         boolean stream = getTransformer().isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
+
+        // Step 4: Session 粘滞（包含 model，不同模型粘到不同账号）
+        String bodyUserId = getTransformer().extractUserId(body);
+        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId, model);
+        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
 
         // Step 5: 余额预检查
         UserEntity user = userRepository.findById(userId).orElse(null);
