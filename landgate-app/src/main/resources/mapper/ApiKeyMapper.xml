@@ -15,15 +15,6 @@
         <result column="quota"             property="quota"/>
         <result column="quota_used"        property="quotaUsed"/>
         <result column="expires_at"        property="expiresAt"/>
-        <result column="rate_limit_5h"     property="rateLimit5h"/>
-        <result column="usage_5h"          property="usage5h"/>
-        <result column="window_5h_start"   property="window5hStart"/>
-        <result column="rate_limit_1d"     property="rateLimit1d"/>
-        <result column="usage_1d"          property="usage1d"/>
-        <result column="window_1d_start"   property="window1dStart"/>
-        <result column="rate_limit_7d"     property="rateLimit7d"/>
-        <result column="usage_7d"          property="usage7d"/>
-        <result column="window_7d_start"   property="window7dStart"/>
         <result column="created_at"        property="createdAt"/>
         <result column="updated_at"        property="updatedAt"/>
         <result column="deleted_at"        property="deletedAt"/>
@@ -39,16 +30,10 @@
         INSERT INTO api_keys (
             user_id, `key`, name, group_id, status, last_used_at,
             ip_whitelist, ip_blacklist, quota, quota_used, expires_at,
-            rate_limit_5h, usage_5h, window_5h_start,
-            rate_limit_1d, usage_1d, window_1d_start,
-            rate_limit_7d, usage_7d, window_7d_start,
             created_at, updated_at, deleted_at
         ) VALUES (
             #{userId}, #{key}, #{name}, #{groupId}, #{status}, #{lastUsedAt},
             #{ipWhitelist}, #{ipBlacklist}, #{quota}, #{quotaUsed}, #{expiresAt},
-            #{rateLimit5h}, #{usage5h}, #{window5hStart},
-            #{rateLimit1d}, #{usage1d}, #{window1dStart},
-            #{rateLimit7d}, #{usage7d}, #{window7dStart},
             NOW(), NOW(), NULL
         )
     </insert>
@@ -59,9 +44,6 @@
             status = #{status}, last_used_at = #{lastUsedAt},
             ip_whitelist = #{ipWhitelist}, ip_blacklist = #{ipBlacklist},
             quota = #{quota}, quota_used = #{quotaUsed}, expires_at = #{expiresAt},
-            rate_limit_5h = #{rateLimit5h}, usage_5h = #{usage5h}, window_5h_start = #{window5hStart},
-            rate_limit_1d = #{rateLimit1d}, usage_1d = #{usage1d}, window_1d_start = #{window1dStart},
-            rate_limit_7d = #{rateLimit7d}, usage_7d = #{usage7d}, window_7d_start = #{window7dStart},
             deleted_at = #{deletedAt},
             updated_at = NOW()
         WHERE id = #{id}

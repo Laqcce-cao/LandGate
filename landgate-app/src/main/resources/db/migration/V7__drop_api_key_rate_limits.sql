@@ -1,0 +1,10 @@
+ALTER TABLE api_keys
+    DROP COLUMN rate_limit_5h,
+    DROP COLUMN usage_5h,
+    DROP COLUMN window_5h_start,
+    DROP COLUMN rate_limit_1d,
+    DROP COLUMN usage_1d,
+    DROP COLUMN window_1d_start,
+    DROP COLUMN rate_limit_7d,
+    DROP COLUMN usage_7d,
+    DROP COLUMN window_7d_start;

@@ -296,9 +296,6 @@ public class AuthDomainService {
             builder.status(Status.valueOf(req.status().toUpperCase()));
         }
         if (req.quota() != null) builder.quota(req.quota());
-        if (req.rateLimit5h() != null) builder.rateLimit5h(req.rateLimit5h());
-        if (req.rateLimit1d() != null) builder.rateLimit1d(req.rateLimit1d());
-        if (req.rateLimit7d() != null) builder.rateLimit7d(req.rateLimit7d());
         if (req.ipWhitelist() != null) builder.ipWhitelist(req.ipWhitelist());
         if (req.ipBlacklist() != null) builder.ipBlacklist(req.ipBlacklist());
         if (req.expiresAt() != null) builder.expiresAt(req.expiresAt());
@@ -326,9 +323,6 @@ public class AuthDomainService {
         if (req.groupId() != null) key.setGroupId(req.groupId());
         if (req.status() != null) key.setStatus(Status.valueOf(req.status().toUpperCase()));
         if (req.quota() != null) key.setQuota(req.quota());
-        if (req.rateLimit5h() != null) key.setRateLimit5h(req.rateLimit5h());
-        if (req.rateLimit1d() != null) key.setRateLimit1d(req.rateLimit1d());
-        if (req.rateLimit7d() != null) key.setRateLimit7d(req.rateLimit7d());
         if (req.ipWhitelist() != null) key.setIpWhitelist(req.ipWhitelist());
         if (req.ipBlacklist() != null) key.setIpBlacklist(req.ipBlacklist());
         if (req.expiresAt() != null) key.setExpiresAt(req.expiresAt());

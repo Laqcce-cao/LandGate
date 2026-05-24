@@ -56,39 +56,6 @@ public class ApiKeyPO extends BasePO {
     /** Key 过期时间 */
     private Instant expiresAt;
 
-    /** 5 小时限流上限 */
-    @Builder.Default
-    private BigDecimal rateLimit5h = BigDecimal.ZERO;
-
-    /** 5 小时内已使用 */
-    @Builder.Default
-    private BigDecimal usage5h = BigDecimal.ZERO;
-
-    /** 5 小时窗口起始 */
-    private Instant window5hStart;
-
-    /** 1 天限流上限 */
-    @Builder.Default
-    private BigDecimal rateLimit1d = BigDecimal.ZERO;
-
-    /** 1 天内已使用 */
-    @Builder.Default
-    private BigDecimal usage1d = BigDecimal.ZERO;
-
-    /** 1 天窗口起始 */
-    private Instant window1dStart;
-
-    /** 7 天限流上限 */
-    @Builder.Default
-    private BigDecimal rateLimit7d = BigDecimal.ZERO;
-
-    /** 7 天内已使用 */
-    @Builder.Default
-    private BigDecimal usage7d = BigDecimal.ZERO;
-
-    /** 7 天窗口起始 */
-    private Instant window7dStart;
-
     /** 判断 Key 是否处于激活状态 */
     public boolean isActive() { return Status.ACTIVE == status; }
 }

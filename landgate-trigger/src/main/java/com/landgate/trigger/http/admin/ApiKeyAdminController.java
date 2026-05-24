@@ -79,9 +79,6 @@ public class ApiKeyAdminController {
                 k.getStatus(), k.getLastUsedAt(),
                 k.getIpWhitelist(), k.getIpBlacklist(),
                 k.getQuota(), k.getQuotaUsed(), k.getExpiresAt(),
-                k.getRateLimit5h(), k.getUsage5h(), k.getWindow5hStart(),
-                k.getRateLimit1d(), k.getUsage1d(), k.getWindow1dStart(),
-                k.getRateLimit7d(), k.getUsage7d(), k.getWindow7dStart(),
                 k.getCreatedAt(), k.getUpdatedAt()
         );
     }

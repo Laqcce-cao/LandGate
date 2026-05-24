@@ -55,30 +55,6 @@ public class ApiKeyEntity {
     /** 过期时间 */
     private Instant expiresAt;
 
-    /** 5 小时内限额 */
-    @Builder.Default
-    private BigDecimal rateLimit5h = BigDecimal.ZERO;
-    /** 5 小时内已使用 */
-    @Builder.Default
-    private BigDecimal usage5h = BigDecimal.ZERO;
-    private Instant window5hStart;
-
-    /** 1 天内限额 */
-    @Builder.Default
-    private BigDecimal rateLimit1d = BigDecimal.ZERO;
-    /** 1 天内已使用 */
-    @Builder.Default
-    private BigDecimal usage1d = BigDecimal.ZERO;
-    private Instant window1dStart;
-
-    /** 7 天内限额 */
-    @Builder.Default
-    private BigDecimal rateLimit7d = BigDecimal.ZERO;
-    /** 7 天内已使用 */
-    @Builder.Default
-    private BigDecimal usage7d = BigDecimal.ZERO;
-    private Instant window7dStart;
-
     private Instant createdAt;
     private Instant updatedAt;
     private Instant deletedAt;
