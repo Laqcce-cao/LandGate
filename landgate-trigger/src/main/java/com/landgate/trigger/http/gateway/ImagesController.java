@@ -152,8 +152,8 @@ public class ImagesController {
         OpenAIImagesRequest parsed = imagesService.parseImagesRequest(body, contentType, path);
 
         // ---- Step 5: 并发控制（全局图片并发槽位） ----
-        boolean slotAcquired = concurrencyService.tryAcquire(IMAGE_CONCURRENCY_ID, IMAGE_MAX_CONCURRENCY);
-        if (!slotAcquired) {
+        ConcurrencySlot globalSlot = concurrencyService.tryAcquire(IMAGE_CONCURRENCY_ID, IMAGE_MAX_CONCURRENCY);
+        if (globalSlot == null) {
             response.setStatus(503);
             response.setContentType("application/json;charset=UTF-8");
             response.getWriter().write(
@@ -199,9 +199,9 @@ public class ImagesController {
                 }
 
                 // 7d. 账户级并发控制
-                boolean accountSlot = concurrencyService.tryAcquire(
+                ConcurrencySlot acctSlot = concurrencyService.tryAcquire(
                         account.getId(), account.getConcurrency());
-                if (!accountSlot) {
+                if (acctSlot == null) {
                     log.debug("Account concurrency full for image: account_id={}", account.getId());
                     excludedAccountIds.add(account.getId());
                     account = null;
@@ -322,7 +322,7 @@ public class ImagesController {
                     return;
 
                 } finally {
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(acctSlot);
                 }
             }
 
@@ -348,7 +348,7 @@ public class ImagesController {
                         "{\"error\":{\"message\":\"Upstream connection failed.\",\"type\":\"server_error\",\"param\":null,\"code\":null}}");
             }
         } finally {
-            concurrencyService.release(IMAGE_CONCURRENCY_ID);
+            concurrencyService.release(globalSlot);
         }
     }
 

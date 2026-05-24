@@ -165,7 +165,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 return;
             }
 
-            if (!concurrencyService.tryAcquire(account.getId(), account.getConcurrency())) {
+            ConcurrencySlot slot = concurrencyService.tryAcquire(account.getId(), account.getConcurrency());
+            if (slot == null) {
                 log.warn("Concurrency slot unavailable: account_id={}, failover={}",
                         account.getId(), failoverCount);
                 failoverCount++;
@@ -174,7 +175,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
             String accessToken = getAccessTokenService.getAccessToken(account);
             if (accessToken == null || accessToken.isEmpty()) {
-                concurrencyService.release(account.getId());
+                concurrencyService.release(slot);
                 failoverCount++;
                 continue;
             }
@@ -184,6 +185,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .group(group).selectedAccount(account)
                     .stream(stream).requestedModel(model)
                     .upstreamPath(upstreamPath)
+                    .concurrencySlot(slot)
                     .build();
             GatewayRequestContext.set(ctx);
 
@@ -193,7 +195,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     upstreamReq = getTransformer().buildUpstreamRequest(body, account, accessToken);
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     failoverCount++;
                     continue;
                 }
@@ -206,12 +208,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     upstreamResp = httpUpstreamClient.send(upstreamReq);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     getErrorWriter().writeError(response, 502, "upstream_error", "Request interrupted");
                     return;
                 } catch (IOException e) {
                     log.error("Upstream IO error: account_id={}, failover={}", account.getId(), failoverCount, e);
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     failoverCount++;
                     continue;
                 }
@@ -251,14 +253,14 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     }
 
                     accountSelector.updateLastUsed(account.getId());
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     return;
                 }
 
                 // --- 401 OAuth 刷新 ---
                 else if (statusCode == 401 && account.getType() == AccountType.OAUTH) {
                     log.info("OAuth 401 detected, attempting token refresh: account_id={}", account.getId());
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     String newToken = oauthTokenRefreshService.refreshAccessToken(account.getId());
                     if (newToken != null) {
                         log.info("OAuth token refreshed: account_id={}, retrying", account.getId());
@@ -274,7 +276,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     log.warn("Failover error: status={}, account_id={}, attempt={}",
                             statusCode, account.getId(), failoverCount);
                     markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     failoverCount++;
                 }
 
@@ -293,11 +295,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         log.warn("Error passthrough RETRY: status={}, account_id={}, attempt={}",
                                 statusCode, account.getId(), failoverCount);
                         markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
-                        concurrencyService.release(account.getId());
+                        concurrencyService.release(slot);
                         failoverCount++;
                         // 回到 failover 循环
                     } else {
-                        concurrencyService.release(account.getId());
+                        concurrencyService.release(slot);
                         writeMaskedUpstreamError(response, statusCode, errorBody);
                         return;
                     }
@@ -341,9 +343,18 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
              var writer = response.getWriter()) {
 
             String line;
+            long lastRenewal = System.currentTimeMillis();
             while ((line = reader.readLine()) != null) {
                 writer.write(line);
                 writer.write("\n");
+
+                // 每 60 秒续约一次并发槽位租约，防止流式长连接期间 permit 过期
+                if (System.currentTimeMillis() - lastRenewal > 60_000) {
+                    if (ctx.getConcurrencySlot() != null) {
+                        concurrencyService.renewLease(ctx.getConcurrencySlot());
+                    }
+                    lastRenewal = System.currentTimeMillis();
+                }
 
                 if (line.startsWith("data: ")) {
                     String json = line.substring(6);
