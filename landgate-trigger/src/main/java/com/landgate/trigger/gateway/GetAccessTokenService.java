@@ -59,12 +59,13 @@ public class GetAccessTokenService {
                         }
                     }
                     var token = root.has("access_token") ? root.get("access_token").asText() : null;
-                    if (token != null && token.length() > 100) {
+                    boolean encrypted = root.has("token_encrypted") && root.get("token_encrypted").asBoolean();
+                    if (token != null && encrypted) {
                         try {
                             yield credentialService.decrypt(token);
                         } catch (Exception e) {
-                            log.error("Failed to decrypt OAuth access_token: account_id={}", account.getId(), e);
-                            yield null;
+                            log.warn("Failed to decrypt OAuth access_token, using as plaintext: account_id={}", account.getId(), e);
+                            yield token;
                         }
                     }
                     yield token;

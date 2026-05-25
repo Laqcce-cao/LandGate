@@ -181,6 +181,7 @@ public class OAuthAuthorizationService implements IOAuthService {
             Instant expiresAt = Instant.now().plusSeconds(expiresIn);
             credsNode.put("token_expires_at", expiresAt.toString());
             credsNode.put("oauth_provider", platformKey);
+            credsNode.put("token_encrypted", true);
 
             // Create Account entity
             Platform platform = Platform.from(platformKey);
@@ -404,6 +405,7 @@ public class OAuthAuthorizationService implements IOAuthService {
             Instant expiresAt = Instant.now().plusSeconds(expiresIn);
             credsNode.put("token_expires_at", expiresAt.toString());
             credsNode.put("oauth_provider", platformKey);
+            credsNode.put("token_encrypted", true);
 
             String accountName = email != null && !email.isEmpty()
                     ? "openai-" + email
