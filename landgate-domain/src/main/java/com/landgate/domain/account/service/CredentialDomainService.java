@@ -31,10 +31,10 @@ public class CredentialDomainService {
     public CredentialDomainService(
             @Value("${landgate.security.credential-encryption-key:}") String encryptionKeyHex) {
         if (encryptionKeyHex == null || encryptionKeyHex.isEmpty()) {
-            log.warn("Credential encryption key not configured! Generating random dev key.");
-            byte[] randomKey = new byte[32];
-            new SecureRandom().nextBytes(randomKey);
-            this.secretKey = new SecretKeySpec(randomKey, "AES");
+            throw new IllegalStateException(
+                    "Credential encryption key not configured! " +
+                    "Set 'landgate.security.credential-encryption-key' to a 64-char hex string (32 bytes). " +
+                    "Without a fixed key, encrypted credentials become permanently undecryptable after restart.");
         } else {
             byte[] keyBytes = hexToBytes(encryptionKeyHex);
             if (keyBytes.length != 32) {
