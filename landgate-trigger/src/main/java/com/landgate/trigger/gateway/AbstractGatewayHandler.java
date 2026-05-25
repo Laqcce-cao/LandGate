@@ -212,14 +212,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
             stickyAccountId = null;
 
-            // 刷新后重试又 401：说明不是 token 问题，换账号 failover
-            if (account != null && account.getId().equals(tokenRefreshed)) {
-                log.warn("Token refresh did not resolve 401, failing over: account_id={}", account.getId());
-                tokenRefreshed = null;
-                failoverCount++;
-                continue;
-            }
-
             if (account == null) {
                 getErrorWriter().writeError(response, 503, "overloaded_error",
                         "No available accounts in group '" + group.getName() + "'.");
@@ -332,8 +324,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
                 // --- 401 OAuth 刷新 ---
                 else if (statusCode == 401 && account.getType() == AccountType.OAUTH) {
-                    log.info("OAuth 401 detected, attempting token refresh: account_id={}", account.getId());
                     concurrencyService.release(slot);
+                    // 该账号已刷新过 token 但仍返回 401，说明不是 token 过期问题，直接 failover
+                    if (account.getId().equals(tokenRefreshed)) {
+                        log.warn("Token refresh did not resolve 401, failing over: account_id={}", account.getId());
+                        tokenRefreshed = null;
+                        failoverCount++;
+                        continue;
+                    }
+                    log.info("OAuth 401 detected, attempting token refresh: account_id={}", account.getId());
                     String newToken = oauthTokenRefreshService.refreshAccessToken(account.getId());
                     if (newToken != null) {
                         log.info("OAuth token refreshed: account_id={}, retrying", account.getId());
