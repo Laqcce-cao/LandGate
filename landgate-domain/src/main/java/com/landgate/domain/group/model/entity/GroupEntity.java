@@ -1,6 +1,5 @@
 package com.landgate.domain.group.model.entity;
 
-import com.landgate.types.enums.Platform;
 import com.landgate.types.enums.Status;
 import com.landgate.types.enums.SubscriptionType;
 import lombok.*;
@@ -39,10 +38,6 @@ public class GroupEntity {
     /** 分组状态 */
     @Builder.Default
     private Status status = Status.ACTIVE;
-
-    /** 默认平台 */
-    @Builder.Default
-    private Platform platform = Platform.ANTHROPIC;
 
     /** 订阅类型 */
     @Builder.Default
@@ -96,10 +91,6 @@ public class GroupEntity {
     /** 是否注入 MCP XML */
     @Builder.Default
     private Boolean mcpXmlInject = true;
-
-    /** 支持的模型范围（JSON 数组） */
-    @Builder.Default
-    private String supportedModelScopes = "[\"claude\", \"gemini_text\", \"gemini_image\"]";
 
     /** 排序权重 */
     @Builder.Default

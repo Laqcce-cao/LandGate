@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class SessionHashService {
 
-    private static final long TTL_HOURS = 1;
+    private static final long TTL_MINUTES = 30;
     private static final String CACHE_KEY = "session:sticky";
 
     private final RMapCache<String, Long> sessionCache;
@@ -31,26 +31,21 @@ public class SessionHashService {
     }
 
     /**
-     * 生成会话哈希 —— 基于客户端 IP、归一化 User-Agent、LandGate 用户 ID 和请求 body 中的终端用户标识。
+     * 生成会话哈希 —— 基于客户端 IP、归一化 User-Agent、API Key ID。
      * <p>
-     * 使用 {@code userId} 替代 {@code apiKeyId}，使同一 LandGate 用户的多个 API Key
-     * 共享同一上游账户的会话粘性，从而复用上游 prompt cache。
-     * {@code bodyUserId} 提供更细粒度的隔离（同一用户的不同终端用户路由到不同账户）。
+     * 同一 API Key 从同一客户端发起的请求视为同一会话，优先分配到同一上游账号。
+     * 一个 API Key 对应一个应用，通常不会频繁切换模型，因此不需要模型级别的隔离。
      *
-     * @param request     HTTP 请求
-     * @param userId      LandGate 用户 ID
-     * @param bodyUserId  请求 body 中的终端用户标识（无则为 null）
+     * @param request  HTTP 请求
+     * @param apiKeyId API Key ID
      * @return 16 位十六进制会话哈希
      */
-    public String generateHash(HttpServletRequest request, Long userId, String bodyUserId) {
+    public String generateHash(HttpServletRequest request, Long apiKeyId) {
         String clientIp = request.getRemoteAddr();
         String userAgent = normalizeUserAgent(request.getHeader("User-Agent"));
-        StringBuilder sb = new StringBuilder();
-        sb.append(clientIp).append('|').append(userAgent).append('|').append(userId);
-        if (bodyUserId != null && !bodyUserId.isEmpty()) {
-            sb.append('|').append(bodyUserId);
-        }
-        String raw = sb.toString();
+        String raw = new StringBuilder()
+                .append(clientIp).append('|').append(userAgent).append('|').append(apiKeyId)
+                .toString();
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] hash = md.digest(raw.getBytes(StandardCharsets.UTF_8));
@@ -73,20 +68,20 @@ public class SessionHashService {
         Long accountId = sessionCache.get(sessionHash);
         if (accountId != null) {
             // 滑动过期：每次读取刷新 TTL
-            sessionCache.put(sessionHash, accountId, TTL_HOURS, TimeUnit.HOURS);
+            sessionCache.put(sessionHash, accountId, TTL_MINUTES, TimeUnit.MINUTES);
             log.debug("Session TTL refreshed: hash={}, account_id={}", sessionHash, accountId);
         }
         return accountId;
     }
 
     /**
-     * 绑定会话到上游账号，设置 1 小时 TTL。
+     * 绑定会话到上游账号，设置 30 分钟 TTL。
      *
      * @param sessionHash 会话哈希
      * @param accountId   上游账号 ID
      */
     public void bindSession(String sessionHash, Long accountId) {
-        sessionCache.put(sessionHash, accountId, TTL_HOURS, TimeUnit.HOURS);
+        sessionCache.put(sessionHash, accountId, TTL_MINUTES, TimeUnit.MINUTES);
         log.debug("Session bound: hash={}, account_id={}", sessionHash, accountId);
     }
 

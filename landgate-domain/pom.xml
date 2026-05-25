@@ -40,5 +40,11 @@
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-crypto</artifactId>
         </dependency>
+        <!-- Redisson 核心（仅 RBucket 缓存，不含 Spring Boot 自动装配） -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <version>${redisson.version}</version>
+        </dependency>
     </dependencies>
 </project>

@@ -63,7 +63,8 @@ public class GetAccessTokenService {
                         try {
                             yield credentialService.decrypt(token);
                         } catch (Exception e) {
-                            yield token;
+                            log.error("Failed to decrypt OAuth access_token: account_id={}", account.getId(), e);
+                            yield null;
                         }
                     }
                     yield token;

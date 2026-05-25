@@ -33,9 +33,6 @@ public interface IGroupDao {
     /** 根据名称查询未删除的分组 */
     GroupPO selectByName(@Param("name") String name);
 
-    /** 根据平台查询未删除的分组 */
-    List<GroupPO> selectByPlatform(@Param("platform") String platform);
-
     /** 根据状态查询未删除的分组 */
     List<GroupPO> selectByStatus(@Param("status") String status);
 

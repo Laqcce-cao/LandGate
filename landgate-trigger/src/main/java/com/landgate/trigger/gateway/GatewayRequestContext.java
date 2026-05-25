@@ -24,6 +24,8 @@ public class GatewayRequestContext {
     private String upstreamModel;
     /** Gemini 专用的上游路径（完整 servlet path），其他平台为 null */
     private String upstreamPath;
+    /** 当前请求持有的并发槽位（用于流式续约），非流式请求为 null */
+    private ConcurrencySlot concurrencySlot;
 
     private static final ThreadLocal<GatewayRequestContext> HOLDER = new ThreadLocal<>();
 

@@ -78,6 +78,12 @@ public class ErrorPassthroughService {
             return defaultMessage(statusCode);
         }
 
+        // 对上游账户类错误（402/429/503），不提取原始消息，
+        // 避免透传"余额不足"等误导性信息给客户端
+        if (statusCode == 402 || statusCode == 429 || statusCode == 503) {
+            return defaultMessage(statusCode);
+        }
+
         // 尝试从常见 JSON error 路径提取消息
         String[] jsonPaths = {
                 "\"message\":\"",           // Anthropic / OpenAI / Gemini 通用
@@ -107,10 +113,12 @@ public class ErrorPassthroughService {
         return switch (statusCode) {
             case 400 -> "Invalid request. Please check your parameters.";
             case 401 -> "Authentication failed. Please check your credentials.";
+            case 402 -> "The service is temporarily unavailable. Please try again later.";
             case 403 -> "Access denied. Your account may not have permission.";
             case 404 -> "The requested resource was not found.";
             case 422 -> "The request could not be processed.";
             case 429 -> "Too many requests. Please slow down.";
+            case 503 -> "The service is temporarily unavailable. Please try again later.";
             default -> "An upstream error occurred. Status: " + statusCode;
         };
     }

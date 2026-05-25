@@ -32,8 +32,8 @@ public class ModelPriceRepositoryImpl implements IModelPriceRepository {
     }
 
     @Override
-    public Optional<ModelPriceEntity> findByModelAndGroup(String model, Long groupId) {
-        return Optional.ofNullable(modelPriceDao.selectByModelAndGroup(model, groupId))
+    public Optional<ModelPriceEntity> findByModel(String model) {
+        return Optional.ofNullable(modelPriceDao.selectByModel(model))
                 .map(modelPriceMapper::toEntity);
     }
 

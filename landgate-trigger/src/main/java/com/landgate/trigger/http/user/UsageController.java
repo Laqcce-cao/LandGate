@@ -25,13 +25,18 @@ public class UsageController {
     private final IUsageLogRepository usageLogRepository;
 
     /**
-     * 分页查询当前用户的用量日志列表。
+     * 分页查询当前用户的用量日志列表，支持可选日期范围过滤。
+     *
+     * @param start 起始日期（可选，格式 yyyy-MM-dd，包含）
+     * @param end   结束日期（可选，格式 yyyy-MM-dd，不包含）
      */
     @GetMapping("/my")
     public ResponseEntity<?> myUsage(
             HttpServletRequest request,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String start,
+            @RequestParam(required = false) String end) {
         Long userId = (Long) request.getAttribute("user_id");
         if (userId == null) {
             return ResponseEntity.status(401).body(Map.of(
@@ -39,8 +44,16 @@ public class UsageController {
                     "message", "User not authenticated"
             ));
         }
-        var logs = usageLogRepository.findByUserId(userId, page, size);
-        long total = usageLogRepository.countByUserId(userId);
+        LocalDate startDate = (start != null && !start.isBlank()) ? LocalDate.parse(start) : null;
+        LocalDate endDate = (end != null && !end.isBlank()) ? LocalDate.parse(end) : null;
+
+        boolean hasDateFilter = startDate != null || endDate != null;
+        var logs = hasDateFilter
+                ? usageLogRepository.findByUserIdWithDate(userId, page, size, startDate, endDate)
+                : usageLogRepository.findByUserId(userId, page, size);
+        long total = hasDateFilter
+                ? usageLogRepository.countByUserIdWithDate(userId, startDate, endDate)
+                : usageLogRepository.countByUserId(userId);
         return ResponseEntity.ok(Map.of(
                 "logs", logs,
                 "total", total,

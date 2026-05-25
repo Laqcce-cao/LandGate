@@ -5,7 +5,6 @@ import com.landgate.types.enums.Platform;
 import com.landgate.types.enums.Status;
 import lombok.*;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
@@ -53,10 +52,6 @@ public class AccountPO extends BasePO {
     /** 调度优先级（数字越小越优先） */
     @Builder.Default
     private Integer priority = 50;
-
-    /** 价格倍率 */
-    @Builder.Default
-    private BigDecimal rateMultiplier = BigDecimal.ONE;
 
     /** 账号状态 */
     @Builder.Default

@@ -2,7 +2,7 @@ package com.landgate.trigger.gateway;
 
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RBucket;
-import org.redisson.api.RSemaphore;
+import org.redisson.api.RPermitExpirableSemaphore;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Component;
 
@@ -11,12 +11,15 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 并发控制服务 —— 基于 Redisson {@link RSemaphore} 实现分布式并发控制。
+ * 并发控制服务 —— 基于 Redisson {@link RPermitExpirableSemaphore} 实现分布式并发控制。
  * <p>
  * 每个上游账号的并发槽位存储在 Redis 中，支持多实例部署。
  * 获取槽位时先做前置检查（无可用槽位直接返回false），
  * 有可用槽位时使用指数退避 + jitter 等待，避免惊群效应。
  * 默认最大等待 30 秒。
+ * <p>
+ * 每个 permit 带有 5 分钟租约，到期自动归还，解决实例崩溃导致的槽位泄漏问题。
+ * 流式请求需通过 {@link #renewLease} 定期续约。
  */
 @Slf4j
 @Component
@@ -30,23 +33,25 @@ public class ConcurrencyService {
     private static final double BACKOFF_MULTIPLIER = 1.5;
     private static final double JITTER_FACTOR = 0.2;
     private static final Duration MAX_BUCKET_TTL = Duration.ofHours(24);
+    private static final long PERMIT_LEASE_SECONDS = 300;
 
-    private static final String SEMAPHORE_PREFIX = "concurrency:";
-    private static final String MAX_BUCKET_PREFIX = "concurrency:max:";
+    private static final String SEMAPHORE_PREFIX = "concurrency:slot:";
+    private static final String MAX_BUCKET_PREFIX = "concurrency:slot:max:";
 
     public ConcurrencyService(RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
     }
 
     /**
-     * 尝试获取指定账号的并发槽位。
+     * 尝试获取指定账号的并发槽位，成功时返回带 5 分钟租约的 {@link ConcurrencySlot}。
      *
      * @param accountId      上游账号 ID
      * @param maxConcurrency 该账号的最大并发数
-     * @return true 表示获取成功，false 表示超时或中断
+     * @return 获取成功返回 ConcurrencySlot，失败返回 null
      */
-    public boolean tryAcquire(Long accountId, int maxConcurrency) {
-        RSemaphore semaphore = redissonClient.getSemaphore(SEMAPHORE_PREFIX + accountId);
+    public ConcurrencySlot tryAcquire(Long accountId, int maxConcurrency) {
+        RPermitExpirableSemaphore semaphore = redissonClient.getPermitExpirableSemaphore(
+                SEMAPHORE_PREFIX + accountId);
 
         // 确保信号量已按正确的并发数初始化
         ensurePermits(semaphore, accountId, maxConcurrency);
@@ -55,7 +60,7 @@ public class ConcurrencyService {
         int available = semaphore.availablePermits();
         if (available <= 0) {
             log.debug("Concurrency slot full (skip wait): account_id={}, max={}", accountId, maxConcurrency);
-            return false;
+            return null;
         }
 
         long baseWaitMs = BASE_WAIT_MS;
@@ -65,20 +70,21 @@ public class ConcurrencyService {
             long remaining = deadline - System.currentTimeMillis();
             if (remaining <= 0) {
                 log.warn("Concurrency slot timeout: account_id={}, max={}", accountId, maxConcurrency);
-                return false;
+                return null;
             }
 
             try {
                 long pollMs = Math.min(remaining, MAX_POLL_MS);
-                if (semaphore.tryAcquire(pollMs, TimeUnit.MILLISECONDS)) {
-                    log.debug("Concurrency slot acquired: account_id={}, available={}",
-                            accountId, semaphore.availablePermits());
-                    return true;
+                String permitId = semaphore.tryAcquire(pollMs, PERMIT_LEASE_SECONDS, TimeUnit.SECONDS);
+                if (permitId != null) {
+                    log.debug("Concurrency slot acquired: account_id={}, permit_id={}, available={}",
+                            accountId, permitId, semaphore.availablePermits());
+                    return ConcurrencySlot.of(permitId, accountId);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 log.warn("Concurrency wait interrupted: account_id={}", accountId);
-                return false;
+                return null;
             }
 
             // 指数退避 + ±20% jitter
@@ -90,21 +96,46 @@ public class ConcurrencyService {
                 Thread.sleep(sleepMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return false;
+                return null;
             }
         }
     }
 
     /**
      * 释放指定账号的并发槽位。
+     * <p>
+     * permit 已过期时 release 为 no-op，不会抛异常。
      *
-     * @param accountId 上游账号 ID
+     * @param slot 之前获取的并发槽位
      */
-    public void release(Long accountId) {
-        RSemaphore semaphore = redissonClient.getSemaphore(SEMAPHORE_PREFIX + accountId);
-        semaphore.release();
-        log.debug("Concurrency slot released: account_id={}, available={}",
-                accountId, semaphore.availablePermits());
+    public void release(ConcurrencySlot slot) {
+        if (slot == null || !slot.isAcquired()) return;
+        RPermitExpirableSemaphore semaphore = redissonClient.getPermitExpirableSemaphore(
+                SEMAPHORE_PREFIX + slot.getAccountId());
+        semaphore.release(slot.getPermitId());
+        log.debug("Concurrency slot released: account_id={}, permit_id={}, available={}",
+                slot.getAccountId(), slot.getPermitId(), semaphore.availablePermits());
+    }
+
+    /**
+     * 续约指定槽位的租约，重置为 5 分钟。
+     * <p>
+     * 流式请求应在 SSE 循环中定期调用（建议每 60 秒），防止长连接期间 permit 过期。
+     *
+     * @param slot 需要续约的并发槽位
+     * @return true 表示续约成功，false 表示 permit 已过期
+     */
+    public boolean renewLease(ConcurrencySlot slot) {
+        if (slot == null || !slot.isAcquired()) return false;
+        RPermitExpirableSemaphore semaphore = redissonClient.getPermitExpirableSemaphore(
+                SEMAPHORE_PREFIX + slot.getAccountId());
+        boolean renewed = semaphore.updateLeaseTime(
+                slot.getPermitId(), PERMIT_LEASE_SECONDS, TimeUnit.SECONDS);
+        if (!renewed) {
+            log.warn("Concurrency lease renewal failed (permit may have expired): account_id={}, permit_id={}",
+                    slot.getAccountId(), slot.getPermitId());
+        }
+        return renewed;
     }
 
     /**
@@ -114,7 +145,8 @@ public class ConcurrencyService {
      * @return 当前占用的槽位数
      */
     public int getActiveCount(Long accountId) {
-        RSemaphore semaphore = redissonClient.getSemaphore(SEMAPHORE_PREFIX + accountId);
+        RPermitExpirableSemaphore semaphore = redissonClient.getPermitExpirableSemaphore(
+                SEMAPHORE_PREFIX + accountId);
         int available = semaphore.availablePermits();
         if (available < 0) {
             return 0;
@@ -137,7 +169,7 @@ public class ConcurrencyService {
      * 并发数增大时通过 addPermits 增量调整；
      * 并发数减小时只更新存储的 max 值，多余 permit 随 release 自然排干。
      */
-    private void ensurePermits(RSemaphore semaphore, Long accountId, int maxConcurrency) {
+    private void ensurePermits(RPermitExpirableSemaphore semaphore, Long accountId, int maxConcurrency) {
         String maxKey = MAX_BUCKET_PREFIX + accountId;
         RBucket<Integer> maxBucket = redissonClient.getBucket(maxKey);
 

@@ -30,6 +30,14 @@ public interface IAccountRepository {
     Optional<AccountEntity> findById(Long id);
 
     /**
+     * 批量根据ID查询账户
+     *
+     * @param ids 主键ID列表
+     * @return 查询到的账户列表
+     */
+    List<AccountEntity> findByIds(List<Long> ids);
+
+    /**
      * 保存账户（新增或更新）
      *
      * @param entity 账户实体

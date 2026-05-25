@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  * <p>
  * 刷新策略：
  * <ul>
- *   <li>按需刷新 —— GatewayService 检测到 401 时调用 {@link #refreshAccessToken(Long)}</li>
+ *   <li>按需刷新 —— AbstractGatewayHandler 检测到 401 时调用 {@link #refreshAccessToken(Long)}</li>
  *   <li>主动刷新 —— {@code OAuthTokenRefreshScheduler} 通过 Redis Sorted Set 定期扫描即将过期的 token</li>
  * </ul>
  * 使用 Redisson RLock 防止同一账号并发刷新。
@@ -107,6 +107,29 @@ public class OAuthTokenRefreshService {
 
         try {
             JsonNode creds = JSON.readTree(account.getCredentials());
+
+            // 检查 token 是否已被其他线程刷新（并发 401 保护，避免重复刷新导致 token 互相作废）
+            if (creds.has("token_expires_at")) {
+                try {
+                    Instant expiresAt = Instant.parse(creds.get("token_expires_at").asText());
+                    if (expiresAt.isAfter(Instant.now().plusSeconds(60))) {
+                        log.info("Token already fresh (expires_at={}), skipping refresh: account_id={}",
+                                expiresAt, accountId);
+                        if (creds.has("access_token")) {
+                            String token = creds.get("access_token").asText();
+                            if (token.length() > 100) {
+                                try { return credentialService.decrypt(token); }
+                                catch (Exception e) { return token; }
+                            }
+                            return token;
+                        }
+                        return null;
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not parse token_expires_at: account_id={}", accountId);
+                }
+            }
+
             String refreshToken = extractRefreshToken(creds);
             if (refreshToken == null) {
                 log.warn("No refresh_token in account credentials: account_id={}", accountId);
@@ -227,8 +250,8 @@ public class OAuthTokenRefreshService {
         try {
             return credentialService.decrypt(encrypted);
         } catch (Exception e) {
-            log.warn("Failed to decrypt refresh_token, trying raw value");
-            return encrypted;
+            log.error("Failed to decrypt refresh_token: account may have corrupted credentials", e);
+            return null;
         }
     }
 

@@ -18,10 +18,9 @@ public interface IModelPriceDao {
     ModelPricePO selectById(@Param("id") Long id);
 
     /**
-     * 查询模型价格：优先分组覆盖，回退全局默认。
-     * 返回一条记录，按 group_id IS NULL 升序（分组覆盖优先）。
+     * 根据模型名查询启用的价格。
      */
-    ModelPricePO selectByModelAndGroup(@Param("model") String model, @Param("groupId") Long groupId);
+    ModelPricePO selectByModel(@Param("model") String model);
 
     /** 按平台查询所有未删除的启用价格 */
     List<ModelPricePO> selectByPlatform(@Param("platform") String platform);

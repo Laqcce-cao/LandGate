@@ -8,6 +8,7 @@ import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.domain.images.service.ImageGenerationIntent;
 import com.landgate.trigger.images.ImagesService;
 import com.landgate.trigger.gateway.*;
+import com.landgate.types.enums.AccountType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -53,6 +54,7 @@ public class ImagesController {
     private final BillingDomainService billingDomainService;
     private final BalanceDomainService balanceDomainService;
     private final IGroupRepository groupRepository;
+    private final RateLimitHeaderParser rateLimitHeaderParser;
 
     /** 最大 failover 切换次数 */
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -148,16 +150,23 @@ public class ImagesController {
             return;
         }
 
+        // ---- Step 3.5: API Key 配额校验 ----
+        try {
+            billingDomainService.checkQuota(apiKeyId);
+        } catch (com.landgate.types.exception.AuthenticationException e) {
+            response.setStatus(429);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(
+                    "{\"error\":{\"message\":\"" + e.getMessage() + "\",\"type\":\"quota_exceeded\",\"param\":null,\"code\":null}}");
+            return;
+        }
+
         // ---- Step 4: 解析请求 ----
         OpenAIImagesRequest parsed = imagesService.parseImagesRequest(body, contentType, path);
 
-        // ---- Step 5: 会话粘性 ----
-        String sessionHash = sessionHashService.generateHash(request, userId, null);
-        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
-
-        // ---- Step 6: 并发控制（全局图片并发槽位） ----
-        boolean slotAcquired = concurrencyService.tryAcquire(IMAGE_CONCURRENCY_ID, IMAGE_MAX_CONCURRENCY);
-        if (!slotAcquired) {
+        // ---- Step 5: 并发控制（全局图片并发槽位） ----
+        ConcurrencySlot globalSlot = concurrencyService.tryAcquire(IMAGE_CONCURRENCY_ID, IMAGE_MAX_CONCURRENCY);
+        if (globalSlot == null) {
             response.setStatus(503);
             response.setContentType("application/json;charset=UTF-8");
             response.getWriter().write(
@@ -166,9 +175,13 @@ public class ImagesController {
         }
 
         try {
-            // ---- Step 7: 账户选择 + failover 循环 ----
+            // ---- Step 6: 会话粘性（IP + UA + API Key） ----
             String capability = imagesService.classifyCapability(parsed);
             String model = parsed.getModel();
+            String sessionHash = sessionHashService.generateHash(request, apiKeyId);
+            Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
+
+            // ---- Step 7: 账户选择 + failover 循环 ----
             AccountEntity account = null;
             Set<Long> excludedAccountIds = new HashSet<>();
 
@@ -199,9 +212,9 @@ public class ImagesController {
                 }
 
                 // 7d. 账户级并发控制
-                boolean accountSlot = concurrencyService.tryAcquire(
+                ConcurrencySlot acctSlot = concurrencyService.tryAcquire(
                         account.getId(), account.getConcurrency());
-                if (!accountSlot) {
+                if (acctSlot == null) {
                     log.debug("Account concurrency full for image: account_id={}", account.getId());
                     excludedAccountIds.add(account.getId());
                     account = null;
@@ -256,8 +269,13 @@ public class ImagesController {
 
                         // 绑定会话
                         sessionHashService.bindSession(sessionHash, account.getId());
-                        // 更新最后使用时间
-                        accountSelector.updateLastUsed(account.getId());
+                        // 更新最后使用时间 + 捕获 Rate Limit 头（仅 OAUTH 账号）
+                        RateLimitSnapshot rateLimitSnapshot = null;
+                        if (account.getType() == AccountType.OAUTH) {
+                            rateLimitSnapshot = rateLimitHeaderParser.parse(
+                                    upstreamResp.headers(), account.getPlatform());
+                        }
+                        accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
 
                         // 记录用量日志
                         log.info("Image request completed: model={}, account={}, images={}, size={}, stream={}, duration={}ms",
@@ -275,11 +293,12 @@ public class ImagesController {
                                 request.getHeader("User-Agent"),
                                 request.getRemoteAddr());
 
-                        // 扣减余额
+                        // 扣减余额 + 累加 API Key 已用额度
                         if (imageCount > 0) {
                             BigDecimal actualCost = calculateActualImageCost(
                                     group, imageSize, imageCount, rateMultiplier);
                             balanceDomainService.deduct(userId, actualCost);
+                            billingDomainService.accumulateQuota(apiKeyId, actualCost);
                         }
 
                         return; // Success
@@ -322,7 +341,7 @@ public class ImagesController {
                     return;
 
                 } finally {
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(acctSlot);
                 }
             }
 
@@ -348,7 +367,7 @@ public class ImagesController {
                         "{\"error\":{\"message\":\"Upstream connection failed.\",\"type\":\"server_error\",\"param\":null,\"code\":null}}");
             }
         } finally {
-            concurrencyService.release(IMAGE_CONCURRENCY_ID);
+            concurrencyService.release(globalSlot);
         }
     }
 

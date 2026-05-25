@@ -22,13 +22,12 @@ public interface IModelPriceRepository {
     Optional<ModelPriceEntity> findById(Long id);
 
     /**
-     * 根据模型名和分组ID查询定价，优先返回分组专属定价，其次返回全局默认定价
+     * 根据模型名查询定价
      *
      * @param model   模型名称（如 gpt-4、claude-3）
-     * @param groupId 分组ID
      * @return 匹配的定价实体，不存在返回 Optional.empty()
      */
-    Optional<ModelPriceEntity> findByModelAndGroup(String model, Long groupId);
+    Optional<ModelPriceEntity> findByModel(String model);
 
     /**
      * 根据平台查询该平台下所有模型的定价

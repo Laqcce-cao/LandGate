@@ -3,6 +3,7 @@ package com.landgate.trigger.http.auth;
 import com.landgate.api.auth.dto.AuthDTOs.CreateApiKeyRequest;
 import com.landgate.api.auth.dto.AuthDTOs.LoginRequest;
 import com.landgate.api.auth.dto.AuthDTOs.RegisterRequest;
+import com.landgate.api.auth.dto.AuthDTOs.UpdateApiKeyRequest;
 import com.landgate.domain.auth.model.entity.ApiKeyEntity;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.auth.service.AuthDomainService;
@@ -16,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -137,20 +139,42 @@ public class AuthController {
                 "name", k.getName(),
                 "status", k.getStatus().name(),
                 "groupId", k.getGroupId() != null ? k.getGroupId() : "",
-                "createdAt", k.getCreatedAt() != null ? k.getCreatedAt().toString() : ""
+                "createdAt", k.getCreatedAt() != null ? k.getCreatedAt().toString() : "",
+                "quota", k.getQuota() != null ? k.getQuota() : BigDecimal.ZERO,
+                "quotaUsed", k.getQuotaUsed() != null ? k.getQuotaUsed() : BigDecimal.ZERO
         )).toList());
     }
 
     @PostMapping("/api-keys")
     public ResponseEntity<?> createApiKey(@RequestAttribute("user_id") Long userId,
                                           @RequestBody CreateApiKeyRequest req) {
-        log.info("Create API key: user_id={}, name={}, group_id={}", userId, req.name(), req.groupId());
-        ApiKeyEntity key = authDomainService.createApiKey(userId, req.name(), req.groupId());
+        log.info("Create API key: user_id={}, name={}, group_id={}, quota={}",
+                userId, req.name(), req.groupId(), req.quota());
+        ApiKeyEntity key = authDomainService.createApiKey(userId, req.name(), req.groupId(), req.quota());
         return ResponseEntity.ok(Map.of(
                 "id", key.getId(),
                 "key", key.getKey(),
                 "name", key.getName(),
-                "status", key.getStatus().name()
+                "status", key.getStatus().name(),
+                "quota", key.getQuota() != null ? key.getQuota() : BigDecimal.ZERO,
+                "quotaUsed", key.getQuotaUsed() != null ? key.getQuotaUsed() : BigDecimal.ZERO
+        ));
+    }
+
+    @PutMapping("/api-keys/{id}")
+    public ResponseEntity<?> updateApiKey(@RequestAttribute("user_id") Long userId,
+                                          @PathVariable Long id,
+                                          @RequestBody UpdateApiKeyRequest req) {
+        log.info("Update API key: user_id={}, key_id={}", userId, id);
+        ApiKeyEntity key = authDomainService.updateApiKey(userId, id, req);
+        return ResponseEntity.ok(Map.of(
+                "id", key.getId(),
+                "key", key.getKey(),
+                "name", key.getName(),
+                "status", key.getStatus().name(),
+                "groupId", key.getGroupId() != null ? key.getGroupId() : "",
+                "quota", key.getQuota() != null ? key.getQuota() : BigDecimal.ZERO,
+                "quotaUsed", key.getQuotaUsed() != null ? key.getQuotaUsed() : BigDecimal.ZERO
         ));
     }
 

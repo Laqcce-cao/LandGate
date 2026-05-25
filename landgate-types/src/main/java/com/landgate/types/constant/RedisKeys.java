@@ -21,6 +21,8 @@ public final class RedisKeys {
     public static final String OAUTH_TOKEN_EXPIRY_KEY = "oauth:token:expiry";
     /** OAuth Token 刷新分布式锁 */
     public static final String OAUTH_TOKEN_REFRESH_LOCK_PREFIX = "oauth:token:refresh:lock:";
+    /** 分组支持模型并集缓存（TTL 5 分钟） */
+    public static final String GROUP_SUPPORTED_MODELS_PREFIX = "group:supported_models:";
 
     // ==================== Key 构造方法 ====================
 
@@ -42,5 +44,9 @@ public final class RedisKeys {
 
     public static String oauthTokenRefreshLockKey(Long accountId) {
         return OAUTH_TOKEN_REFRESH_LOCK_PREFIX + accountId;
+    }
+
+    public static String groupSupportedModelsKey(Long groupId) {
+        return GROUP_SUPPORTED_MODELS_PREFIX + groupId;
     }
 }

@@ -8,6 +8,8 @@ import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.types.enums.AccountType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -46,7 +48,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final SessionHashService sessionHashService;
     protected final OAuthTokenRefreshService oauthTokenRefreshService;
     protected final ErrorPassthroughService errorPassthroughService;
+    protected final RateLimitHeaderParser rateLimitHeaderParser;
+    protected final PlatformRouter platformRouter;
 
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
     private static final String ATTR_GATEWAY_UPSTREAM_PATH = "gateway_upstream_path";
@@ -62,7 +67,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
             OAuthTokenRefreshService oauthTokenRefreshService,
-            ErrorPassthroughService errorPassthroughService) {
+            ErrorPassthroughService errorPassthroughService,
+            RateLimitHeaderParser rateLimitHeaderParser,
+            PlatformRouter platformRouter) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -74,14 +81,50 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.sessionHashService = sessionHashService;
         this.oauthTokenRefreshService = oauthTokenRefreshService;
         this.errorPassthroughService = errorPassthroughService;
+        this.rateLimitHeaderParser = rateLimitHeaderParser;
+        this.platformRouter = platformRouter;
     }
 
     // --- 子类需注入的策略钩子 ---
 
-    protected abstract IRequestTransformer getTransformer();
-    protected abstract IUsageParser getUsageParser();
+    /** 客户端错误响应写入器（按客户端请求的格式返回错误） */
     protected abstract IErrorWriter getErrorWriter();
-    protected abstract String getPlatformName();
+
+    // --- 平台感知的动态组件获取 ---
+
+    /** 根据账户平台获取对应的上游请求转换器 */
+    protected IRequestTransformer getTransformerFor(AccountEntity account) {
+        return platformRouter.getTransformer(account.getPlatform());
+    }
+
+    /** 根据账户平台获取对应的用量解析器 */
+    protected IUsageParser getUsageParserFor(AccountEntity account) {
+        return platformRouter.getUsageParser(account.getPlatform());
+    }
+
+    // --- 通用请求解析（账户选择前调用，与平台无关）---
+
+    /** 从请求 body JSON 中提取 model 字段 */
+    protected static String extractModel(String body) {
+        try {
+            JsonNode root = JSON_MAPPER.readTree(body);
+            if (root.has("model")) return root.get("model").asText();
+        } catch (Exception e) {
+            // ignore
+        }
+        return "unknown";
+    }
+
+    /** 从请求 body JSON 中提取 stream 字段 */
+    protected static boolean isStreamRequest(String body) {
+        try {
+            JsonNode root = JSON_MAPPER.readTree(body);
+            if (root.has("stream")) return root.get("stream").asBoolean();
+        } catch (Exception e) {
+            // ignore
+        }
+        return false;
+    }
 
     // ========================
     // 模板方法
@@ -115,23 +158,29 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             return;
         }
 
-        log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, platform={}",
-                apiKeyId, userId, group.getId(), group.getName(), getPlatformName());
+        // Step 2.5: API Key 配额校验
+        try {
+            billingDomainService.checkQuota(apiKeyId);
+        } catch (com.landgate.types.exception.AuthenticationException e) {
+            getErrorWriter().writeError(response, 429, "quota_exceeded", e.getMessage());
+            return;
+        }
 
-        // Step 3: Session 粘滞
-        String bodyUserId = getTransformer().extractUserId(body);
-        String sessionHash = sessionHashService.generateHash(request, userId, bodyUserId);
-        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
-
-        // Step 4: 流式检测 + 模型名提取
-        // 优先从 request attribute 读取（Gemini 场景：模型名来自 URL path）
+        // Step 3: 流式检测 + 模型名提取（通用解析，与平台无关）
         String model = (String) request.getAttribute(ATTR_GATEWAY_MODEL);
         if (model == null) {
-            model = getTransformer().extractModel(body);
+            model = extractModel(body);
         }
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
-        boolean stream = getTransformer().isStreamRequest(body);
+        boolean stream = isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
+
+        log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, model={}",
+                apiKeyId, userId, group.getId(), group.getName(), model);
+
+        // Step 4: Session 粘滞（IP + UA + API Key）
+        String sessionHash = sessionHashService.generateHash(request, apiKeyId);
+        Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
 
         // Step 5: 余额预检查
         UserEntity user = userRepository.findById(userId).orElse(null);
@@ -148,16 +197,28 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // Step 6: Failover 循环
         int failoverCount = 0;
         AccountEntity account = null;
+        Long tokenRefreshed = null;  // 记录本轮已刷新过的 account，避免死循环
 
         while (failoverCount < MAX_FAILOVER_SWITCHES) {
-            account = (stickyAccountId != null)
-                    ? accountSelector.getById(stickyAccountId)
-                    : accountSelector.selectAccount(group, model);
+            // 粘滞账户优先，否则根据模型名称选择（不按平台过滤）
+            if (stickyAccountId != null) {
+                account = accountSelector.getById(stickyAccountId);
+            } else {
+                account = null;
+            }
 
             if (account == null) {
                 account = accountSelector.selectAccount(group, model);
             }
             stickyAccountId = null;
+
+            // 刷新后重试又 401：说明不是 token 问题，换账号 failover
+            if (account != null && account.getId().equals(tokenRefreshed)) {
+                log.warn("Token refresh did not resolve 401, failing over: account_id={}", account.getId());
+                tokenRefreshed = null;
+                failoverCount++;
+                continue;
+            }
 
             if (account == null) {
                 getErrorWriter().writeError(response, 503, "overloaded_error",
@@ -165,7 +226,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 return;
             }
 
-            if (!concurrencyService.tryAcquire(account.getId(), account.getConcurrency())) {
+            ConcurrencySlot slot = concurrencyService.tryAcquire(account.getId(), account.getConcurrency());
+            if (slot == null) {
                 log.warn("Concurrency slot unavailable: account_id={}, failover={}",
                         account.getId(), failoverCount);
                 failoverCount++;
@@ -174,7 +236,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
             String accessToken = getAccessTokenService.getAccessToken(account);
             if (accessToken == null || accessToken.isEmpty()) {
-                concurrencyService.release(account.getId());
+                concurrencyService.release(slot);
                 failoverCount++;
                 continue;
             }
@@ -184,84 +246,98 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .group(group).selectedAccount(account)
                     .stream(stream).requestedModel(model)
                     .upstreamPath(upstreamPath)
+                    .concurrencySlot(slot)
                     .build();
             GatewayRequestContext.set(ctx);
 
             try {
+                // 根据选中账户的平台构造对应的上游请求
+                IRequestTransformer transformer = getTransformerFor(account);
                 HttpRequest upstreamReq;
                 try {
-                    upstreamReq = getTransformer().buildUpstreamRequest(body, account, accessToken);
+                    upstreamReq = transformer.buildUpstreamRequest(body, account, accessToken);
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     failoverCount++;
                     continue;
                 }
 
-                log.info("Forwarding to upstream: request_id={}, account_id={}, model={}, stream={}, attempt={}",
-                        requestId, account.getId(), model, stream, failoverCount);
+                String accountPlatform = account.getPlatform().name();
+                log.info("Forwarding to upstream: request_id={}, account_id={}, model={}, platform={}, stream={}, attempt={}",
+                        requestId, account.getId(), model, accountPlatform, stream, failoverCount);
 
                 HttpResponse<InputStream> upstreamResp;
                 try {
                     upstreamResp = httpUpstreamClient.send(upstreamReq);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     getErrorWriter().writeError(response, 502, "upstream_error", "Request interrupted");
                     return;
                 } catch (IOException e) {
                     log.error("Upstream IO error: account_id={}, failover={}", account.getId(), failoverCount, e);
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     failoverCount++;
                     continue;
                 }
 
                 int statusCode = upstreamResp.statusCode();
                 long durationMs = System.currentTimeMillis() - startTime;
-                log.info("Upstream response: request_id={}, status={}, elapsed={}ms, account_id={}",
-                        requestId, statusCode, durationMs, account.getId());
+                log.info("Upstream response: request_id={}, status={}, elapsed={}ms, account_id={}, platform={}",
+                        requestId, statusCode, durationMs, account.getId(), accountPlatform);
 
                 // --- 成功 (2xx) ---
                 if (statusCode >= 200 && statusCode < 300) {
                     sessionHashService.bindSession(sessionHash, account.getId());
 
+                    IUsageParser usageParser = getUsageParserFor(account);
                     UsageTokens usage;
                     if (stream) {
-                        usage = handleStreaming(upstreamResp, response, ctx);
+                        usage = handleStreaming(upstreamResp, response, ctx, usageParser);
                     } else {
-                        usage = handleNonStreaming(upstreamResp, response);
+                        usage = handleNonStreaming(upstreamResp, response, usageParser);
                     }
 
                     if (usage != null && usage.hasUsage()) {
                         try {
                             var logEntry = billingDomainService.calculateAndBuildLog(
-                                    usage, model, getPlatformName(),
+                                    usage, model, accountPlatform,
                                     userId, apiKeyId, account.getId(), group.getId(),
-                                    account.getRateMultiplier(),
+                                    group.getRateMultiplier(),
                                     stream, durationMs,
                                     request.getHeader("User-Agent"),
                                     request.getRemoteAddr());
                             if (!user.isPrivileged()) {
                                 balanceDomainService.deduct(userId, logEntry.getActualCost());
                             }
+                            // 累加 API Key 已用额度
+                            billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
                         } catch (Exception e) {
                             log.error("Billing/deduction failed after response sent: user_id={}, model={}",
                                     userId, model, e);
                         }
                     }
 
-                    accountSelector.updateLastUsed(account.getId());
-                    concurrencyService.release(account.getId());
+                    // 捕获上游 Rate Limit 头（仅 OAUTH 账号）
+                    RateLimitSnapshot rateLimitSnapshot = null;
+                    if (account.getType() == AccountType.OAUTH) {
+                        rateLimitSnapshot = rateLimitHeaderParser.parse(
+                                upstreamResp.headers(), account.getPlatform());
+                    }
+                    accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
+                    concurrencyService.release(slot);
                     return;
                 }
 
                 // --- 401 OAuth 刷新 ---
                 else if (statusCode == 401 && account.getType() == AccountType.OAUTH) {
                     log.info("OAuth 401 detected, attempting token refresh: account_id={}", account.getId());
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     String newToken = oauthTokenRefreshService.refreshAccessToken(account.getId());
                     if (newToken != null) {
                         log.info("OAuth token refreshed: account_id={}, retrying", account.getId());
+                        tokenRefreshed = account.getId();
                         stickyAccountId = account.getId();
                         continue;
                     }
@@ -274,7 +350,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     log.warn("Failover error: status={}, account_id={}, attempt={}",
                             statusCode, account.getId(), failoverCount);
                     markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
-                    concurrencyService.release(account.getId());
+                    concurrencyService.release(slot);
                     failoverCount++;
                 }
 
@@ -287,17 +363,17 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     }
 
                     ErrorPassthroughService.ErrorAction action =
-                            errorPassthroughService.decide(statusCode, errorBody, getPlatformName());
+                            errorPassthroughService.decide(statusCode, errorBody, accountPlatform);
 
                     if (action == ErrorPassthroughService.ErrorAction.RETRY) {
                         log.warn("Error passthrough RETRY: status={}, account_id={}, attempt={}",
                                 statusCode, account.getId(), failoverCount);
                         markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
-                        concurrencyService.release(account.getId());
+                        concurrencyService.release(slot);
                         failoverCount++;
                         // 回到 failover 循环
                     } else {
-                        concurrencyService.release(account.getId());
+                        concurrencyService.release(slot);
                         writeMaskedUpstreamError(response, statusCode, errorBody);
                         return;
                     }
@@ -326,7 +402,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
     protected UsageTokens handleStreaming(HttpResponse<InputStream> upstreamResp,
                                            HttpServletResponse response,
-                                           GatewayRequestContext ctx) throws IOException {
+                                           GatewayRequestContext ctx,
+                                           IUsageParser usageParser) throws IOException {
         response.setStatus(200);
         response.setContentType("text/event-stream");
         response.setCharacterEncoding("UTF-8");
@@ -341,19 +418,28 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
              var writer = response.getWriter()) {
 
             String line;
+            long lastRenewal = System.currentTimeMillis();
             while ((line = reader.readLine()) != null) {
                 writer.write(line);
                 writer.write("\n");
 
+                // 每 60 秒续约一次并发槽位租约，防止流式长连接期间 permit 过期
+                if (System.currentTimeMillis() - lastRenewal > 60_000) {
+                    if (ctx.getConcurrencySlot() != null) {
+                        concurrencyService.renewLease(ctx.getConcurrencySlot());
+                    }
+                    lastRenewal = System.currentTimeMillis();
+                }
+
                 if (line.startsWith("data: ")) {
                     String json = line.substring(6);
-                    UsageTokens eventUsage = getUsageParser().parseSSELine(json);
+                    UsageTokens eventUsage = usageParser.parseSSELine(json);
                     if (eventUsage != null) {
                         totalUsage.merge(eventUsage);
                     }
                 }
 
-                if (getUsageParser().isStreamDone(line)) {
+                if (usageParser.isStreamDone(line)) {
                     writer.flush();
                     break;
                 }
@@ -377,7 +463,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     }
 
     protected UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,
-                                              HttpServletResponse response) throws IOException {
+                                              HttpServletResponse response,
+                                              IUsageParser usageParser) throws IOException {
         response.setStatus(upstreamResp.statusCode());
         response.setContentType("application/json");
         response.setCharacterEncoding("UTF-8");
@@ -392,7 +479,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             output.flush();
         }
 
-        return getUsageParser().parseNonStreaming(responseBody);
+        return usageParser.parseNonStreaming(responseBody);
     }
 
     /**
@@ -400,27 +487,21 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
      */
     private void writeMaskedUpstreamError(HttpServletResponse response,
                                           int upstreamStatus, String errorBody) throws IOException {
-        log.warn("Upstream error (masked): status={}, body={}",
-                upstreamStatus, errorBody.substring(0, Math.min(500, errorBody.length())));
+        // 日志保留完整上游错误信息 + 账户上下文，方便管理员排查
+        GatewayRequestContext ctx = GatewayRequestContext.get();
+        String accountInfo = "";
+        if (ctx != null && ctx.getSelectedAccount() != null) {
+            var acc = ctx.getSelectedAccount();
+            accountInfo = String.format(", account_id=%d, account_name=%s, platform=%s",
+                    acc.getId(), acc.getName(), acc.getPlatform());
+        }
+        log.warn("Upstream error (masked): status={}{}, body={}",
+                upstreamStatus, accountInfo,
+                errorBody.substring(0, Math.min(500, errorBody.length())));
 
         String safeMessage = errorPassthroughService.extractSafeMessage(upstreamStatus, errorBody);
         String errorCode = mapStatusToErrorCode(upstreamStatus);
         getErrorWriter().writeError(response, upstreamStatus, errorCode, safeMessage);
-    }
-
-    /**
-     * @deprecated 使用 {@link #writeMaskedUpstreamError} 替代，避免盲透传上游 body。
-     * 保留以兼容子类自定义调用。
-     */
-    @Deprecated
-    protected void handleUpstreamError(HttpResponse<InputStream> upstreamResp,
-                                        HttpServletResponse response,
-                                        int upstreamStatus) throws IOException {
-        String errorBody;
-        try (var input = upstreamResp.body()) {
-            errorBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        writeMaskedUpstreamError(response, upstreamStatus, errorBody);
     }
 
     /** HTTP 状态码 → 网关错误类型码映射 */

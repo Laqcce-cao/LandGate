@@ -35,3 +35,4 @@ dist/
 /docs/
 /landgate-app/src/test/
 /.env-prod
+/data/

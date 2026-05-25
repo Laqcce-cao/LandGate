@@ -44,7 +44,7 @@ public class GroupController {
 
     @PostMapping
     public ResponseEntity<?> create(@RequestBody GroupEntity group) {
-        log.info("Create group: name={}, platform={}", group.getName(), group.getPlatform());
+        log.info("Create group: name={}", group.getName());
         GroupEntity created = groupDomainService.create(group);
         return ResponseEntity.ok(created);
     }
