@@ -322,16 +322,30 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     return;
                 }
 
-                // --- 401 OAuth 刷新 ---
-                else if (statusCode == 401 && account.getType() == AccountType.OAUTH) {
+                // --- 401 处理 ---
+                else if (statusCode == 401) {
                     concurrencyService.release(slot);
-                    // 该账号已刷新过 token 但仍返回 401，说明不是 token 过期问题，直接 failover
+
+                    // 非 OAUTH 账号 401：API Key 凭证级故障，无法自愈，标记 ERROR
+                    if (account.getType() != AccountType.OAUTH) {
+                        log.error("Non-OAuth account returned 401, marking ERROR: account_id={}, type={}",
+                                account.getId(), account.getType());
+                        accountSelector.markError(account.getId(),
+                                "Upstream returned 401 for " + account.getType() + " account");
+                        failoverCount++;
+                        continue;
+                    }
+
+                    // OAUTH：已刷新过但仍 401，刷新无效，凭证级故障
                     if (account.getId().equals(tokenRefreshed)) {
-                        log.warn("Token refresh did not resolve 401, failing over: account_id={}", account.getId());
+                        log.warn("Token refresh did not resolve 401, marking ERROR: account_id={}", account.getId());
+                        accountSelector.markError(account.getId(),
+                                "OAuth token refreshed but upstream still returned 401");
                         tokenRefreshed = null;
                         failoverCount++;
                         continue;
                     }
+
                     log.info("OAuth 401 detected, attempting token refresh: account_id={}", account.getId());
                     String newToken = oauthTokenRefreshService.refreshAccessToken(account.getId());
                     if (newToken != null) {
@@ -340,7 +354,19 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         stickyAccountId = account.getId();
                         continue;
                     }
-                    log.warn("OAuth token refresh failed: account_id={}, failing over", account.getId());
+
+                    // 刷新返回 null：区分"无 refresh_token"（永久）和"刷新失败"（临时）
+                    boolean hasRefreshToken = checkHasRefreshToken(account);
+                    if (!hasRefreshToken) {
+                        log.error("OAuth account has no refresh_token, marking ERROR: account_id={}", account.getId());
+                        accountSelector.markError(account.getId(),
+                                "OAuth account has no refresh_token, cannot recover from 401");
+                    } else {
+                        log.warn("OAuth token refresh failed temporarily, marking unhealthy: account_id={}", account.getId());
+                        accountSelector.markTempUnschedulable(account.getId(),
+                                java.time.Instant.now().plusSeconds(600),
+                                "OAuth token refresh temporarily failed");
+                    }
                     failoverCount++;
                 }
 
@@ -544,6 +570,19 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 accountSelector.markTempUnschedulable(account.getId(), now.plusSeconds(120),
                         "Consecutive 5xx at failover=" + failoverCount);
             }
+        }
+    }
+
+    /**
+     * 检查 OAUTH 账号的 credentials 中是否有 refresh_token。
+     * 用于区分"无 refresh_token 永久不可恢复"和"刷新端点临时故障"。
+     */
+    private boolean checkHasRefreshToken(AccountEntity account) {
+        try {
+            var creds = JSON_MAPPER.readTree(account.getCredentials());
+            return creds.has("refresh_token") && !creds.get("refresh_token").asText().isEmpty();
+        } catch (Exception e) {
+            return false;
         }
     }
 }

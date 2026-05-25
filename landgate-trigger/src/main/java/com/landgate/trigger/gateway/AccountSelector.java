@@ -415,4 +415,17 @@ public class AccountSelector {
                     accountId, a.getName(), until, reason);
         });
     }
+
+    /**
+     * 将账号标记为 ERROR 状态 —— 用于凭证级永久故障（API Key 吊销、OAuth 无 refresh_token 等）。
+     * 不会自动恢复，需要管理员手动介入。
+     */
+    public void markError(Long accountId, String reason) {
+        accountRepository.findById(accountId).ifPresent(a -> {
+            a.setStatus(com.landgate.types.enums.Status.ERROR);
+            a.setErrorMessage(reason);
+            accountRepository.save(a);
+            log.warn("Account marked ERROR: id={}, name={}, reason={}", accountId, a.getName(), reason);
+        });
+    }
 }
