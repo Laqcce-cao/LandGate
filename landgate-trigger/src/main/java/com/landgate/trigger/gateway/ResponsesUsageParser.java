@@ -10,10 +10,10 @@ import org.springframework.stereotype.Component;
 /**
  * OpenAI Responses API 用量解析器 —— 从 Responses API 响应中提取 Token 用量。
  * <p>
- * 非流式响应：{@code {"usage": {"input_tokens": N, "output_tokens": N, "total_tokens": N}}}
+ * 非流式响应：{@code {"usage": {"input_tokens": N, "output_tokens": N, "input_tokens_details": {"cached_tokens": N}, ...}}}
  * <p>
  * 流式（SSE）响应：用量出现在 {@code response.completed} 事件中：
- * {@code data: {"type":"response.completed","response":{"usage":{"input_tokens":N,"output_tokens":N,...}}}}
+ * {@code data: {"type":"response.completed","response":{"usage":{"input_tokens":N,"output_tokens":N,"input_tokens_details":{"cached_tokens":N},...}}}}
  * <p>
  * 注意：Responses API SSE 流没有 Chat Completions 的 {@code [DONE]} 标记，
  * 流结束由 {@code response.completed} 事件表示。
@@ -35,9 +35,13 @@ public class ResponsesUsageParser implements IUsageParser {
             if (usage.isMissingNode() || usage.isNull()) {
                 return new UsageTokens();
             }
+            // OpenAI Responses API: input_tokens 包含缓存部分，需减去避免重复计费
+            int rawInputTokens = usage.path("input_tokens").asInt();
+            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt();
             return UsageTokens.builder()
-                    .inputTokens(usage.path("input_tokens").asInt())
+                    .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
                     .outputTokens(usage.path("output_tokens").asInt())
+                    .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
             log.debug("Failed to parse Responses non-streaming usage", e);
@@ -61,9 +65,13 @@ public class ResponsesUsageParser implements IUsageParser {
             if (usage.isMissingNode() || usage.isNull()) {
                 return null;
             }
+            // OpenAI Responses API: input_tokens 包含缓存部分，需减去避免重复计费
+            int rawInputTokens = usage.path("input_tokens").asInt();
+            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt();
             return UsageTokens.builder()
-                    .inputTokens(usage.path("input_tokens").asInt())
+                    .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
                     .outputTokens(usage.path("output_tokens").asInt())
+                    .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
             log.debug("Failed to parse Responses SSE line", e);

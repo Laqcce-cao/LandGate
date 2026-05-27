@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.types.enums.Platform;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -28,12 +29,19 @@ public class OpenAiTransformer implements IRequestTransformer {
 
     @Override
     public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
-        String targetUrl = OPENAI_API_URL;
+        // 按账号平台选择上游路径：OPENAI_RESPONSES → /v1/responses，其余 → /v1/chat/completions
+        boolean isResponses = account.getPlatform() == Platform.OPENAI_RESPONSES;
+        String pathSuffix = isResponses ? "/v1/responses" : "/v1/chat/completions";
+
+        String targetUrl = isResponses
+                ? "https://api.openai.com/v1/responses"
+                : OPENAI_API_URL;
+
         if (account.getExtra() != null && !account.getExtra().equals("{}")) {
             try {
                 var extra = JSON.readTree(account.getExtra());
                 if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
-                    targetUrl = extra.get("base_url").asText() + "/v1/chat/completions";
+                    targetUrl = extra.get("base_url").asText() + pathSuffix;
                 }
             } catch (Exception e) {
                 log.warn("Failed to parse base_url for OpenAI account: account_id={}", account.getId());
