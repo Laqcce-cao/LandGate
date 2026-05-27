@@ -11,6 +11,7 @@ import com.landgate.infrastructure.upstream.HttpUpstreamClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.types.enums.AccountType;
+import com.landgate.types.enums.Platform;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -51,6 +52,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final RateLimitHeaderParser rateLimitHeaderParser;
     protected final PlatformRouter platformRouter;
 
+    protected final ProtocolTranslationService translationService;
+
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
@@ -69,7 +72,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             OAuthTokenRefreshService oauthTokenRefreshService,
             ErrorPassthroughService errorPassthroughService,
             RateLimitHeaderParser rateLimitHeaderParser,
-            PlatformRouter platformRouter) {
+            PlatformRouter platformRouter,
+            ProtocolTranslationService translationService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -83,6 +87,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.errorPassthroughService = errorPassthroughService;
         this.rateLimitHeaderParser = rateLimitHeaderParser;
         this.platformRouter = platformRouter;
+        this.translationService = translationService;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -166,12 +171,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             return;
         }
 
-        // Step 3: 流式检测 + 模型名提取（通用解析，与平台无关）
+        // Step 3: 流式检测 + 模型名提取 + 请求平台（通用解析，与平台无关）
         String model = (String) request.getAttribute(ATTR_GATEWAY_MODEL);
         if (model == null) {
             model = extractModel(body);
         }
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
+        Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
         boolean stream = isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
 
@@ -244,17 +250,24 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .requestId(requestId).apiKeyId(apiKeyId).userId(userId)
                     .group(group).selectedAccount(account)
                     .stream(stream).requestedModel(model)
+                    .requestPlatform(requestPlatform)
                     .upstreamPath(upstreamPath)
                     .concurrencySlot(slot)
                     .build();
             GatewayRequestContext.set(ctx);
 
             try {
+                // 请求协议翻译：客户端格式 ≠ 上游格式时转换 body
+                Platform accountPlatform = account.getPlatform();
+                String upstreamBody = (requestPlatform != null && requestPlatform != accountPlatform)
+                        ? translationService.translateRequest(body, requestPlatform, accountPlatform)
+                        : body;
+
                 // 根据选中账户的平台构造对应的上游请求
                 IRequestTransformer transformer = getTransformerFor(account);
                 HttpRequest upstreamReq;
                 try {
-                    upstreamReq = transformer.buildUpstreamRequest(body, account, accessToken);
+                    upstreamReq = transformer.buildUpstreamRequest(upstreamBody, account, accessToken);
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
                     concurrencyService.release(slot);
@@ -262,9 +275,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     continue;
                 }
 
-                String accountPlatform = account.getPlatform().name();
                 log.info("Forwarding to upstream: request_id={}, account_id={}, model={}, platform={}, stream={}, attempt={}",
-                        requestId, account.getId(), model, accountPlatform, stream, failoverCount);
+                        requestId, account.getId(), model, accountPlatform.name(), stream, failoverCount);
 
                 HttpResponse<InputStream> upstreamResp;
                 try {
@@ -284,7 +296,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 int statusCode = upstreamResp.statusCode();
                 long durationMs = System.currentTimeMillis() - startTime;
                 log.info("Upstream response: request_id={}, status={}, elapsed={}ms, account_id={}, platform={}",
-                        requestId, statusCode, durationMs, account.getId(), accountPlatform);
+                        requestId, statusCode, durationMs, account.getId(), accountPlatform.name());
 
                 // --- 成功 (2xx) ---
                 if (statusCode >= 200 && statusCode < 300) {
@@ -301,7 +313,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     if (usage != null && usage.hasUsage()) {
                         try {
                             var logEntry = billingDomainService.calculateAndBuildLog(
-                                    usage, model, accountPlatform,
+                                    usage, model, accountPlatform.name(),
                                     userId, apiKeyId, account.getId(), group.getId(),
                                     group.getRateMultiplier(),
                                     stream, durationMs,
@@ -395,7 +407,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     }
 
                     ErrorPassthroughService.ErrorAction action =
-                            errorPassthroughService.decide(statusCode, errorBody, accountPlatform);
+                            errorPassthroughService.decide(statusCode, errorBody, accountPlatform.name());
 
                     if (action == ErrorPassthroughService.ErrorAction.RETRY) {
                         log.warn("Error passthrough RETRY: status={}, account_id={}, attempt={}",
@@ -445,6 +457,14 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         UsageTokens totalUsage = UsageTokens.builder().build();
 
+        // 判断是否需要协议翻译（客户端格式 ≠ 上游格式）
+        Platform requestPlatform = ctx.getRequestPlatform();
+        Platform accountPlatform = ctx.getSelectedAccount().getPlatform();
+        boolean needTranslation = requestPlatform != null && requestPlatform != accountPlatform;
+        ProtocolTranslationService.SSEStreamTranslator translator = needTranslation
+                ? new ProtocolTranslationService.SSEStreamTranslator(ctx.getRequestedModel())
+                : null;
+
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8));
              var writer = response.getWriter()) {
@@ -452,8 +472,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             String line;
             long lastRenewal = System.currentTimeMillis();
             while ((line = reader.readLine()) != null) {
-                writer.write(line);
-                writer.write("\n");
 
                 // 每 60 秒续约一次并发槽位租约，防止流式长连接期间 permit 过期
                 if (System.currentTimeMillis() - lastRenewal > 60_000) {
@@ -463,20 +481,47 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     lastRenewal = System.currentTimeMillis();
                 }
 
+                // 先检测流结束标记
+                if (usageParser.isStreamDone(line)) {
+                    if (needTranslation) {
+                        // 翻译模式下不发 [DONE]，翻译器已发过结束事件
+                        writer.flush();
+                    } else {
+                        writer.write(line);
+                        writer.write("\n");
+                        writer.flush();
+                    }
+                    break;
+                }
+
+                // 解析 SSE data 行中的 token 用量（翻译前解析，因为翻译后格式变了）
                 if (line.startsWith("data: ")) {
                     String json = line.substring(6);
                     UsageTokens eventUsage = usageParser.parseSSELine(json);
                     if (eventUsage != null) {
                         totalUsage.merge(eventUsage);
                     }
-                }
 
-                if (usageParser.isStreamDone(line)) {
-                    writer.flush();
-                    break;
+                    if (needTranslation) {
+                        // 翻译：OpenAI SSE → Anthropic SSE
+                        for (String outputLine : translator.feed(json)) {
+                            writer.write(outputLine);
+                            writer.write("\n");
+                        }
+                        writer.flush();
+                    } else {
+                        writer.write(line);
+                        writer.write("\n");
+                        writer.flush();
+                    }
+                } else {
+                    // 非 data 行（如 event: 前缀行），翻译模式下跳过，透传模式下原样转发
+                    if (!needTranslation) {
+                        writer.write(line);
+                        writer.write("\n");
+                        writer.flush();
+                    }
                 }
-
-                writer.flush();
             }
         } catch (IOException e) {
             if (response.isCommitted()) {
@@ -485,6 +530,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 log.warn("SSE stream error", e);
                 throw e;
             }
+        }
+
+        // 翻译模式下，从翻译器获取 completion_tokens（上游 SSE 可能没有 usage 字段）
+        if (needTranslation && totalUsage.getOutputTokens() == 0 && translator.getCompletionTokens() > 0) {
+            totalUsage.setOutputTokens(translator.getCompletionTokens());
         }
 
         log.debug("Stream usage: request_id={}, input={}, output={}, cache_w={}, cache_r={}",
@@ -506,12 +556,24 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             responseBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
 
+        // 先解析用量（用上游格式），再做响应协议翻译
+        UsageTokens usage = usageParser.parseNonStreaming(responseBody);
+
+        // 协议翻译：上游格式 → 客户端格式
+        GatewayRequestContext ctx = GatewayRequestContext.get();
+        Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
+        Platform accountPlatform = ctx != null && ctx.getSelectedAccount() != null
+                ? ctx.getSelectedAccount().getPlatform() : null;
+        String clientBody = (requestPlatform != null && accountPlatform != null && requestPlatform != accountPlatform)
+                ? translationService.translateResponse(responseBody, accountPlatform, requestPlatform)
+                : responseBody;
+
         try (var output = response.getOutputStream()) {
-            output.write(responseBody.getBytes(StandardCharsets.UTF_8));
+            output.write(clientBody.getBytes(StandardCharsets.UTF_8));
             output.flush();
         }
 
-        return usageParser.parseNonStreaming(responseBody);
+        return usage;
     }
 
     /**

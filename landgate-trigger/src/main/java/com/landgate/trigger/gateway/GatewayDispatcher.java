@@ -34,6 +34,9 @@ public class GatewayDispatcher {
             "/v1beta/models/", Platform.GEMINI
     );
 
+    /** request attribute key：客户端请求格式对应的平台（URL 路径决定） */
+    public static final String ATTR_REQUEST_PLATFORM = "gateway_request_platform";
+
     /**
      * 根据请求路径派发到对应的网关处理器。
      *
@@ -51,6 +54,8 @@ public class GatewayDispatcher {
             response.getWriter().write("{\"error\":\"Unsupported API path: " + path + "\"}");
             return;
         }
+        // 存入 request attribute，供 AbstractGatewayHandler 判断是否需要协议翻译
+        request.setAttribute(ATTR_REQUEST_PLATFORM, platform);
         IGatewayHandler handler = factory.getHandler(platform);
         handler.handle(body, request, response);
     }

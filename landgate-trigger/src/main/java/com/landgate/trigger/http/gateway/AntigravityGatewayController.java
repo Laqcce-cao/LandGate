@@ -1,5 +1,6 @@
 package com.landgate.trigger.http.gateway;
 
+import com.landgate.trigger.gateway.GatewayDispatcher;
 import com.landgate.trigger.gateway.IGatewayHandler;
 import com.landgate.trigger.gateway.GatewayHandlerFactory;
 import com.landgate.types.enums.Platform;
@@ -29,10 +30,9 @@ public class AntigravityGatewayController {
                          HttpServletRequest request,
                          HttpServletResponse response) throws IOException {
         log.info("POST /antigravity/v1/messages: content_length={}", body != null ? body.length() : 0);
-        IGatewayHandler handler = resolveHandler(request);
-        if (handler != null) {
-            handler.handle(body, request, response);
-        }
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM, Platform.ANTHROPIC);
+        IGatewayHandler handler = factory.getHandler(Platform.ANTHROPIC);
+        handler.handle(body, request, response);
     }
 
     @PostMapping("/antigravity/v1/chat/completions")
@@ -40,10 +40,9 @@ public class AntigravityGatewayController {
                                  HttpServletRequest request,
                                  HttpServletResponse response) throws IOException {
         log.info("POST /antigravity/v1/chat/completions");
-        IGatewayHandler handler = resolveHandler(request);
-        if (handler != null) {
-            handler.handle(body, request, response);
-        }
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM, Platform.OPENAI);
+        IGatewayHandler handler = factory.getHandler(Platform.OPENAI);
+        handler.handle(body, request, response);
     }
 
     @PostMapping("/antigravity/v1beta/models/{modelPath}/**")
@@ -57,18 +56,9 @@ public class AntigravityGatewayController {
         request.setAttribute(ATTR_GATEWAY_UPSTREAM_PATH,
                 request.getServletPath().replace("/antigravity", ""));
 
-        // Antigravity Gemini 路由强制使用 Gemini 处理器
+        // Antigravity Gemini 路由：请求格式为 Gemini
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM, Platform.GEMINI);
         IGatewayHandler handler = factory.getHandler(Platform.GEMINI);
         handler.handle(body, request, response);
-    }
-
-    private IGatewayHandler resolveHandler(HttpServletRequest request) {
-        // 根据 URL 路径决定平台处理器
-        String path = request.getServletPath();
-        if (path.contains("/chat/completions")) {
-            return factory.getHandler(Platform.OPENAI);
-        }
-        // 默认使用 Anthropic 处理器（/v1/messages）
-        return factory.getHandler(Platform.ANTHROPIC);
     }
 }

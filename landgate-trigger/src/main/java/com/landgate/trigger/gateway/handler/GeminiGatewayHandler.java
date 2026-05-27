@@ -34,11 +34,13 @@ public class GeminiGatewayHandler extends AbstractGatewayHandler {
             ErrorPassthroughService errorPassthroughService,
             RateLimitHeaderParser rateLimitHeaderParser,
             PlatformRouter platformRouter,
+            ProtocolTranslationService translationService,
             GeminiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
                 concurrencyService, sessionHashService, oauthTokenRefreshService,
-                errorPassthroughService, rateLimitHeaderParser, platformRouter);
+                errorPassthroughService, rateLimitHeaderParser, platformRouter,
+                translationService);
         this.errorWriter = errorWriter;
     }
 

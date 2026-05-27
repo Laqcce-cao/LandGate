@@ -34,11 +34,13 @@ public class OpenAiGatewayHandler extends AbstractGatewayHandler {
             ErrorPassthroughService errorPassthroughService,
             RateLimitHeaderParser rateLimitHeaderParser,
             PlatformRouter platformRouter,
+            ProtocolTranslationService translationService,
             OpenAiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
                 concurrencyService, sessionHashService, oauthTokenRefreshService,
-                errorPassthroughService, rateLimitHeaderParser, platformRouter);
+                errorPassthroughService, rateLimitHeaderParser, platformRouter,
+                translationService);
         this.errorWriter = errorWriter;
     }
 
