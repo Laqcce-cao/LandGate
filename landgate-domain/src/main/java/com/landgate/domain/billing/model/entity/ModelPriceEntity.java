@@ -1,6 +1,5 @@
 package com.landgate.domain.billing.model.entity;
 
-import com.landgate.types.enums.Platform;
 import lombok.*;
 
 import java.math.BigDecimal;
@@ -13,7 +12,6 @@ public class ModelPriceEntity {
 
     private Long id;
     private String model;
-    private Platform platform;
 
     @Builder.Default
     private BigDecimal inputPrice = BigDecimal.ZERO;

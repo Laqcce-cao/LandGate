@@ -5,7 +5,6 @@
     <resultMap id="ModelPriceResultMap" type="com.landgate.infrastructure.dao.po.ModelPricePO">
         <id     column="id"                property="id"/>
         <result column="model"             property="model"/>
-        <result column="platform"          property="platform"/>
         <result column="input_price"       property="inputPrice"/>
         <result column="output_price"      property="outputPrice"/>
         <result column="cache_write_price" property="cacheWritePrice"/>
@@ -35,17 +34,10 @@
         LIMIT 1
     </select>
 
-    <select id="selectByPlatform" resultMap="ModelPriceResultMap">
-        SELECT * FROM model_prices
-        WHERE platform = #{platform}
-          AND deleted_at IS NULL
-        ORDER BY model ASC
-    </select>
-
     <select id="selectAll" resultMap="ModelPriceResultMap">
         SELECT * FROM model_prices
         WHERE deleted_at IS NULL
-        ORDER BY platform, model
+        ORDER BY model
         LIMIT #{size} OFFSET #{offset}
     </select>
 
@@ -55,11 +47,11 @@
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO model_prices (
-            model, platform, input_price, output_price, cache_write_price, cache_read_price,
+            model, input_price, output_price, cache_write_price, cache_read_price,
             cache_write_5m_price, cache_write_1h_price, supports_cache_breakdown,
             enabled, notes, created_at, updated_at, deleted_at
         ) VALUES (
-            #{model}, #{platform}, #{inputPrice}, #{outputPrice}, #{cacheWritePrice}, #{cacheReadPrice},
+            #{model}, #{inputPrice}, #{outputPrice}, #{cacheWritePrice}, #{cacheReadPrice},
             #{cacheWrite5mPrice}, #{cacheWrite1hPrice}, #{supportsCacheBreakdown},
             #{enabled}, #{notes}, NOW(), NOW(), NULL
         )
@@ -67,7 +59,7 @@
 
     <update id="update">
         UPDATE model_prices SET
-            model = #{model}, platform = #{platform},
+            model = #{model},
             input_price = #{inputPrice}, output_price = #{outputPrice},
             cache_write_price = #{cacheWritePrice}, cache_read_price = #{cacheReadPrice},
             cache_write_5m_price = #{cacheWrite5mPrice}, cache_write_1h_price = #{cacheWrite1hPrice},

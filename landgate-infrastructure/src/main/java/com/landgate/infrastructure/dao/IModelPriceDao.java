@@ -22,9 +22,6 @@ public interface IModelPriceDao {
      */
     ModelPricePO selectByModel(@Param("model") String model);
 
-    /** 按平台查询所有未删除的启用价格 */
-    List<ModelPricePO> selectByPlatform(@Param("platform") String platform);
-
     /** 查询所有未删除的价格（分页） */
     List<ModelPricePO> selectAll(@Param("offset") int offset, @Param("size") int size);
 

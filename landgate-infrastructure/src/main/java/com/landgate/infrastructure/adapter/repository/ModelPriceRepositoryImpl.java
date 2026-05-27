@@ -38,13 +38,6 @@ public class ModelPriceRepositoryImpl implements IModelPriceRepository {
     }
 
     @Override
-    public List<ModelPriceEntity> findByPlatform(String platform) {
-        return modelPriceDao.selectByPlatform(platform).stream()
-                .map(modelPriceMapper::toEntity)
-                .collect(Collectors.toList());
-    }
-
-    @Override
     public List<ModelPriceEntity> findAll(int page, int size) {
         int offset = page * size;
         return modelPriceDao.selectAll(offset, size).stream()
