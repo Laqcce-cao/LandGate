@@ -32,6 +32,7 @@ public class GatewayHandlerFactory {
         registry.put(Platform.OPENAI, openAiHandler);
         registry.put(Platform.GEMINI, geminiHandler);
         registry.put(Platform.ANTIGRAVITY, anthropicHandler);
+        registry.put(Platform.OPENAI_RESPONSES, openAiHandler);
     }
 
     public IGatewayHandler getHandler(Platform platform) {

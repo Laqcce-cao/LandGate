@@ -178,7 +178,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
         Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
-        boolean stream = isStreamRequest(body);
+        // Responses API 无 stream 字段，默认流式
+        boolean stream = requestPlatform == Platform.OPENAI_RESPONSES || isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
 
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, model={}",
@@ -463,14 +464,31 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         boolean needTranslation = requestPlatform != null && requestPlatform != accountPlatform;
         boolean isOpenAIToAnthropic = requestPlatform == Platform.ANTHROPIC && accountPlatform == Platform.OPENAI;
         boolean isAnthropicToOpenAI = requestPlatform == Platform.OPENAI && accountPlatform == Platform.ANTHROPIC;
+        // Responses API 翻译方向
+        boolean isChatToResponses = requestPlatform == Platform.OPENAI_RESPONSES && accountPlatform == Platform.OPENAI;
+        boolean isAnthropicToResponses = requestPlatform == Platform.OPENAI_RESPONSES && accountPlatform == Platform.ANTHROPIC;
+        boolean isResponsesToChat = requestPlatform == Platform.OPENAI && accountPlatform == Platform.OPENAI_RESPONSES;
+        boolean isResponsesToAnthropic = requestPlatform == Platform.ANTHROPIC && accountPlatform == Platform.OPENAI_RESPONSES;
 
         ProtocolTranslationService.OpenAIToAnthropicStreamTranslator oa2aTranslator = null;
         ProtocolTranslationService.AnthropicToOpenAIStreamTranslator a2oaTranslator = null;
+        ProtocolTranslationService.ChatToResponsesStreamTranslator c2rTranslator = null;
+        ProtocolTranslationService.AnthropicToResponsesStreamTranslator a2rTranslator = null;
+        ProtocolTranslationService.ResponsesToChatStreamTranslator r2cTranslator = null;
+        ProtocolTranslationService.ResponsesToAnthropicStreamTranslator r2aTranslator = null;
 
         if (isOpenAIToAnthropic) {
             oa2aTranslator = new ProtocolTranslationService.OpenAIToAnthropicStreamTranslator(ctx.getRequestedModel());
         } else if (isAnthropicToOpenAI) {
             a2oaTranslator = new ProtocolTranslationService.AnthropicToOpenAIStreamTranslator();
+        } else if (isChatToResponses) {
+            c2rTranslator = new ProtocolTranslationService.ChatToResponsesStreamTranslator(ctx.getRequestedModel());
+        } else if (isAnthropicToResponses) {
+            a2rTranslator = new ProtocolTranslationService.AnthropicToResponsesStreamTranslator();
+        } else if (isResponsesToChat) {
+            r2cTranslator = new ProtocolTranslationService.ResponsesToChatStreamTranslator();
+        } else if (isResponsesToAnthropic) {
+            r2aTranslator = new ProtocolTranslationService.ResponsesToAnthropicStreamTranslator();
         }
 
         try (var upstreamInput = upstreamResp.body();
@@ -509,29 +527,64 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     writer.flush();
                 } else if (isOpenAIToAnthropic) {
                     // === OpenAI 上游 → Anthropic 客户端 ===
-                    // 翻译前解析用量（OpenAI 格式），翻译后格式变为 Anthropic
                     if (line.startsWith("data: ") && !"data: [DONE]".equals(line)) {
                         UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
                         if (eventUsage != null) {
                             totalUsage.merge(eventUsage);
                         }
                     }
-                    // 喂入翻译器（含 "data: " 前缀的完整行）
                     for (String outputLine : oa2aTranslator.feed(line)) {
                         writer.write(outputLine);
                         writer.write("\n");
                     }
                     writer.flush();
                     if (oa2aTranslator.isDone()) break;
-                } else {
+                } else if (isAnthropicToOpenAI) {
                     // === Anthropic 上游 → OpenAI 客户端 ===
-                    // 喂入翻译器所有行（event: + data:），翻译器内部配对处理
                     for (String outputLine : a2oaTranslator.feed(line)) {
                         writer.write(outputLine);
                         writer.write("\n");
                     }
                     writer.flush();
                     if (a2oaTranslator.isDone()) break;
+                } else if (isChatToResponses) {
+                    // === OpenAI Chat 上游 → Responses 客户端 ===
+                    if (line.startsWith("data: ") && !"data: [DONE]".equals(line)) {
+                        UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
+                        if (eventUsage != null) {
+                            totalUsage.merge(eventUsage);
+                        }
+                    }
+                    for (String outputLine : c2rTranslator.feed(line)) {
+                        writer.write(outputLine);
+                        writer.write("\n");
+                    }
+                    writer.flush();
+                    if (c2rTranslator.isDone()) break;
+                } else if (isAnthropicToResponses) {
+                    // === Anthropic 上游 → Responses 客户端 ===
+                    for (String outputLine : a2rTranslator.feed(line)) {
+                        writer.write(outputLine);
+                        writer.write("\n");
+                    }
+                    writer.flush();
+                    if (a2rTranslator.isDone()) break;
+                } else if (isResponsesToChat) {
+                    // === Responses 上游 → OpenAI Chat 客户端 ===
+                    for (String outputLine : r2cTranslator.feed(line)) {
+                        writer.write(outputLine);
+                        writer.write("\n");
+                    }
+                    writer.flush();
+                    if (r2cTranslator.isDone()) break;
+                } else {
+                    // === Responses 上游 → Anthropic 客户端 ===
+                    for (String outputLine : r2aTranslator.feed(line)) {
+                        writer.write(outputLine);
+                        writer.write("\n");
+                    }
+                    writer.flush();
+                    if (r2aTranslator.isDone()) break;
                 }
             }
         } catch (IOException e) {
@@ -558,6 +611,38 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
             if (totalUsage.getOutputTokens() == 0 && a2oaTranslator.getOutputTokens() > 0) {
                 totalUsage.setOutputTokens(a2oaTranslator.getOutputTokens());
+            }
+        }
+        if (c2rTranslator != null) {
+            if (totalUsage.getInputTokens() == 0 && c2rTranslator.getInputTokens() > 0) {
+                totalUsage.setInputTokens(c2rTranslator.getInputTokens());
+            }
+            if (totalUsage.getOutputTokens() == 0 && c2rTranslator.getOutputTokens() > 0) {
+                totalUsage.setOutputTokens(c2rTranslator.getOutputTokens());
+            }
+        }
+        if (a2rTranslator != null) {
+            if (totalUsage.getInputTokens() == 0 && a2rTranslator.getInputTokens() > 0) {
+                totalUsage.setInputTokens(a2rTranslator.getInputTokens());
+            }
+            if (totalUsage.getOutputTokens() == 0 && a2rTranslator.getOutputTokens() > 0) {
+                totalUsage.setOutputTokens(a2rTranslator.getOutputTokens());
+            }
+        }
+        if (r2cTranslator != null) {
+            if (totalUsage.getInputTokens() == 0 && r2cTranslator.getInputTokens() > 0) {
+                totalUsage.setInputTokens(r2cTranslator.getInputTokens());
+            }
+            if (totalUsage.getOutputTokens() == 0 && r2cTranslator.getOutputTokens() > 0) {
+                totalUsage.setOutputTokens(r2cTranslator.getOutputTokens());
+            }
+        }
+        if (r2aTranslator != null) {
+            if (totalUsage.getInputTokens() == 0 && r2aTranslator.getInputTokens() > 0) {
+                totalUsage.setInputTokens(r2aTranslator.getInputTokens());
+            }
+            if (totalUsage.getOutputTokens() == 0 && r2aTranslator.getOutputTokens() > 0) {
+                totalUsage.setOutputTokens(r2aTranslator.getOutputTokens());
             }
         }
 

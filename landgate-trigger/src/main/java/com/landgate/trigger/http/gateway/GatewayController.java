@@ -73,6 +73,26 @@ public class GatewayController {
         dispatcher.dispatch(request, response, body);
     }
 
+    // ---- OpenAI Responses API ----
+
+    @PostMapping("/v1/responses")
+    public void responses(@RequestBody String body,
+                          HttpServletRequest request,
+                          HttpServletResponse response) throws IOException {
+        log.info("POST /v1/responses");
+
+        Long groupId = (Long) request.getAttribute("group_id");
+        if (groupId == null) {
+            response.setStatus(401);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(
+                    "{\"error\":{\"message\":\"Missing API key\",\"type\":\"authentication_error\",\"param\":null,\"code\":null}}");
+            return;
+        }
+
+        dispatcher.dispatch(request, response, body);
+    }
+
     // ---- Gemini API ----
 
     @PostMapping("/v1beta/models/{modelPath}/**")

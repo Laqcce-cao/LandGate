@@ -31,7 +31,8 @@ public class GatewayDispatcher {
     private static final Map<String, Platform> PATH_PLATFORM = Map.of(
             "/v1/messages", Platform.ANTHROPIC,
             "/v1/chat/completions", Platform.OPENAI,
-            "/v1beta/models/", Platform.GEMINI
+            "/v1beta/models/", Platform.GEMINI,
+            "/v1/responses", Platform.OPENAI_RESPONSES
     );
 
     /** request attribute key：客户端请求格式对应的平台（URL 路径决定） */

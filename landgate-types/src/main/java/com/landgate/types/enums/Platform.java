@@ -21,7 +21,9 @@ public enum Platform {
     /** Google Gemini —— 支持 Gemini API */
     GEMINI("gemini", 3, "Google Gemini"),
     /** Antigravity —— 自定义代理平台 */
-    ANTIGRAVITY("antigravity", 4, "Antigravity");
+    ANTIGRAVITY("antigravity", 4, "Antigravity"),
+    /** OpenAI Responses API —— 新版语义 API（Codex CLI 使用） */
+    OPENAI_RESPONSES("openai_responses", 5, "OpenAI Responses API");
 
     /** 代码标识 */
     @JsonValue

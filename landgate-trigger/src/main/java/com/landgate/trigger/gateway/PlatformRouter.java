@@ -29,6 +29,7 @@ public class PlatformRouter {
 
     private final UsageParser usageParser;
     private final OpenAiUsageParser openAiUsageParser;
+    private final ResponsesUsageParser responsesUsageParser;
     private final GeminiUsageParser geminiUsageParser;
 
     private final AnthropicErrorWriter anthropicErrorWriter;
@@ -44,16 +45,19 @@ public class PlatformRouter {
         transformerMap.put(Platform.ANTHROPIC, anthropicTransformer);
         transformerMap.put(Platform.ANTIGRAVITY, anthropicTransformer);
         transformerMap.put(Platform.OPENAI, openAiTransformer);
+        transformerMap.put(Platform.OPENAI_RESPONSES, openAiTransformer);
         transformerMap.put(Platform.GEMINI, geminiTransformer);
 
         usageParserMap.put(Platform.ANTHROPIC, usageParser);
         usageParserMap.put(Platform.ANTIGRAVITY, usageParser);
         usageParserMap.put(Platform.OPENAI, openAiUsageParser);
+        usageParserMap.put(Platform.OPENAI_RESPONSES, responsesUsageParser);
         usageParserMap.put(Platform.GEMINI, geminiUsageParser);
 
         errorWriterMap.put(Platform.ANTHROPIC, anthropicErrorWriter);
         errorWriterMap.put(Platform.ANTIGRAVITY, anthropicErrorWriter);
         errorWriterMap.put(Platform.OPENAI, openAiErrorWriter);
+        errorWriterMap.put(Platform.OPENAI_RESPONSES, openAiErrorWriter);
         errorWriterMap.put(Platform.GEMINI, geminiErrorWriter);
 
         log.info("PlatformRouter initialized with {} platforms", transformerMap.size());
