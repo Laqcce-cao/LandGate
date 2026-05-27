@@ -75,6 +75,17 @@ public class SessionHashService {
     }
 
     /**
+     * 清除会话绑定 —— 当粘滞账号不支持当前请求的模型时调用，
+     * 避免后续请求继续粘在同一个账号上。
+     *
+     * @param sessionHash 会话哈希
+     */
+    public void clearSession(String sessionHash) {
+        sessionCache.remove(sessionHash);
+        log.debug("Session cleared: hash={}", sessionHash);
+    }
+
+    /**
      * 绑定会话到上游账号，设置 30 分钟 TTL。
      *
      * @param sessionHash 会话哈希

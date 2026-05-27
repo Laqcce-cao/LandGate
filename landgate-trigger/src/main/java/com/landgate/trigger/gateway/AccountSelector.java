@@ -229,7 +229,7 @@ public class AccountSelector {
      * {@code ["*"]} → 通配符，支持所有模型，返回 {@code true}。
      * 其他 → model 必须在白名单中。
      */
-    private boolean isModelSupportedByAccount(AccountEntity account, String model) {
+    public boolean isModelSupportedByAccount(AccountEntity account, String model) {
         String supportedJson = account.getSupportedModels();
         // null / 空字符串 / 空数组 [] = 不支持任何模型
         if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {

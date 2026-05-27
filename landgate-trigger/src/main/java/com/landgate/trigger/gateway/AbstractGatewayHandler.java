@@ -200,9 +200,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Long tokenRefreshed = null;  // 记录本轮已刷新过的 account，避免死循环
 
         while (failoverCount < MAX_FAILOVER_SWITCHES) {
-            // 粘滞账户优先，否则根据模型名称选择（不按平台过滤）
+            // 粘滞账户优先，但须验证是否支持当前模型；不支持则清除粘滞走正常选择
             if (stickyAccountId != null) {
                 account = accountSelector.getById(stickyAccountId);
+                if (account != null && model != null
+                        && !accountSelector.isModelSupportedByAccount(account, model)) {
+                    log.info("Sticky account does not support model, clearing session: account_id={}, model={}",
+                            account.getId(), model);
+                    sessionHashService.clearSession(sessionHash);
+                    account = null;
+                }
             } else {
                 account = null;
             }
