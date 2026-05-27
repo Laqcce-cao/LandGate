@@ -22,12 +22,19 @@ public interface IModelPriceRepository {
     Optional<ModelPriceEntity> findById(Long id);
 
     /**
-     * 根据模型名查询定价
+     * 根据模型名查询定价（精确匹配）
      *
      * @param model   模型名称（如 gpt-4、claude-3）
      * @return 匹配的定价实体，不存在返回 Optional.empty()
      */
     Optional<ModelPriceEntity> findByModel(String model);
+
+    /**
+     * 查询所有启用的通配符价格规则（wildcard_match = true）。
+     *
+     * @return 通配符价格规则列表
+     */
+    List<ModelPriceEntity> findByWildcard();
 
     /**
      * 分页查询所有定价记录

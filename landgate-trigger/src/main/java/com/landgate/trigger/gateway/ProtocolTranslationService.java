@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.trigger.gateway.converter.ConverterRegistry;
+import com.landgate.trigger.gateway.converter.ProtocolConverter;
 import com.landgate.types.enums.Platform;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -13,12 +15,13 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * 协议翻译服务 —— Anthropic ↔ OpenAI 请求/响应格式双向转换。
+ * 协议翻译服务 —— Hub-and-Spoke 架构的翻译入口。
  * <p>
- * 当客户端请求格式（由 URL 路径决定）与上游账号格式（由 account.platform 决定）不同时，
- * 对请求 body 和响应 body 做协议互转，使客户端和上游各自收到自己能理解的格式。
+ * 委托给 {@link ConverterRegistry} 中的 {@link ProtocolConverter} 完成翻译，
+ * 翻译路径为：客户端格式 → IR（Anthropic Messages 格式） → 上游格式。
  * <p>
- * 当前支持：Anthropic 客户端 → OpenAI 上游（最常见场景：Claude Code 调用 GPT 模型）。
+ * 内部的旧版点对点静态内部类（流式翻译器）保留以兼容现有调用方，
+ * 后续逐步迁移到 {@link ProtocolConverter#createStreamToIR} / {@link ProtocolConverter#createStreamFromIR}。
  */
 @Slf4j
 @Component
@@ -26,40 +29,53 @@ public class ProtocolTranslationService {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
+    private final ConverterRegistry converterRegistry;
+
+    public ProtocolTranslationService(ConverterRegistry converterRegistry) {
+        this.converterRegistry = converterRegistry;
+    }
+
     // ========================
-    // 请求翻译：Anthropic → OpenAI
+    // Hub-and-Spoke 请求翻译
     // ========================
 
     /**
-     * 将 Anthropic Messages API 请求体转换为 OpenAI Chat Completions 请求体。
+     * 将请求 body 从客户端格式翻译为上游账号格式（Hub-and-Spoke）。
+     * <p>
+     * 翻译路径：客户端格式 → IR → 上游格式。
+     * 若客户端格式与上游格式相同，直接返回原 body。
      *
-     * @param body Anthropic 格式的请求 JSON 字符串
-     * @return OpenAI 格式的请求 JSON 字符串；源格式==目标格式时原样返回
+     * @param body 客户端请求 JSON 字符串
+     * @param from 客户端平台（请求格式）
+     * @param to   上游账号平台（目标格式）
+     * @return 翻译后的请求 JSON 字符串
      */
     public String translateRequest(String body, Platform from, Platform to) {
         if (from == to) return body;
-        if (from == Platform.ANTHROPIC && to == Platform.OPENAI) {
-            return anthropicToOpenAIRequest(body);
+
+        String fromFormat = platformToFormatId(from);
+        String toFormat = platformToFormatId(to);
+        if (fromFormat == null || toFormat == null) {
+            log.debug("No format mapping for {}→{}, passing through", from, to);
+            return body;
         }
-        if (from == Platform.OPENAI && to == Platform.ANTHROPIC) {
-            return openAIToAnthropicRequest(body);
+
+        ProtocolConverter clientConv = converterRegistry.get(fromFormat);
+        ProtocolConverter upstreamConv = converterRegistry.get(toFormat);
+        if (clientConv == null || upstreamConv == null) {
+            log.debug("No converter for {}→{}, passing through", from, to);
+            return body;
         }
-        // Responses API ↔ Chat Completions
-        if (from == Platform.OPENAI_RESPONSES && to == Platform.OPENAI) {
-            return responsesToChatCompletions(body);
+
+        try {
+            // 客户端格式 → IR → 上游格式
+            JsonNode ir = clientConv.requestToIR(body);
+            return upstreamConv.requestFromIR(ir);
+        } catch (Exception e) {
+            log.warn("Hub-and-Spoke request translation failed for {}→{}, passing through: {}",
+                    from, to, e.getMessage());
+            return body;
         }
-        if (from == Platform.OPENAI && to == Platform.OPENAI_RESPONSES) {
-            return chatCompletionsToResponses(body);
-        }
-        // Responses API ↔ Anthropic
-        if (from == Platform.OPENAI_RESPONSES && to == Platform.ANTHROPIC) {
-            return responsesToAnthropic(body);
-        }
-        if (from == Platform.ANTHROPIC && to == Platform.OPENAI_RESPONSES) {
-            return anthropicToResponses(body);
-        }
-        log.debug("No request translator for {}→{}, passing through", from, to);
-        return body;
     }
 
     private String anthropicToOpenAIRequest(String body) {
@@ -506,38 +522,66 @@ public class ProtocolTranslationService {
     }
     // ========================
 
+    // ========================
+    // Hub-and-Spoke 响应翻译
+    // ========================
+
     /**
-     * 将非流式响应从上游格式转换为客户端格式。
+     * 将非流式响应从上游格式翻译为客户端格式（Hub-and-Spoke）。
+     * <p>
+     * 翻译路径：上游格式 → IR → 客户端格式。
+     * 若上游格式与客户端格式相同，直接返回原 body。
      *
      * @param body 上游响应 JSON 字符串
-     * @param from 上游平台
-     * @param to   客户端平台
-     * @return 翻译后的响应 JSON 字符串；源格式==目标格式时原样返回
+     * @param from 上游账号平台（上游格式）
+     * @param to   客户端平台（目标格式）
+     * @return 翻译后的响应 JSON 字符串
      */
     public String translateResponse(String body, Platform from, Platform to) {
         if (from == to) return body;
-        if (from == Platform.OPENAI && to == Platform.ANTHROPIC) {
-            return openAIToAnthropicResponse(body);
+
+        String fromFormat = platformToFormatId(from);
+        String toFormat = platformToFormatId(to);
+        if (fromFormat == null || toFormat == null) {
+            log.debug("No format mapping for {}→{}, passing through", from, to);
+            return body;
         }
-        if (from == Platform.ANTHROPIC && to == Platform.OPENAI) {
-            return anthropicToOpenAIResponse(body);
+
+        ProtocolConverter upstreamConv = converterRegistry.get(fromFormat);
+        ProtocolConverter clientConv = converterRegistry.get(toFormat);
+        if (upstreamConv == null || clientConv == null) {
+            log.debug("No converter for {}→{}, passing through", from, to);
+            return body;
         }
-        // Responses API ↔ Chat Completions
-        if (from == Platform.OPENAI && to == Platform.OPENAI_RESPONSES) {
-            return chatCompletionsToResponsesResponse(body);
+
+        try {
+            // 上游格式 → IR → 客户端格式
+            JsonNode ir = upstreamConv.responseToIR(body);
+            return clientConv.responseFromIR(ir);
+        } catch (Exception e) {
+            log.warn("Hub-and-Spoke response translation failed for {}→{}, passing through: {}",
+                    from, to, e.getMessage());
+            return body;
         }
-        if (from == Platform.OPENAI_RESPONSES && to == Platform.OPENAI) {
-            return responsesToChatCompletionsResponse(body);
-        }
-        // Responses API ↔ Anthropic
-        if (from == Platform.ANTHROPIC && to == Platform.OPENAI_RESPONSES) {
-            return anthropicToResponsesResponse(body);
-        }
-        if (from == Platform.OPENAI_RESPONSES && to == Platform.ANTHROPIC) {
-            return responsesToAnthropicResponse(body);
-        }
-        log.debug("No response translator for {}→{}, passing through", from, to);
-        return body;
+    }
+
+    // ========================
+    // 辅助方法
+    // ========================
+
+    /**
+     * 将 {@link Platform} 枚举映射为 Converter 的 formatId。
+     * <p>
+     * 映射关系：ANTHROPIC → "messages"、OPENAI → "chat_completions"、
+     * OPENAI_RESPONSES → "responses"。未支持的平台返回 null（透传模式）。
+     */
+    private static String platformToFormatId(Platform platform) {
+        return switch (platform) {
+            case ANTHROPIC -> "messages";
+            case OPENAI -> "chat_completions";
+            case OPENAI_RESPONSES -> "responses";
+            default -> null;
+        };
     }
 
     private String openAIToAnthropicResponse(String body) {

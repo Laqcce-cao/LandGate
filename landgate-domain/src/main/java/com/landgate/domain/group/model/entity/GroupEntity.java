@@ -24,6 +24,17 @@ public class GroupEntity {
     /** 分组名称 */
     private String name;
 
+    /** 提供商（anthropic、openai、gemini、antigravity）—— 决定 Group 的平台阵营 */
+    @Builder.Default
+    private String provider = "anthropic";
+
+    /** 支持的客户端协议（JSON 数组），如 ["messages","chat_completions","responses"]。NULL 或空 = 不做限制 */
+    private String supportedProtocols;
+
+    /** 协议转换策略：hub_and_spoke（允许 IR 转换）、native_only（不转换） */
+    @Builder.Default
+    private String protocolStrategy = "hub_and_spoke";
+
     /** 分组描述 */
     private String description;
 

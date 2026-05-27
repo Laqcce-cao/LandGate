@@ -101,6 +101,13 @@ public class AccountPO extends BasePO {
     /** 号支持的模型白名单（JSON 数组），NULL 或空表示不限制 */
     private String supportedModels;
 
+    /** 账户支持的上游 API 协议（JSON 数组），如 ["chat_completions","responses"]。NULL = 默认格式 */
+    private String supportedProtocols;
+
+    /** 允许跨 Provider 混合调度（如 Antigravity 账号混入 Anthropic 号池） */
+    @Builder.Default
+    private Boolean mixedScheduling = false;
+
     /** 判断账号是否处于激活状态 */
     public boolean isActive() { return Status.ACTIVE == status; }
 

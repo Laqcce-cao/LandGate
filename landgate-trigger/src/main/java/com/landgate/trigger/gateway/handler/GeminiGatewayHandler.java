@@ -1,6 +1,7 @@
 package com.landgate.trigger.gateway.handler;
 
 import com.landgate.trigger.gateway.IErrorWriter;
+import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
@@ -35,12 +36,13 @@ public class GeminiGatewayHandler extends AbstractGatewayHandler {
             RateLimitHeaderParser rateLimitHeaderParser,
             PlatformRouter platformRouter,
             ProtocolTranslationService translationService,
+            ConverterRegistry converterRegistry,
             GeminiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
                 concurrencyService, sessionHashService, oauthTokenRefreshService,
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
-                translationService);
+                translationService, converterRegistry);
         this.errorWriter = errorWriter;
     }
 
