@@ -41,7 +41,9 @@ public class ProtocolTranslationService {
         if (from == Platform.ANTHROPIC && to == Platform.OPENAI) {
             return anthropicToOpenAIRequest(body);
         }
-        // 其他方向暂不支持，原样透传
+        if (from == Platform.OPENAI && to == Platform.ANTHROPIC) {
+            return openAIToAnthropicRequest(body);
+        }
         log.debug("No request translator for {}→{}, passing through", from, to);
         return body;
     }
@@ -119,6 +121,72 @@ public class ProtocolTranslationService {
         return sb.toString();
     }
 
+    /**
+     * 将 OpenAI Chat Completions 请求体转换为 Anthropic Messages API 请求体。
+     */
+    private String openAIToAnthropicRequest(String body) {
+        try {
+            JsonNode src = JSON.readTree(body);
+            ObjectNode dst = JSON.createObjectNode();
+
+            // 直接透传的参数
+            copyIfExists(src, dst, "model");
+            copyIfExists(src, dst, "stream");
+            copyIfExists(src, dst, "max_tokens");
+            copyIfExists(src, dst, "temperature");
+            copyIfExists(src, dst, "top_p");
+
+            // stop → stop_sequences（OpenAI 用单字符串或数组，Anthropic 用数组）
+            if (src.has("stop")) {
+                JsonNode stop = src.get("stop");
+                ArrayNode stopSeq = JSON.createArrayNode();
+                if (stop.isArray()) {
+                    for (JsonNode s : stop) {
+                        stopSeq.add(s.asText());
+                    }
+                } else {
+                    stopSeq.add(stop.asText());
+                }
+                dst.set("stop_sequences", stopSeq);
+            }
+
+            // 构建 Anthropic messages 数组 + 提取 system
+            ArrayNode anthropicMessages = JSON.createArrayNode();
+            if (src.has("messages") && src.get("messages").isArray()) {
+                for (JsonNode msg : src.get("messages")) {
+                    String role = msg.has("role") ? msg.get("role").asText() : "user";
+                    JsonNode contentNode = msg.get("content");
+
+                    if ("system".equals(role)) {
+                        // OpenAI system 消息 → Anthropic 顶层 system 字段（字符串）
+                        String systemText = contentNode != null ? contentNode.asText() : "";
+                        if (!systemText.isEmpty()) {
+                            dst.put("system", systemText);
+                        }
+                        continue;
+                    }
+
+                    // user/assistant 消息：content 字符串 → [{type:"text", text:"..."}]
+                    ObjectNode anthropicMsg = JSON.createObjectNode();
+                    anthropicMsg.put("role", role);
+                    ArrayNode contentBlocks = JSON.createArrayNode();
+                    ObjectNode textBlock = JSON.createObjectNode();
+                    textBlock.put("type", "text");
+                    textBlock.put("text", contentNode != null ? contentNode.asText() : "");
+                    contentBlocks.add(textBlock);
+                    anthropicMsg.set("content", contentBlocks);
+                    anthropicMessages.add(anthropicMsg);
+                }
+            }
+
+            dst.set("messages", anthropicMessages);
+            return JSON.writeValueAsString(dst);
+        } catch (Exception e) {
+            log.warn("Failed to translate OpenAI→Anthropic request, passing through: {}", e.getMessage());
+            return body;
+        }
+    }
+
     // ========================
     // 非流式响应翻译：OpenAI → Anthropic
     // ========================
@@ -135,6 +203,9 @@ public class ProtocolTranslationService {
         if (from == to) return body;
         if (from == Platform.OPENAI && to == Platform.ANTHROPIC) {
             return openAIToAnthropicResponse(body);
+        }
+        if (from == Platform.ANTHROPIC && to == Platform.OPENAI) {
+            return anthropicToOpenAIResponse(body);
         }
         log.debug("No response translator for {}→{}, passing through", from, to);
         return body;
@@ -207,18 +278,93 @@ public class ProtocolTranslationService {
         };
     }
 
+    /**
+     * 将 Anthropic 非流式响应转换为 OpenAI Chat Completions 响应。
+     */
+    private String anthropicToOpenAIResponse(String body) {
+        try {
+            JsonNode src = JSON.readTree(body);
+            ObjectNode dst = JSON.createObjectNode();
+
+            // 基础字段
+            dst.put("id", src.has("id") ? src.get("id").asText() : "chatcmpl-" + UUID.randomUUID());
+            dst.put("object", "chat.completion");
+            dst.put("model", src.has("model") ? src.get("model").asText() : "unknown");
+            dst.put("created", System.currentTimeMillis() / 1000);
+
+            // 从 content 数组提取纯文本
+            String messageContent = "";
+            if (src.has("content") && src.get("content").isArray()) {
+                messageContent = extractTextFromContentBlocks(src.get("content"));
+            }
+
+            // stop_reason → finish_reason（反向映射）
+            String finishReason = "stop";
+            if (src.has("stop_reason")) {
+                finishReason = mapStopReasonToFinishReason(src.get("stop_reason").asText());
+            }
+
+            // choices 数组
+            ArrayNode choices = JSON.createArrayNode();
+            ObjectNode choice = JSON.createObjectNode();
+            choice.put("index", 0);
+            ObjectNode message = JSON.createObjectNode();
+            message.put("role", "assistant");
+            message.put("content", messageContent != null ? messageContent : "");
+            choice.set("message", message);
+            choice.put("finish_reason", finishReason);
+            choices.add(choice);
+            dst.set("choices", choices);
+
+            // usage 字段重命名
+            if (src.has("usage")) {
+                JsonNode usage = src.get("usage");
+                ObjectNode openAIUsage = JSON.createObjectNode();
+                if (usage.has("input_tokens")) {
+                    openAIUsage.put("prompt_tokens", usage.get("input_tokens").asInt());
+                }
+                if (usage.has("output_tokens")) {
+                    openAIUsage.put("completion_tokens", usage.get("output_tokens").asInt());
+                }
+                if (usage.has("total_tokens")) {
+                    openAIUsage.put("total_tokens", usage.get("total_tokens").asInt());
+                } else {
+                    int total = (usage.has("input_tokens") ? usage.get("input_tokens").asInt() : 0)
+                            + (usage.has("output_tokens") ? usage.get("output_tokens").asInt() : 0);
+                    openAIUsage.put("total_tokens", total);
+                }
+                dst.set("usage", openAIUsage);
+            }
+
+            return JSON.writeValueAsString(dst);
+        } catch (Exception e) {
+            log.warn("Failed to translate Anthropic→OpenAI response, passing through: {}", e.getMessage());
+            return body;
+        }
+    }
+
+    /** Anthropic stop_reason → OpenAI finish_reason */
+    private static String mapStopReasonToFinishReason(String reason) {
+        return switch (reason) {
+            case "end_turn" -> "stop";
+            case "max_tokens" -> "length";
+            case "tool_use" -> "tool_calls";
+            case "content_filtered" -> "content_filter";
+            default -> reason;
+        };
+    }
+
     // ========================
-    // 流式响应翻译：OpenAI SSE → Anthropic SSE
+    // 流式响应翻译
     // ========================
 
     /**
      * OpenAI SSE → Anthropic SSE 流式翻译器（状态机）。
      * <p>
-     * 用法：每收到上游一行原始 SSE 就调用 {@link #feed(String)}，
+     * 用法：每收到上游一行原始 SSE 就调用 {@link #feed(String)}（含 "data: " 前缀），
      * 返回需要写入客户端的 Anthropic SSE 行列表（可能为 0~N 行）。
-     * {@code [DONE]} 由调用方在上层处理，不会传入本方法。
      */
-    public static class SSEStreamTranslator {
+    public static class OpenAIToAnthropicStreamTranslator {
 
         private enum State { INIT, BLOCK_STARTED, STREAMING, DONE }
 
@@ -226,24 +372,38 @@ public class ProtocolTranslationService {
         private final String model;
         private final String messageId;
         private int completionTokens = 0;
+        private int inputTokens = 0;
         private String stopReason = "end_turn";
 
-        public SSEStreamTranslator(String model) {
+        public OpenAIToAnthropicStreamTranslator(String model) {
             this.model = model;
             this.messageId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
         }
 
         /**
-         * 消费一行上游 OpenAI SSE data 行的 JSON 部分（"data: " 之后的内容）。
+         * 消费一行上游原始 SSE 行（含 "data: " 前缀）。
          *
-         * @param jsonLine SSE data 行的 JSON 内容（不含 "data: " 前缀）
+         * @param line 原始 SSE 行（如 "data: {...}" 或 "data: [DONE]"）
          * @return 需要写入客户端的 Anthropic SSE 行列表（含 "event:" / "data:" 前缀）
          */
-        public List<String> feed(String jsonLine) {
+        public List<String> feed(String line) {
             List<String> output = new ArrayList<>();
-            if (state == State.DONE || jsonLine == null || jsonLine.isBlank()) {
+            if (state == State.DONE || line == null || line.isBlank()) {
                 return output;
             }
+
+            // 处理 [DONE] 标记
+            if ("data: [DONE]".equals(line)) {
+                state = State.DONE;
+                return output;
+            }
+
+            // 只处理 data: 行
+            if (!line.startsWith("data: ")) {
+                return output;
+            }
+
+            String jsonLine = line.substring(6);
 
             try {
                 JsonNode chunk = JSON.readTree(jsonLine);
@@ -257,6 +417,9 @@ public class ProtocolTranslationService {
                     JsonNode u = chunk.get("usage");
                     if (u.has("completion_tokens")) {
                         completionTokens = u.get("completion_tokens").asInt();
+                    }
+                    if (u.has("prompt_tokens")) {
+                        inputTokens = u.get("prompt_tokens").asInt();
                     }
                 }
 
@@ -345,6 +508,11 @@ public class ProtocolTranslationService {
             return completionTokens;
         }
 
+        /** @return 从 SSE 流中提取的 input_tokens 数量 */
+        public int getInputTokens() {
+            return inputTokens;
+        }
+
         // ---- Anthropic SSE 事件格式化 ----
 
         private String formatMessageStart() {
@@ -403,6 +571,212 @@ public class ProtocolTranslationService {
         /** 对完整的 SSE data 行做最小转义（方法签名以匹配上层调用，实际 JSON 已在内格式化） */
         private static String escapeJson(String s) {
             return s;
+        }
+    }
+
+    /**
+     * Anthropic SSE → OpenAI SSE 流式翻译器（状态机）。
+     * <p>
+     * 上游 Anthropic 返回 event:/data: 成对事件，翻译为 OpenAI SSE data: 行。
+     * 用法：每收到上游一行原始 SSE 就调用 {@link #feed(String)}，
+     * 返回需要写入客户端的 OpenAI SSE 行列表。
+     */
+    public static class AnthropicToOpenAIStreamTranslator {
+
+        private enum State { INIT, STREAMING, DONE }
+
+        private State state = State.INIT;
+        private String currentEvent = null;
+        private final String completionId;
+        private String model = "unknown";
+        private long created = System.currentTimeMillis() / 1000;
+        private int inputTokens = 0;
+        private int outputTokens = 0;
+        private String stopReason = "stop";
+
+        public AnthropicToOpenAIStreamTranslator() {
+            this.completionId = "chatcmpl-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+        }
+
+        /**
+         * 消费一行上游原始 SSE 行（可能是 "event: xxx"、"data: {...}" 或空行）。
+         *
+         * @param line 上游原始 SSE 行
+         * @return 需要写入客户端的 OpenAI SSE data: 行列表（含 "data: " 前缀）
+         */
+        public List<String> feed(String line) {
+            List<String> output = new ArrayList<>();
+            if (state == State.DONE || line == null || line.isBlank()) {
+                return output;
+            }
+
+            // 记住当前事件类型
+            if (line.startsWith("event: ")) {
+                currentEvent = line.substring(7).trim();
+                return output;
+            }
+
+            // 只处理 data: 行
+            if (!line.startsWith("data: ")) {
+                return output;
+            }
+
+            String json = line.substring(6);
+
+            try {
+                JsonNode root = JSON.readTree(json);
+                String type = root.has("type") ? root.get("type").asText() : null;
+                if (type == null) return output;
+
+                switch (type) {
+                    case "message_start" -> {
+                        // 记录元数据，不输出 chunk
+                        if (root.has("message")) {
+                            JsonNode msg = root.get("message");
+                            if (msg.has("model")) {
+                                model = msg.get("model").asText();
+                            }
+                            if (msg.has("usage")) {
+                                JsonNode usage = msg.get("usage");
+                                if (usage.has("input_tokens")) {
+                                    inputTokens = usage.get("input_tokens").asInt();
+                                }
+                            }
+                        }
+                    }
+                    case "content_block_start" -> {
+                        // 第一个 content block → 发送 role chunk
+                        if (state == State.INIT) {
+                            output.add("data: " + formatChunk(null, "assistant", null));
+                            state = State.STREAMING;
+                        }
+                    }
+                    case "content_block_delta" -> {
+                        // delta 文本 → 发送 content chunk
+                        if (root.has("delta") && root.get("delta").has("text")) {
+                            String text = root.get("delta").get("text").asText();
+                            if (!text.isEmpty()) {
+                                output.add("data: " + formatChunk(null, null, text));
+                            }
+                        }
+                    }
+                    case "content_block_stop" -> {
+                        // 不单独输出
+                    }
+                    case "message_delta" -> {
+                        // 记录 stop_reason 和 output_tokens
+                        if (root.has("delta") && root.get("delta").has("stop_reason")) {
+                            stopReason = mapStopReasonToFinishReason(
+                                    root.get("delta").get("stop_reason").asText());
+                        }
+                        if (root.has("usage") && root.get("usage").has("output_tokens")) {
+                            outputTokens = root.get("usage").get("output_tokens").asInt();
+                        }
+                    }
+                    case "message_stop" -> {
+                        // 发送最后一个 chunk（含 finish_reason + usage），然后发送 [DONE]
+                        output.add("data: " + formatFinalChunk());
+                        output.add("data: [DONE]");
+                        state = State.DONE;
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("Anthropic→OpenAI SSE translation error, skipping line: {}", e.getMessage());
+            }
+            return output;
+        }
+
+        /** @return 是否已完成（发送了 [DONE]） */
+        public boolean isDone() {
+            return state == State.DONE;
+        }
+
+        /** @return 从 Anthropic SSE 事件中提取的 input_tokens */
+        public int getInputTokens() {
+            return inputTokens;
+        }
+
+        /** @return 从 Anthropic SSE 事件中提取的 output_tokens */
+        public int getOutputTokens() {
+            return outputTokens;
+        }
+
+        /** @return 翻译过程中提取的模型名 */
+        public String getModel() {
+            return model;
+        }
+
+        // ---- OpenAI SSE chunk 格式化 ----
+
+        /**
+         * 格式化一个 OpenAI SSE chunk。
+         *
+         * @param finishReason finish_reason（通常只有最后一个 chunk 才有）
+         * @param role         delta.role（仅第一个 chunk）
+         * @param content      delta.content（文本 chunk）
+         */
+        private String formatChunk(String finishReason, String role, String content) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"id\":\"").append(completionId).append("\"");
+            sb.append(",\"object\":\"chat.completion.chunk\"");
+            sb.append(",\"created\":").append(created);
+            sb.append(",\"model\":\"").append(escapeJsonValue(model)).append("\"");
+            sb.append(",\"choices\":[{\"index\":0,\"delta\":{");
+
+            boolean hasDelta = false;
+            if (role != null) {
+                sb.append("\"role\":\"").append(escapeJsonValue(role)).append("\"");
+                hasDelta = true;
+            }
+            if (content != null) {
+                if (hasDelta) sb.append(",");
+                sb.append("\"content\":\"").append(escapeJsonValue(content)).append("\"");
+                hasDelta = true;
+            }
+
+            sb.append("},\"finish_reason\":");
+            if (finishReason != null) {
+                sb.append("\"").append(finishReason).append("\"");
+            } else {
+                sb.append("null");
+            }
+            sb.append("}]}");
+            return sb.toString();
+        }
+
+        /** 格式化最后一个 chunk（含 finish_reason + usage） */
+        private String formatFinalChunk() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"id\":\"").append(completionId).append("\"");
+            sb.append(",\"object\":\"chat.completion.chunk\"");
+            sb.append(",\"created\":").append(created);
+            sb.append(",\"model\":\"").append(escapeJsonValue(model)).append("\"");
+            sb.append(",\"choices\":[{\"index\":0,\"delta\":{}");
+            sb.append(",\"finish_reason\":\"").append(stopReason).append("\"}]");
+            sb.append(",\"usage\":{");
+            sb.append("\"prompt_tokens\":").append(inputTokens);
+            sb.append(",\"completion_tokens\":").append(outputTokens);
+            sb.append(",\"total_tokens\":").append(inputTokens + outputTokens);
+            sb.append("}}");
+            return sb.toString();
+        }
+
+        /** 转义 JSON 字符串值中的特殊字符 */
+        private static String escapeJsonValue(String s) {
+            if (s == null) return "";
+            StringBuilder sb = new StringBuilder(s.length() + 16);
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                switch (c) {
+                    case '"'  -> sb.append("\\\"");
+                    case '\\' -> sb.append("\\\\");
+                    case '\n' -> sb.append("\\n");
+                    case '\r' -> sb.append("\\r");
+                    case '\t' -> sb.append("\\t");
+                    default   -> sb.append(c);
+                }
+            }
+            return sb.toString();
         }
     }
 

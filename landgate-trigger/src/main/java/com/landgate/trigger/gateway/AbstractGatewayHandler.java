@@ -457,13 +457,21 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         UsageTokens totalUsage = UsageTokens.builder().build();
 
-        // 判断是否需要协议翻译（客户端格式 ≠ 上游格式）
+        // 判断翻译方向
         Platform requestPlatform = ctx.getRequestPlatform();
         Platform accountPlatform = ctx.getSelectedAccount().getPlatform();
         boolean needTranslation = requestPlatform != null && requestPlatform != accountPlatform;
-        ProtocolTranslationService.SSEStreamTranslator translator = needTranslation
-                ? new ProtocolTranslationService.SSEStreamTranslator(ctx.getRequestedModel())
-                : null;
+        boolean isOpenAIToAnthropic = requestPlatform == Platform.ANTHROPIC && accountPlatform == Platform.OPENAI;
+        boolean isAnthropicToOpenAI = requestPlatform == Platform.OPENAI && accountPlatform == Platform.ANTHROPIC;
+
+        ProtocolTranslationService.OpenAIToAnthropicStreamTranslator oa2aTranslator = null;
+        ProtocolTranslationService.AnthropicToOpenAIStreamTranslator a2oaTranslator = null;
+
+        if (isOpenAIToAnthropic) {
+            oa2aTranslator = new ProtocolTranslationService.OpenAIToAnthropicStreamTranslator(ctx.getRequestedModel());
+        } else if (isAnthropicToOpenAI) {
+            a2oaTranslator = new ProtocolTranslationService.AnthropicToOpenAIStreamTranslator();
+        }
 
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8));
@@ -481,46 +489,49 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     lastRenewal = System.currentTimeMillis();
                 }
 
-                // 先检测流结束标记
-                if (usageParser.isStreamDone(line)) {
-                    if (needTranslation) {
-                        // 翻译模式下不发 [DONE]，翻译器已发过结束事件
-                        writer.flush();
-                    } else {
+                if (!needTranslation) {
+                    // === 透传模式 ===
+                    if (usageParser.isStreamDone(line)) {
                         writer.write(line);
                         writer.write("\n");
                         writer.flush();
+                        break;
                     }
-                    break;
-                }
-
-                // 解析 SSE data 行中的 token 用量（翻译前解析，因为翻译后格式变了）
-                if (line.startsWith("data: ")) {
-                    String json = line.substring(6);
-                    UsageTokens eventUsage = usageParser.parseSSELine(json);
-                    if (eventUsage != null) {
-                        totalUsage.merge(eventUsage);
-                    }
-
-                    if (needTranslation) {
-                        // 翻译：OpenAI SSE → Anthropic SSE
-                        for (String outputLine : translator.feed(json)) {
-                            writer.write(outputLine);
-                            writer.write("\n");
+                    // 解析 data: 行中的 token 用量
+                    if (line.startsWith("data: ")) {
+                        UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
+                        if (eventUsage != null) {
+                            totalUsage.merge(eventUsage);
                         }
-                        writer.flush();
-                    } else {
-                        writer.write(line);
-                        writer.write("\n");
-                        writer.flush();
                     }
+                    writer.write(line);
+                    writer.write("\n");
+                    writer.flush();
+                } else if (isOpenAIToAnthropic) {
+                    // === OpenAI 上游 → Anthropic 客户端 ===
+                    // 翻译前解析用量（OpenAI 格式），翻译后格式变为 Anthropic
+                    if (line.startsWith("data: ") && !"data: [DONE]".equals(line)) {
+                        UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
+                        if (eventUsage != null) {
+                            totalUsage.merge(eventUsage);
+                        }
+                    }
+                    // 喂入翻译器（含 "data: " 前缀的完整行）
+                    for (String outputLine : oa2aTranslator.feed(line)) {
+                        writer.write(outputLine);
+                        writer.write("\n");
+                    }
+                    writer.flush();
+                    if (oa2aTranslator.isDone()) break;
                 } else {
-                    // 非 data 行（如 event: 前缀行），翻译模式下跳过，透传模式下原样转发
-                    if (!needTranslation) {
-                        writer.write(line);
+                    // === Anthropic 上游 → OpenAI 客户端 ===
+                    // 喂入翻译器所有行（event: + data:），翻译器内部配对处理
+                    for (String outputLine : a2oaTranslator.feed(line)) {
+                        writer.write(outputLine);
                         writer.write("\n");
-                        writer.flush();
                     }
+                    writer.flush();
+                    if (a2oaTranslator.isDone()) break;
                 }
             }
         } catch (IOException e) {
@@ -532,9 +543,22 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
         }
 
-        // 翻译模式下，从翻译器获取 completion_tokens（上游 SSE 可能没有 usage 字段）
-        if (needTranslation && totalUsage.getOutputTokens() == 0 && translator.getCompletionTokens() > 0) {
-            totalUsage.setOutputTokens(translator.getCompletionTokens());
+        // 翻译模式下从翻译器回填用量（翻译器从上游事件中提取）
+        if (oa2aTranslator != null) {
+            if (totalUsage.getOutputTokens() == 0 && oa2aTranslator.getCompletionTokens() > 0) {
+                totalUsage.setOutputTokens(oa2aTranslator.getCompletionTokens());
+            }
+            if (totalUsage.getInputTokens() == 0 && oa2aTranslator.getInputTokens() > 0) {
+                totalUsage.setInputTokens(oa2aTranslator.getInputTokens());
+            }
+        }
+        if (a2oaTranslator != null) {
+            if (totalUsage.getInputTokens() == 0 && a2oaTranslator.getInputTokens() > 0) {
+                totalUsage.setInputTokens(a2oaTranslator.getInputTokens());
+            }
+            if (totalUsage.getOutputTokens() == 0 && a2oaTranslator.getOutputTokens() > 0) {
+                totalUsage.setOutputTokens(a2oaTranslator.getOutputTokens());
+            }
         }
 
         log.debug("Stream usage: request_id={}, input={}, output={}, cache_w={}, cache_r={}",
