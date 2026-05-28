@@ -33,6 +33,14 @@ public class GatewayRequestContext {
      * 如 OPENAI 平台同时支持 /v1/chat/completions 和 /v1/responses），用于决定流式默认值、上游路径选择等。
      */
     private String requestFormat;
+    /**
+     * Anthropic 请求中的 metadata.user_id，用于上游请求重建。
+     * <p>
+     * 非 Anthropic 客户端请求时为 null。在协议翻译之前从原始请求 body 提取，
+     * 因为 Anthropic→Responses 转换会自然丢弃 metadata 字段（Responses 无此字段），
+     * 需要在 AnthropicTransformer 构建上游请求时重新注入。
+     */
+    private String metadataUserId;
     /** Gemini 专用的上游路径（完整 servlet path），其他平台为 null */
     private String upstreamPath;
     /** 当前请求持有的并发槽位（用于流式续约），非流式请求为 null */

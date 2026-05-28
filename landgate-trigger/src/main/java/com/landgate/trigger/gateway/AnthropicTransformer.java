@@ -29,6 +29,13 @@ public class AnthropicTransformer implements IRequestTransformer {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
+        // 如果上下文中存在 metadata.user_id（从原始 Anthropic 客户端请求提取的），
+        // 重新注入到上游请求中（因为 Anthropic→Responses IR 转换会丢弃 metadata 字段）
+        GatewayRequestContext ctx = GatewayRequestContext.get();
+        if (ctx != null && ctx.getMetadataUserId() != null) {
+            body = injectMetadataUserId(body, ctx.getMetadataUserId());
+        }
+
         String modelName = extractModel(body);
         String targetUrl = ANTHROPIC_API_URL;
         if (account.getExtra() != null && !account.getExtra().equals("{}")) {
@@ -99,5 +106,30 @@ public class AnthropicTransformer implements IRequestTransformer {
             // ignore
         }
         return false;
+    }
+
+    /**
+     * 将 metadata.user_id 注入到 Anthropic 请求 body 中。
+     * <p>
+     * 如果 body 中已存在 metadata 对象则更新其 user_id，否则创建新的 metadata 对象。
+     */
+    private String injectMetadataUserId(String body, String userId) {
+        try {
+            JsonNode root = JSON.readTree(body);
+            if (root.isObject()) {
+                var obj = (com.fasterxml.jackson.databind.node.ObjectNode) root;
+                if (obj.has("metadata") && obj.get("metadata").isObject()) {
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) obj.get("metadata")).put("user_id", userId);
+                } else {
+                    var metadata = JSON.createObjectNode();
+                    metadata.put("user_id", userId);
+                    obj.set("metadata", metadata);
+                }
+                return JSON.writeValueAsString(obj);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to inject metadata.user_id into upstream request: {}", e.getMessage());
+        }
+        return body;
     }
 }

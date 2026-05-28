@@ -193,6 +193,20 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         boolean stream = "responses".equals(requestFormat) || isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
 
+        // 提取 metadata.user_id（仅 Anthropic 客户端请求，在协议翻译之前提取，
+        // 因为 Anthropic→Responses 转换会丢弃 metadata 字段）
+        String metadataUserId = null;
+        if (requestPlatform == Platform.ANTHROPIC) {
+            try {
+                JsonNode root = JSON_MAPPER.readTree(body);
+                if (root.has("metadata") && root.get("metadata").has("user_id")) {
+                    metadataUserId = root.get("metadata").get("user_id").asText();
+                }
+            } catch (Exception e) {
+                // ignore parse errors
+            }
+        }
+
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, model={}",
                 apiKeyId, userId, group.getId(), group.getName(), model);
 
@@ -266,6 +280,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .requestFormat(requestFormat)
                     .upstreamPath(upstreamPath)
                     .concurrencySlot(slot)
+                    .metadataUserId(metadataUserId)
                     .build();
             GatewayRequestContext.set(ctx);
 
