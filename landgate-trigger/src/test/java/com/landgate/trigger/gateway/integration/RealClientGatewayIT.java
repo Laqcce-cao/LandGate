@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -39,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 @DisplayName("真实客户端集成测试 - Anthropic CLI / Codex CLI")
 @EnabledIfSystemProperty(named = "landgate.it.enabled", matches = "true")
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class RealClientGatewayIT {
 
     private static final String GATEWAY_URL = System.getProperty(
@@ -67,6 +70,7 @@ class RealClientGatewayIT {
     // ============================================================
 
     @Test
+    @Order(3)
     @DisplayName("Claude CLI: /v1/messages 非流式")
     void claudeCliMessages() throws Exception {
         String body = """
@@ -94,6 +98,7 @@ class RealClientGatewayIT {
     }
 
     @Test
+    @Order(4)
     @DisplayName("Claude CLI: /v1/messages 流式 SSE")
     void claudeCliMessagesStream() throws Exception {
         String body = """
@@ -123,6 +128,7 @@ class RealClientGatewayIT {
     }
 
     @Test
+    @Order(5)
     @DisplayName("Claude CLI: /v1/messages/count_tokens")
     void claudeCliCountTokens() throws Exception {
         String body = """
@@ -146,6 +152,7 @@ class RealClientGatewayIT {
     // ============================================================
 
     @Test
+    @Order(6)
     @DisplayName("Codex CLI: /v1/chat/completions 非流式")
     void codexCliChatCompletions() throws Exception {
         String body = """
@@ -172,6 +179,7 @@ class RealClientGatewayIT {
     }
 
     @Test
+    @Order(7)
     @DisplayName("Codex CLI: /v1/chat/completions 流式 SSE")
     void codexCliChatCompletionsStream() throws Exception {
         String body = """
@@ -197,6 +205,7 @@ class RealClientGatewayIT {
     }
 
     @Test
+    @Order(8)
     @DisplayName("Codex CLI: /v1/responses（OpenAI Responses API）")
     void codexCliResponses() throws Exception {
         String body = """
@@ -222,6 +231,7 @@ class RealClientGatewayIT {
     // ============================================================
 
     @Test
+    @Order(1)
     @DisplayName("缺少 API Key → 401")
     void missingApiKey() throws Exception {
         HttpRequest req = HttpRequest.newBuilder(URI.create(GATEWAY_URL + "/v1/messages"))
@@ -236,6 +246,7 @@ class RealClientGatewayIT {
     }
 
     @Test
+    @Order(2)
     @DisplayName("错误的 API Key → 401")
     void invalidApiKey() throws Exception {
         HttpRequest req = HttpRequest.newBuilder(URI.create(GATEWAY_URL + "/v1/messages"))
