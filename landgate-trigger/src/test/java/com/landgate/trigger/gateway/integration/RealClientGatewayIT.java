@@ -104,7 +104,7 @@ class RealClientGatewayIT {
         String body = """
                 {
                   "model": "%s",
-                  "max_tokens": 32,
+                  "max_tokens": 1024,
                   "stream": true,
                   "messages": [
                     {"role": "user", "content": "Say hi"}
@@ -116,7 +116,7 @@ class RealClientGatewayIT {
         HttpResponse<String> resp = CLIENT.send(req, HttpResponse.BodyHandlers.ofString());
 
         System.out.println("[Claude CLI Stream] status=" + resp.statusCode());
-        System.out.println("[Claude CLI Stream] body=" + truncate(resp.body(), 500));
+        System.out.println("[Claude CLI Stream] body=" + resp.body());
 
         assertEquals(200, resp.statusCode());
         // Anthropic SSE 必有的事件

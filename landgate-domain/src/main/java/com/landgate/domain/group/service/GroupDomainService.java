@@ -88,6 +88,10 @@ public class GroupDomainService {
         GroupEntity existing = getById(id);
         if (updates.getName() != null) existing.setName(updates.getName());
         if (updates.getDescription() != null) existing.setDescription(updates.getDescription());
+        // Provider 阵营 / 协议白名单 / 协议转换策略 —— 前端"分组管理"表单可编辑字段
+        if (updates.getProvider() != null) existing.setProvider(updates.getProvider());
+        if (updates.getSupportedProtocols() != null) existing.setSupportedProtocols(updates.getSupportedProtocols());
+        if (updates.getProtocolStrategy() != null) existing.setProtocolStrategy(updates.getProtocolStrategy());
         if (updates.getRateMultiplier() != null) existing.setRateMultiplier(updates.getRateMultiplier());
         if (updates.getIsExclusive() != null) existing.setIsExclusive(updates.getIsExclusive());
         if (updates.getStatus() != null) existing.setStatus(updates.getStatus());

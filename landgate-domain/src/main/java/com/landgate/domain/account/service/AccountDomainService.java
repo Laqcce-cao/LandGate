@@ -92,6 +92,8 @@ public class AccountDomainService {
         if (updates.getExpiresAt() != null) existing.setExpiresAt(updates.getExpiresAt());
         if (updates.getAutoPauseOnExpired() != null) existing.setAutoPauseOnExpired(updates.getAutoPauseOnExpired());
         if (updates.getSupportedModels() != null) existing.setSupportedModels(updates.getSupportedModels());
+        if (updates.getSupportedProtocols() != null) existing.setSupportedProtocols(updates.getSupportedProtocols());
+        if (updates.getMixedScheduling() != null) existing.setMixedScheduling(updates.getMixedScheduling());
         accountRepository.save(existing);
         log.info("Account updated: id={}", id);
         return existing;
