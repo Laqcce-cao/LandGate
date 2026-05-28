@@ -38,4 +38,7 @@ public interface IApiKeyDao {
 
     /** 根据分组 ID 查询未删除的 Key 列表 */
     List<ApiKeyPO> selectByGroupId(@Param("groupId") Long groupId);
+
+    /** 按状态统计未删除 Key 数 */
+    long countByStatus(@Param("status") String status);
 }

@@ -131,4 +131,8 @@
           AND deleted_at IS NULL
     </select>
 
+    <select id="countByStatus" resultType="long">
+        SELECT COUNT(*) FROM accounts WHERE status = #{status} AND deleted_at IS NULL
+    </select>
+
 </mapper>

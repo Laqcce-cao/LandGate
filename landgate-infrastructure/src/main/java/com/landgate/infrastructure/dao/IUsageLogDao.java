@@ -1,8 +1,6 @@
 package com.landgate.infrastructure.dao;
 
-import com.landgate.infrastructure.dao.po.DailyUsageStatsPO;
-import com.landgate.infrastructure.dao.po.UsageLogPO;
-import com.landgate.infrastructure.dao.po.UserUsageSummaryPO;
+import com.landgate.infrastructure.dao.po.*;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -81,4 +79,28 @@ public interface IUsageLogDao {
             @Param("start") String start,
             @Param("end") String end
     );
+
+    // ---- 仪表盘聚合查询 ----
+
+    long countByDateRange(@Param("start") Instant start, @Param("end") Instant end);
+
+    double avgDurationByDateRange(@Param("start") Instant start, @Param("end") Instant end);
+
+    TokenCostSummaryPO sumTokensAndCostByDateRange(@Param("start") Instant start, @Param("end") Instant end);
+
+    List<PlatformDailyStatsPO> aggregateByDate(@Param("start") Instant start, @Param("end") Instant end);
+
+    List<ModelStatsPO> aggregateByModel(@Param("start") Instant start, @Param("end") Instant end);
+
+    List<UserDailyStatsPO> aggregateTopUsersByDate(@Param("start") Instant start, @Param("end") Instant end, @Param("topN") int topN);
+
+    // ---- 用户仪表盘聚合查询 ----
+
+    long countByUserIdAndDateRange(@Param("userId") Long userId, @Param("start") Instant start, @Param("end") Instant end);
+
+    double avgDurationByUserIdAndDateRange(@Param("userId") Long userId, @Param("start") Instant start, @Param("end") Instant end);
+
+    TokenCostSummaryPO sumTokensAndCostByUserIdAndDateRange(@Param("userId") Long userId, @Param("start") Instant start, @Param("end") Instant end);
+
+    List<ModelStatsPO> aggregateByUserIdAndModel(@Param("userId") Long userId, @Param("start") Instant start, @Param("end") Instant end);
 }

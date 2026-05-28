@@ -49,4 +49,7 @@ public interface IUserDao {
 
     /** 统计搜索匹配的用户总数 */
     long countBySearch(@Param("search") String search);
+
+    /** 统计指定时间之后注册的用户数 */
+    long countByCreatedAtAfter(@Param("after") String after);
 }

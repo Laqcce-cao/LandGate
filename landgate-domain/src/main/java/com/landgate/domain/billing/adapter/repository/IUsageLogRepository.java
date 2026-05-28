@@ -1,7 +1,6 @@
 package com.landgate.domain.billing.adapter.repository;
 
-import com.landgate.api.billing.dto.DailyUsageStats;
-import com.landgate.api.billing.dto.UserUsageSummary;
+import com.landgate.api.billing.dto.*;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 
 import java.time.Instant;
@@ -139,4 +138,28 @@ public interface IUsageLogRepository {
      * @return 按天聚合的用量统计列表
      */
     List<DailyUsageStats> aggregateByUserAndDate(Long userId, LocalDate start, LocalDate end);
+
+    // ---- 仪表盘聚合查询 ----
+
+    long countByDateRange(Instant start, Instant end);
+
+    double avgDurationByDateRange(Instant start, Instant end);
+
+    TokenCostSummary sumTokensAndCostByDateRange(Instant start, Instant end);
+
+    List<PlatformDailyStats> aggregatePlatformByDate(Instant start, Instant end);
+
+    List<ModelStats> aggregateByModel(Instant start, Instant end);
+
+    List<UserDailyStats> aggregateTopUsersByDate(Instant start, Instant end, int topN);
+
+    // ---- 用户仪表盘聚合查询 ----
+
+    long countByUserIdAndDateRange(Long userId, Instant start, Instant end);
+
+    double avgDurationByUserIdAndDateRange(Long userId, Instant start, Instant end);
+
+    TokenCostSummary sumTokensAndCostByUserIdAndDateRange(Long userId, Instant start, Instant end);
+
+    List<ModelStats> aggregateByUserIdAndModel(Long userId, Instant start, Instant end);
 }

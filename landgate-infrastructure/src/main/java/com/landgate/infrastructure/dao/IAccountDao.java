@@ -47,4 +47,7 @@ public interface IAccountDao {
 
     /** 查询指定平台、激活且可调度的账号 */
     List<AccountPO> selectSchedulableByPlatformAndStatus(@Param("platform") String platform, @Param("status") String status);
+
+    /** 按状态统计未删除账号数 */
+    long countByStatus(@Param("status") String status);
 }
