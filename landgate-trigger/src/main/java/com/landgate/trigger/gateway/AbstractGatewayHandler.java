@@ -474,8 +474,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         StreamTranslator irToClient = null;
 
         if (needTranslation) {
-            String clientFormat = platformToFormatId(requestPlatform);
-            String upstreamFormat = platformToFormatId(accountPlatform);
+            String clientFormat = ProtocolTranslationService.platformToFormatId(requestPlatform);
+            String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
             if (clientFormat != null && upstreamFormat != null) {
                 ProtocolConverter clientConv = converterRegistry.get(clientFormat);
                 ProtocolConverter upstreamConv = converterRegistry.get(upstreamFormat);
@@ -662,18 +662,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         "Consecutive 5xx at failover=" + failoverCount);
             }
         }
-    }
-
-    /**
-     * 将 {@link Platform} 枚举映射为 Converter 的 formatId。
-     */
-    private static String platformToFormatId(Platform platform) {
-        return switch (platform) {
-            case ANTHROPIC -> "messages";
-            case OPENAI -> "chat_completions";
-            case OPENAI_RESPONSES -> "responses";
-            default -> null;
-        };
     }
 
     /**
