@@ -128,11 +128,24 @@ public class AccountSelector {
 
     public AccountEntity getById(Long accountId) {
         if (accountId == null) return null;
-        return accountRepository.findById(accountId)
-                .filter(a -> a.getDeletedAt() == null)
-                .filter(AccountEntity::isActive)
-                .filter(AccountEntity::isSchedulable)
-                .orElse(null);
+        AccountEntity account = accountRepository.findById(accountId).orElse(null);
+        if (account == null) {
+            log.debug("账户不存在: account_id={}", accountId);
+            return null;
+        }
+        if (account.getDeletedAt() != null) {
+            log.debug("账户已删除: account_id={}", accountId);
+            return null;
+        }
+        if (!account.isActive()) {
+            log.debug("账户未激活: account_id={}", accountId);
+            return null;
+        }
+        if (!account.isSchedulable()) {
+            log.debug("账户不可调度: account_id={}, reason={}", accountId, account.getTempUnschedulableReason());
+            return null;
+        }
+        return account;
     }
 
     /**
@@ -183,19 +196,22 @@ public class AccountSelector {
             for (AccountFilter filter : filterChain) {
                 if (!filter.pass(account, group, model)) {
                     passed = false;
-                    log.debug("Account filtered out by {}: account_id={}, name={}",
-                            filter.name(), account.getId(), account.getName());
+                    log.info("账户被 {} 过滤: account_id={}, name={}, platform={}",
+                            filter.name(), account.getId(), account.getName(), account.getPlatform());
                     break;
                 }
             }
             if (!passed) continue;
 
             double loadRate = calcLoadRate(account);
+            log.debug("账户通过过滤: account_id={}, name={}, priority={}, load_rate={}, active={}, max={}",
+                    account.getId(), account.getName(), link.getPriority(), String.format("%.2f", loadRate),
+                    concurrencyService.getActiveCount(account.getId()), account.getConcurrency());
             candidates.add(new Candidate(account, link.getPriority(), loadRate));
         }
 
         if (candidates.isEmpty()) {
-            log.warn("No available account for group: group_id={}", group.getId());
+            log.warn("无可用账户: group={}, model={}, 总绑定数={}", group.getName(), model, links.size());
             return null;
         }
 
@@ -207,10 +223,9 @@ public class AccountSelector {
                         ? Instant.EPOCH : c.account.getLastUsedAt()));
 
         AccountEntity selected = candidates.get(0).account;
-        log.info("Account selected: account_id={}, name={}, platform={}, priority={}, load_rate={}",
+        log.info("账户选择完成: account_id={}, name={}, platform={}, priority={}, load_rate={}, 候选数={}",
                 selected.getId(), selected.getName(), selected.getPlatform(),
-                candidates.get(0).priority,
-                String.format("%.2f", candidates.get(0).loadRate));
+                candidates.get(0).priority, String.format("%.2f", candidates.get(0).loadRate), candidates.size());
         return selected;
     }
 
@@ -237,9 +252,13 @@ public class AccountSelector {
         try {
             List<String> excluded = OBJECT_MAPPER.readValue(
                     excludedJson, new TypeReference<List<String>>() {});
-            return excluded.contains(model);
+            boolean result = excluded.contains(model);
+            if (result) {
+                log.info("模型被分组排除: model={}, group={}, excluded_list={}", model, group.getName(), excluded);
+            }
+            return result;
         } catch (Exception e) {
-            log.debug("Failed to parse excludedModels for group: group_id={}", group.getId(), e);
+            log.debug("解析 excludedModels 失败: group_id={}", group.getId(), e);
             return false;
         }
     }
@@ -255,6 +274,7 @@ public class AccountSelector {
         String supportedJson = account.getSupportedModels();
         // null / 空字符串 / 空数组 [] = 不支持任何模型
         if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {
+            log.info("账户无模型白名单: account_id={}, name={}, supported_models=空", account.getId(), account.getName());
             return false;
         }
         try {
@@ -264,9 +284,14 @@ public class AccountSelector {
             if (supported.contains("*")) {
                 return true;
             }
-            return supported.contains(model);
+            boolean result = supported.contains(model);
+            if (!result) {
+                log.info("模型不在账户白名单: model={}, account_id={}, name={}, supported={}",
+                        model, account.getId(), account.getName(), supported);
+            }
+            return result;
         } catch (Exception e) {
-            log.debug("Failed to parse supportedModels for account: account_id={}", account.getId(), e);
+            log.debug("解析 supportedModels 失败: account_id={}", account.getId(), e);
             return false;
         }
     }

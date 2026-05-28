@@ -171,8 +171,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Long apiKeyId = (Long) request.getAttribute("api_key_id");
         Long userId = (Long) request.getAttribute("user_id");
         Long groupId = (Long) request.getAttribute("group_id");
+        String requestId = (String) request.getAttribute("gateway_request_id");
+        if (requestId == null) {
+            requestId = UUID.randomUUID().toString();
+        }
 
         if (apiKeyId == null) {
+            log.warn("[{}] 认证失败: 缺少 API Key (api_key_id=null)", requestId);
             getErrorWriter().writeError(response, 401, "authentication_error", "Missing API key");
             return;
         }
@@ -180,11 +185,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // Step 2: 加载并校验 Group
         GroupEntity group = loadGroup(groupId);
         if (group == null) {
+            log.warn("[{}] 权限拒绝: group_id={} 不存在或已删除 | api_key_id={}", requestId, groupId, apiKeyId);
             getErrorWriter().writeError(response, 403, "permission_error",
                     "API key has no group assigned. Contact admin to assign a group.");
             return;
         }
         if (!group.isActive()) {
+            log.warn("[{}] 权限拒绝: group '{}' 已禁用 | api_key_id={}", requestId, group.getName(), apiKeyId);
             getErrorWriter().writeError(response, 403, "permission_error",
                     "Group '" + group.getName() + "' is disabled.");
             return;
@@ -194,6 +201,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         try {
             billingDomainService.checkQuota(apiKeyId);
         } catch (com.landgate.types.exception.AuthenticationException e) {
+            log.warn("[{}] 配额超限: api_key_id={} | {}", requestId, apiKeyId, e.getMessage());
             getErrorWriter().writeError(response, 429, "quota_exceeded", e.getMessage());
             return;
         }
@@ -202,6 +210,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // 先提取 platform/format（loadGroup 之后就需要，用于判断端点类型）
         Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
         String requestFormat = (String) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT);
+        log.info("[{}] 请求上下文: platform={}, format={}, group={}, api_key_id={}, user_id={}",
+                requestId, requestPlatform, requestFormat, group.getName(), apiKeyId, userId);
 
         boolean isClaudeCode = false;
         String metadataUserId = null;
@@ -222,10 +232,14 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 isClaudeCode = claudeCodeDetector.validateForNonMessages(
                         request.getHeader("User-Agent"));
             }
+            log.info("[{}] Claude Code 检测: is_claude_code={}, metadata_user_id={}, format={}",
+                    requestId, isClaudeCode, metadataUserId, requestFormat);
         }
 
         // 非 /v1/messages 端点的 claude_code_only 分组直接拒绝
         if (Boolean.TRUE.equals(group.getClaudeCodeOnly()) && requestPlatform != Platform.ANTHROPIC) {
+            log.warn("[{}] 拒绝非 Anthropic 端点的 claude_code_only 分组: group={}, platform={}",
+                    requestId, group.getName(), requestPlatform);
             getErrorWriter().writeError(response, 403, "permission_error",
                     "This group is restricted to Claude Code clients (/v1/messages only)");
             return;
@@ -233,8 +247,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         // /v1/messages 端点走降级链路
         try {
-            group = resolveGatewayGroup(group, isClaudeCode);
+            GroupEntity resolvedGroup = resolveGatewayGroup(group, isClaudeCode);
+            if (resolvedGroup != group) {
+                log.info("[{}] Claude Code 分组降级: {} -> {} (is_claude_code={})",
+                        requestId, group.getName(), resolvedGroup.getName(), isClaudeCode);
+            }
+            group = resolvedGroup;
         } catch (ClaudeCodeOnlyException e) {
+            log.warn("[{}] Claude Code 分组降级失败: group={}, reason={}",
+                    requestId, group.getName(), e.getMessage());
             getErrorWriter().writeError(response, 403, "permission_error", e.getMessage());
             return;
         }
@@ -247,22 +268,26 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
         // Responses API 无 stream 字段，默认流式
         boolean stream = "responses".equals(requestFormat) || isStreamRequest(body);
-        String requestId = UUID.randomUUID().toString();
 
-        log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, model={}",
-                apiKeyId, userId, group.getId(), group.getName(), model);
+        log.info("[{}] 请求解析: model={}, stream={}, request_format={}",
+                requestId, model, stream, requestFormat);
 
         // Step 4: Session 粘滞（IP + UA + API Key）
         String sessionHash = sessionHashService.generateHash(request, apiKeyId);
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
+        if (stickyAccountId != null) {
+            log.info("[{}] 粘滞会话命中: account_id={}", requestId, stickyAccountId);
+        }
 
         // Step 5: 余额预检查
         UserEntity user = userRepository.findById(userId).orElse(null);
         if (user == null) {
+            log.warn("[{}] 用户不存在: user_id={}", requestId, userId);
             getErrorWriter().writeError(response, 401, "authentication_error", "User not found");
             return;
         }
         if (!user.isPrivileged() && !balanceDomainService.hasBalance(userId)) {
+            log.warn("[{}] 余额不足: user_id={}, is_privileged={}", requestId, userId, user.isPrivileged());
             getErrorWriter().writeError(response, 402, "insufficient_balance",
                     "Insufficient balance. Please recharge your account.");
             return;
@@ -274,13 +299,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Long tokenRefreshed = null;  // 记录本轮已刷新过的 account，避免死循环
 
         while (failoverCount < MAX_FAILOVER_SWITCHES) {
+            log.info("[{}] Failover 尝试 #{}/{}: sticky_account={}",
+                    requestId, failoverCount + 1, MAX_FAILOVER_SWITCHES, stickyAccountId);
+
             // 粘滞账户优先，但须验证是否支持当前模型；不支持则清除粘滞走正常选择
             if (stickyAccountId != null) {
                 account = accountSelector.getById(stickyAccountId);
                 if (account != null && model != null
                         && !accountSelector.isModelSupportedByAccount(account, model)) {
-                    log.info("Sticky account does not support model, clearing session: account_id={}, model={}",
-                            account.getId(), model);
+                    log.info("[{}] 粘滞账户不支持模型，清除粘滞: account_id={}, model={}",
+                            requestId, account.getId(), model);
                     sessionHashService.clearSession(sessionHash);
                     account = null;
                 }
@@ -290,10 +318,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
             if (account == null) {
                 account = accountSelector.selectAccount(group, model);
+                if (account != null) {
+                    log.info("[{}] 账户选择结果: account_id={}, name={}, platform={}",
+                            requestId, account.getId(), account.getName(), account.getPlatform());
+                }
             }
             stickyAccountId = null;
 
             if (account == null) {
+                log.warn("[{}] 无可用账户: group={}, model={}, failover={}",
+                        requestId, group.getName(), model, failoverCount);
                 getErrorWriter().writeError(response, 503, "overloaded_error",
                         "No available accounts in group '" + group.getName() + "'.");
                 return;
@@ -301,14 +335,17 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
             ConcurrencySlot slot = concurrencyService.tryAcquire(account.getId(), account.getConcurrency());
             if (slot == null) {
-                log.warn("Concurrency slot unavailable: account_id={}, failover={}",
-                        account.getId(), failoverCount);
+                log.warn("[{}] 并发槽位不可用: account_id={}, max_concurrency={}, failover={}",
+                        requestId, account.getId(), account.getConcurrency(), failoverCount);
                 failoverCount++;
                 continue;
             }
+            log.info("[{}] 并发槽位获取成功: account_id={}", requestId, account.getId());
 
             String accessToken = getAccessTokenService.getAccessToken(account);
             if (accessToken == null || accessToken.isEmpty()) {
+                log.warn("[{}] 获取 AccessToken 失败: account_id={}, type={}, failover={}",
+                        requestId, account.getId(), account.getType(), failoverCount);
                 concurrencyService.release(slot);
                 failoverCount++;
                 continue;
@@ -345,10 +382,18 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         ? requestFormat
                         : ProtocolTranslationService.platformToFormatId(requestPlatform);
                 String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
-                String upstreamBody = (clientFormat != null && upstreamFormat != null
-                        && !clientFormat.equals(upstreamFormat))
-                        ? translationService.translateRequest(body, clientFormat, upstreamFormat)
-                        : body;
+                boolean needTranslation = clientFormat != null && upstreamFormat != null
+                        && !clientFormat.equals(upstreamFormat);
+                String upstreamBody = body;
+
+                if (needTranslation) {
+                    log.info("[{}] 协议翻译: {} -> {} | account_id={}, platform={}",
+                            requestId, clientFormat, upstreamFormat, account.getId(), accountPlatform.name());
+                    upstreamBody = translationService.translateRequest(body, clientFormat, upstreamFormat);
+                } else {
+                    log.info("[{}] 无需协议翻译: client_format={}, upstream_format={}",
+                            requestId, clientFormat, upstreamFormat);
+                }
 
                 // Phase A: OAuth 伪装 — Body 级操作（仅在 failover 循环内执行）
                 // 必须在协议翻译之后执行！rewriteSystemForNonClaudeCode 和
@@ -356,6 +401,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 // 对于 Chat Completions/Responses 客户端 → Anthropic 上游的场景，
                 // upstreamBody 此时已翻译为 Anthropic 格式。
                 if (shouldMimicClaudeCode) {
+                    log.info("[{}] OAuth 伪装: account_id={}, model={}, type={}",
+                            requestId, account.getId(), model, account.getType());
                     if (model != null && !model.toLowerCase().contains("haiku")) {
                         upstreamBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
                                 upstreamBody, model);
@@ -375,8 +422,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 // 仅 OpenAI 平台账号支持，用于绕过 IR 层做轻量代理
                 if (account.getPlatform() == Platform.OPENAI
                         && upstreamCapabilityService.isPassthroughEnabled(account)) {
+                    log.info("[{}] Passthrough 透传模式: 跳过协议翻译 | account_id={}",
+                            requestId, account.getId());
                     upstreamBody = body;
-                    log.debug("Passthrough mode: skipping protocol translation, account_id={}", account.getId());
                 }
 
                 // Responses 降级路径：客户端请求 /v1/responses 但上游不支持时，
@@ -388,7 +436,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         && !upstreamCapabilityService.shouldUseResponsesAPI(account);
 
                 if (responsesFallback) {
-                    log.info("Responses fallback: downgrading to Chat Completions, account_id={}", account.getId());
+                    log.info("[{}] Responses 降级: /v1/responses -> /v1/chat/completions | account_id={}",
+                            requestId, account.getId());
                     // 直接使用 ResponsesToChatCompletionsConverter 做请求转换（不经过 IR）
                     try {
                         var responsesConverter = converterRegistry.get("responses");
@@ -398,7 +447,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             upstreamBody = translationService.translateRequest(body, "responses", "chat_completions");
                         }
                     } catch (Exception e) {
-                        log.warn("Responses fallback translation failed: {}", e.getMessage());
+                        log.warn("[{}] Responses 降级翻译失败: {}", requestId, e.getMessage());
                     }
                 }
 
@@ -414,8 +463,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     continue;
                 }
 
-                log.info("Forwarding to upstream: request_id={}, account_id={}, model={}, platform={}, stream={}, attempt={}",
-                        requestId, account.getId(), model, accountPlatform.name(), stream, failoverCount);
+                log.info("[{}] 转发上游: account={}(id={}), model={}, platform={}, stream={}, attempt={}/{}",
+                        requestId, account.getName(), account.getId(), model,
+                        accountPlatform.name(), stream, failoverCount + 1, MAX_FAILOVER_SWITCHES);
 
                 HttpResponse<InputStream> upstreamResp;
                 try {
@@ -434,22 +484,29 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
                 int statusCode = upstreamResp.statusCode();
                 long durationMs = System.currentTimeMillis() - startTime;
-                log.info("Upstream response: request_id={}, status={}, elapsed={}ms, account_id={}, platform={}",
-                        requestId, statusCode, durationMs, account.getId(), accountPlatform.name());
+                log.info("[{}] 上游响应: status={}, elapsed={}ms, account={}(id={}), platform={}, attempt={}/{}",
+                        requestId, statusCode, durationMs, account.getName(), account.getId(),
+                        accountPlatform.name(), failoverCount + 1, MAX_FAILOVER_SWITCHES);
 
                 // --- 成功 (2xx) ---
                 if (statusCode >= 200 && statusCode < 300) {
                     sessionHashService.bindSession(sessionHash, account.getId());
+                    log.info("[{}] 粘滞会话绑定: account_id={}", requestId, account.getId());
 
                     IUsageParser usageParser = getUsageParserFor(account);
                     UsageTokens usage;
                     if (stream) {
+                        log.info("[{}] 开始流式响应处理", requestId);
                         usage = handleStreaming(upstreamResp, response, ctx, usageParser);
                     } else {
+                        log.info("[{}] 开始非流式响应处理", requestId);
                         usage = handleNonStreaming(upstreamResp, response, usageParser);
                     }
 
                     if (usage != null && usage.hasUsage()) {
+                        log.info("[{}] 用量统计: input={}, output={}, cache_write={}, cache_read={}",
+                                requestId, usage.getInputTokens(), usage.getOutputTokens(),
+                                usage.getCacheCreationTokens(), usage.getCacheReadTokens());
                         try {
                             var logEntry = billingDomainService.calculateAndBuildLog(
                                     usage, model, accountPlatform.name(),
@@ -460,12 +517,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                     request.getRemoteAddr());
                             if (!user.isPrivileged()) {
                                 balanceDomainService.deduct(userId, logEntry.getActualCost());
+                                log.info("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
+                            } else {
+                                log.info("[{}] 特权用户跳过扣费: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
                             }
                             // 累加 API Key 已用额度
                             billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
                         } catch (Exception e) {
-                            log.error("Billing/deduction failed after response sent: user_id={}, model={}",
-                                    userId, model, e);
+                            log.error("[{}] 计费/扣款失败（响应已发送）: user_id={}, model={}",
+                                    requestId, userId, model, e);
                         }
                     }
 
@@ -477,6 +537,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     }
                     accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
                     concurrencyService.release(slot);
+                    log.info("[{}] 请求完成: total_elapsed={}ms, account={}, model={}",
+                            requestId, durationMs, account.getName(), model);
                     return;
                 }
 
@@ -486,8 +548,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
                     // 非 OAUTH 账号 401：API Key 凭证级故障，无法自愈，标记 ERROR
                     if (account.getType() != AccountType.OAUTH) {
-                        log.error("Non-OAuth account returned 401, marking ERROR: account_id={}, type={}",
-                                account.getId(), account.getType());
+                        log.error("[{}] 非 OAuth 账户返回 401，标记 ERROR: account_id={}, type={}",
+                                requestId, account.getId(), account.getType());
                         accountSelector.markError(account.getId(),
                                 "Upstream returned 401 for " + account.getType() + " account");
                         failoverCount++;
@@ -496,7 +558,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
                     // OAUTH：已刷新过但仍 401，刷新无效，凭证级故障
                     if (account.getId().equals(tokenRefreshed)) {
-                        log.warn("Token refresh did not resolve 401, marking ERROR: account_id={}", account.getId());
+                        log.warn("[{}] Token 刷新后仍 401，标记 ERROR: account_id={}", requestId, account.getId());
                         accountSelector.markError(account.getId(),
                                 "OAuth token refreshed but upstream still returned 401");
                         tokenRefreshed = null;
@@ -504,10 +566,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         continue;
                     }
 
-                    log.info("OAuth 401 detected, attempting token refresh: account_id={}", account.getId());
+                    log.info("[{}] OAuth 401 检测，尝试刷新 Token: account_id={}", requestId, account.getId());
                     String newToken = oauthTokenRefreshService.refreshAccessToken(account.getId());
                     if (newToken != null) {
-                        log.info("OAuth token refreshed: account_id={}, retrying", account.getId());
+                        log.info("[{}] OAuth Token 刷新成功，重试: account_id={}", requestId, account.getId());
                         tokenRefreshed = account.getId();
                         stickyAccountId = account.getId();
                         continue;
@@ -516,11 +578,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     // 刷新返回 null：区分"无 refresh_token"（永久）和"刷新失败"（临时）
                     boolean hasRefreshToken = checkHasRefreshToken(account);
                     if (!hasRefreshToken) {
-                        log.error("OAuth account has no refresh_token, marking ERROR: account_id={}", account.getId());
+                        log.error("[{}] OAuth 账户无 refresh_token，标记 ERROR: account_id={}",
+                                requestId, account.getId());
                         accountSelector.markError(account.getId(),
                                 "OAuth account has no refresh_token, cannot recover from 401");
                     } else {
-                        log.warn("OAuth token refresh failed temporarily, marking unhealthy: account_id={}", account.getId());
+                        log.warn("[{}] OAuth Token 刷新临时失败，标记不健康: account_id={}",
+                                requestId, account.getId());
                         accountSelector.markTempUnschedulable(account.getId(),
                                 java.time.Instant.now().plusSeconds(600),
                                 "OAuth token refresh temporarily failed");
@@ -530,8 +594,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
                 // --- 可重试错误 (429, 529, 5xx) ---
                 else if (statusCode == 429 || statusCode == 529 || statusCode >= 500) {
-                    log.warn("Failover error: status={}, account_id={}, attempt={}",
-                            statusCode, account.getId(), failoverCount);
+                    log.warn("[{}] 上游可重试错误: status={}, account_id={}, attempt={}/{}",
+                            requestId, statusCode, account.getId(), failoverCount + 1, MAX_FAILOVER_SWITCHES);
                     markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
                     concurrencyService.release(slot);
                     failoverCount++;
@@ -549,13 +613,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             errorPassthroughService.decide(statusCode, errorBody, accountPlatform.name());
 
                     if (action == ErrorPassthroughService.ErrorAction.RETRY) {
-                        log.warn("Error passthrough RETRY: status={}, account_id={}, attempt={}",
-                                statusCode, account.getId(), failoverCount);
+                        log.warn("[{}] 错误透传裁决 RETRY: status={}, account_id={}, attempt={}/{}",
+                                requestId, statusCode, account.getId(), failoverCount + 1, MAX_FAILOVER_SWITCHES);
                         markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
                         concurrencyService.release(slot);
                         failoverCount++;
                         // 回到 failover 循环
                     } else {
+                        log.warn("[{}] 错误透传裁决 PASS: status={}, account_id={}",
+                                requestId, statusCode, account.getId());
                         concurrencyService.release(slot);
                         writeMaskedUpstreamError(response, statusCode, errorBody);
                         return;
@@ -567,6 +633,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
         }
 
+        log.warn("[{}] Failover 耗尽: group={}, attempts={}, max={}",
+                requestId, group.getName(), failoverCount, MAX_FAILOVER_SWITCHES);
         getErrorWriter().writeError(response, 503, "overloaded_error",
                 "All accounts in group '" + group.getName()
                 + "' are unavailable after " + failoverCount + " attempts.");
@@ -612,15 +680,22 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     ? ctx.getRequestFormat()
                     : ProtocolTranslationService.platformToFormatId(requestPlatform);
             String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
+            log.info("[{}] 流式翻译: {} -> IR -> {} | account={}",
+                    ctx.getRequestId(), upstreamFormat, clientFormat, ctx.getSelectedAccount().getName());
             if (clientFormat != null && upstreamFormat != null) {
                 ProtocolConverter clientConv = converterRegistry.get(clientFormat);
                 ProtocolConverter upstreamConv = converterRegistry.get(upstreamFormat);
                 if (clientConv != null && upstreamConv != null) {
                     upstreamToIR = upstreamConv.createStreamToIR(ctx.getRequestedModel());
                     irToClient = clientConv.createStreamFromIR(ctx.getRequestedModel());
+                } else {
+                    log.warn("[{}] 流式翻译器不可用: client_conv={}, upstream_conv={}, 回退为透传",
+                            ctx.getRequestId(), clientConv != null, upstreamConv != null);
                 }
             }
             // 若任一 Converter 不可用，upstreamToIR/irToClient 为 null，fallback 到透传
+        } else {
+            log.info("[{}] 流式透传模式: platform={}", ctx.getRequestId(), requestPlatform);
         }
 
         try (var upstreamInput = upstreamResp.body();
@@ -695,7 +770,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
         }
 
-        log.debug("Stream usage: request_id={}, input={}, output={}, cache_w={}, cache_r={}",
+        log.info("[{}] 流式完成: input={}, output={}, cache_w={}, cache_r={}",
                 ctx.getRequestId(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
@@ -728,10 +803,14 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 ? ctx.getRequestFormat()
                 : ProtocolTranslationService.platformToFormatId(requestPlatform);
         String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
-        String clientBody = (clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat))
-                ? translationService.translateResponse(responseBody, upstreamFormat, clientFormat)
-                : responseBody;
+        boolean needRespTranslation = clientFormat != null && upstreamFormat != null
+                && !clientFormat.equals(upstreamFormat);
+        String clientBody = responseBody;
+        if (needRespTranslation) {
+            log.info("[{}] 响应协议翻译: {} -> {}",
+                    ctx != null ? ctx.getRequestId() : "?", upstreamFormat, clientFormat);
+            clientBody = translationService.translateResponse(responseBody, upstreamFormat, clientFormat);
+        }
 
         try (var output = response.getOutputStream()) {
             output.write(clientBody.getBytes(StandardCharsets.UTF_8));
@@ -842,6 +921,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         while (true) {
             if (!visited.add(currentId)) {
+                log.error("Claude Code 分组降级环形引用: current={}, visited={}", currentId, visited);
                 throw new ClaudeCodeOnlyException(
                         "Fallback group cycle detected for group " + currentId);
             }
@@ -852,17 +932,24 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     : groupRepository.findById(currentId).orElse(null);
 
             if (currentGroup == null || currentGroup.getDeletedAt() != null) {
+                log.error("Claude Code 降级分组不存在或已删除: group_id={}", currentId);
                 throw new ClaudeCodeOnlyException(
                         "Fallback group " + currentId + " not found or deleted");
             }
 
             // 终止条件：非 claude_code_only 或客户端是 Claude Code
             if (!Boolean.TRUE.equals(currentGroup.getClaudeCodeOnly()) || isClaudeCode) {
+                log.debug("Claude Code 分组解析终止: group={}, claude_code_only={}, is_claude_code={}",
+                        currentGroup.getName(), currentGroup.getClaudeCodeOnly(), isClaudeCode);
                 return currentGroup;
             }
 
+            log.info("Claude Code 分组降级: {} (claude_code_only=true) -> fallback_group_id={}",
+                    currentGroup.getName(), currentGroup.getFallbackGroupId());
+
             // claude_code_only 且非 CC 客户端：尝试降级
             if (currentGroup.getFallbackGroupId() == null) {
+                log.warn("Claude Code 分组降级链路末端: group={}, 无 fallback", currentGroup.getName());
                 throw new ClaudeCodeOnlyException(
                         "Group '" + currentGroup.getName() + "' requires Claude Code client.");
             }

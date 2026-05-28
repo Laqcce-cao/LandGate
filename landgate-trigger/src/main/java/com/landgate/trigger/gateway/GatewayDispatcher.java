@@ -89,7 +89,7 @@ public class GatewayDispatcher {
         Platform platform = resolvePlatform(path);
         String format = resolveFormat(path);
         if (platform == null) {
-            log.warn("No platform mapping for path: {}", path);
+            log.warn("路由失败: 未找到路径映射 | path={}", path);
             response.setStatus(404);
             response.setContentType("application/json;charset=UTF-8");
             response.getWriter().write("{\"error\":\"Unsupported API path: " + path + "\"}");
@@ -100,7 +100,10 @@ public class GatewayDispatcher {
         if (format != null) {
             request.setAttribute(ATTR_REQUEST_FORMAT, format);
         }
+        log.info("路由解析: path={} -> platform={}, format={}", path, platform.name(), format);
+
         IGatewayHandler handler = factory.getHandler(platform);
+        log.debug("派发到 Handler: {}", handler.getClass().getSimpleName());
         handler.handle(body, request, response);
     }
 

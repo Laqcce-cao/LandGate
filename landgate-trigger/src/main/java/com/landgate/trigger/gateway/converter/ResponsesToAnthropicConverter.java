@@ -334,7 +334,9 @@ public class ResponsesToAnthropicConverter {
         private boolean messageStartSent = false;
         private String messageId;
         private String model;
-        private int contentBlockIndex = 0;
+        // 起始 -1：每个新块开启前都会先做 ++，首块发出的 index 就是 0（符合 Anthropic SSE 规范）。
+        // Claude CLI 严格校验首块 index 必须为 0，否则会拒绝整个流。
+        private int contentBlockIndex = -1;
         private boolean contentBlockOpen = false;
         private String currentBlockType = null; // "text", "thinking", "tool_use"
         private String currentToolName = null;

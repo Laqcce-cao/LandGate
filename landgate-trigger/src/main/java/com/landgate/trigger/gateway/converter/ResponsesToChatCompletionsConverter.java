@@ -46,7 +46,17 @@ public class ResponsesToChatCompletionsConverter {
             }
 
             // stream
-            if (ir.has("stream")) dst.put("stream", ir.get("stream").asBoolean());
+            if (ir.has("stream")) {
+                boolean streamFlag = ir.get("stream").asBoolean();
+                dst.put("stream", streamFlag);
+                // 流式必须显式打开 include_usage，否则 OpenAI 兼容上游不会在最终 chunk 返回 usage，
+                // 上层翻译器拿到 output_tokens=0，计费与日志会失真。
+                if (streamFlag) {
+                    ObjectNode streamOptions = JSON.createObjectNode();
+                    streamOptions.put("include_usage", true);
+                    dst.set("stream_options", streamOptions);
+                }
+            }
 
             // reasoning.effort → reasoning_effort
             if (ir.has("reasoning") && ir.get("reasoning").has("effort")) {
