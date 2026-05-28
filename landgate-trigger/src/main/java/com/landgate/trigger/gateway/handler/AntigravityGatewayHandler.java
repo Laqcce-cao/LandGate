@@ -2,6 +2,9 @@ package com.landgate.trigger.gateway.handler;
 
 import com.landgate.trigger.gateway.IErrorWriter;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
+import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
+import com.landgate.trigger.gateway.oauth.FingerprintService;
+import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
@@ -42,12 +45,18 @@ public class AntigravityGatewayHandler extends AbstractGatewayHandler {
             PlatformRouter platformRouter,
             ProtocolTranslationService translationService,
             ConverterRegistry converterRegistry,
+            ClaudeCodeDetector claudeCodeDetector,
+            OAuthMimicryService oAuthMimicryService,
+            FingerprintService fingerprintService,
+            UpstreamCapabilityService upstreamCapabilityService,
             AnthropicErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
                 concurrencyService, sessionHashService, oauthTokenRefreshService,
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
-                translationService, converterRegistry);
+                translationService, converterRegistry,
+                claudeCodeDetector, oAuthMimicryService, fingerprintService,
+                upstreamCapabilityService);
         this.errorWriter = errorWriter;
     }
 

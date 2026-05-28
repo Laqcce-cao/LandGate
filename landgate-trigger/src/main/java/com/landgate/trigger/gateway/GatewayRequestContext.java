@@ -45,6 +45,14 @@ public class GatewayRequestContext {
     private String upstreamPath;
     /** 当前请求持有的并发槽位（用于流式续约），非流式请求为 null */
     private ConcurrencySlot concurrencySlot;
+    /** 是否为 Claude Code 客户端（UA + metadata.user_id 通过检测） */
+    private boolean claudeCode;
+    /** 是否需要 OAuth 伪装（OAuth 账号 + 非 Claude Code 客户端） */
+    private boolean shouldMimicClaudeCode;
+    /** 客户端指纹（仅 OAuth 账号） */
+    private com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fingerprint;
+    /** 经过 resolveGatewayGroup 降级后的实际使用的 group（可能与 APIKey 绑定的 group 不同） */
+    private GroupEntity resolvedGroup;
 
     private static final ThreadLocal<GatewayRequestContext> HOLDER = new ThreadLocal<>();
 

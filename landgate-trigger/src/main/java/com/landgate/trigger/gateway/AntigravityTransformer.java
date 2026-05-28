@@ -1,6 +1,10 @@
 package com.landgate.trigger.gateway;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.trigger.gateway.oauth.BillingHeaderService;
+import com.landgate.trigger.gateway.oauth.FingerprintService;
+import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
+import com.landgate.trigger.gateway.oauth.UserIdRewriter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -18,13 +22,18 @@ import java.net.http.HttpRequest;
  * Antigravity 请求经由 {@link AntigravityGatewayHandler} 处理，
  * 任何后续 Phase 引入的"OAuth 伪装"代码必须以 {@code account.getPlatform() == Platform.ANTHROPIC}
  * 作为前置条件，从而天然跳过 Antigravity 账号。
- * <p>
- * 当前 LandGate 尚未实现 OAuth 伪装功能，本类的实际行为与基类完全一致；
- * 引入独立类是为了在 Handler/Router 层提供清晰的扩展点，便于未来按需差异化。
  */
 @Slf4j
 @Component
 public class AntigravityTransformer extends AnthropicTransformer {
+
+    public AntigravityTransformer(
+            FingerprintService fingerprintService,
+            UserIdRewriter userIdRewriter,
+            BillingHeaderService billingHeaderService,
+            OAuthMimicryService oAuthMimicryService) {
+        super(fingerprintService, userIdRewriter, billingHeaderService, oAuthMimicryService);
+    }
 
     @Override
     public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {

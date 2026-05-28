@@ -13,6 +13,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ProtocolConverter;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
+import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
+import com.landgate.trigger.gateway.oauth.ClaudeCodeOnlyException;
+import com.landgate.trigger.gateway.oauth.FingerprintService;
+import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import jakarta.servlet.http.HttpServletRequest;
@@ -58,6 +62,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final ProtocolTranslationService translationService;
     protected final ConverterRegistry converterRegistry;
 
+    protected final ClaudeCodeDetector claudeCodeDetector;
+    protected final OAuthMimicryService oAuthMimicryService;
+    protected final FingerprintService fingerprintService;
+    protected final UpstreamCapabilityService upstreamCapabilityService;
+
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
@@ -78,7 +87,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             RateLimitHeaderParser rateLimitHeaderParser,
             PlatformRouter platformRouter,
             ProtocolTranslationService translationService,
-            ConverterRegistry converterRegistry) {
+            ConverterRegistry converterRegistry,
+            ClaudeCodeDetector claudeCodeDetector,
+            OAuthMimicryService oAuthMimicryService,
+            FingerprintService fingerprintService,
+            UpstreamCapabilityService upstreamCapabilityService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -94,6 +107,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.platformRouter = platformRouter;
         this.translationService = translationService;
         this.converterRegistry = converterRegistry;
+        this.claudeCodeDetector = claudeCodeDetector;
+        this.oAuthMimicryService = oAuthMimicryService;
+        this.fingerprintService = fingerprintService;
+        this.upstreamCapabilityService = upstreamCapabilityService;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -181,31 +198,56 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             return;
         }
 
-        // Step 3: 流式检测 + 模型名提取 + 请求平台（通用解析，与平台无关）
+        // Step 2.6: Claude Code 检测 + claude_code_only 分组降级
+        // 先提取 platform/format（loadGroup 之后就需要，用于判断端点类型）
+        Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
+        String requestFormat = (String) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT);
+
+        boolean isClaudeCode = false;
+        String metadataUserId = null;
+
+        // 仅 Anthropic 端点检测 Claude Code
+        if (requestPlatform == Platform.ANTHROPIC) {
+            metadataUserId = extractMetadataUserIdFromBody(body);
+            // /v1/messages 端点: 完整校验（UA + system prompt 相似度 + 必要 header）
+            // 非 messages 端点: UA 匹配 claude-cli/* 即视为 true（与 Sub2API gateway_helper.go:42-44 一致）
+            if ("messages".equals(requestFormat)) {
+                String systemPrompt = ClaudeCodeDetector.extractSystemPrompt(body);
+                isClaudeCode = claudeCodeDetector.validateForMessages(
+                        request.getHeader("User-Agent"), metadataUserId,
+                        systemPrompt,
+                        extractMaxTokens(body), extractModel(body),
+                        extractHeadersMap(request));
+            } else {
+                isClaudeCode = claudeCodeDetector.validateForNonMessages(
+                        request.getHeader("User-Agent"));
+            }
+        }
+
+        // 非 /v1/messages 端点的 claude_code_only 分组直接拒绝
+        if (Boolean.TRUE.equals(group.getClaudeCodeOnly()) && requestPlatform != Platform.ANTHROPIC) {
+            getErrorWriter().writeError(response, 403, "permission_error",
+                    "This group is restricted to Claude Code clients (/v1/messages only)");
+            return;
+        }
+
+        // /v1/messages 端点走降级链路
+        try {
+            group = resolveGatewayGroup(group, isClaudeCode);
+        } catch (ClaudeCodeOnlyException e) {
+            getErrorWriter().writeError(response, 403, "permission_error", e.getMessage());
+            return;
+        }
+
+        // Step 3: 流式检测 + 模型名提取（通用解析，与平台无关）
         String model = (String) request.getAttribute(ATTR_GATEWAY_MODEL);
         if (model == null) {
             model = extractModel(body);
         }
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
-        Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
-        String requestFormat = (String) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT);
         // Responses API 无 stream 字段，默认流式
         boolean stream = "responses".equals(requestFormat) || isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
-
-        // 提取 metadata.user_id（仅 Anthropic 客户端请求，在协议翻译之前提取，
-        // 因为 Anthropic→Responses 转换会丢弃 metadata 字段）
-        String metadataUserId = null;
-        if (requestPlatform == Platform.ANTHROPIC) {
-            try {
-                JsonNode root = JSON_MAPPER.readTree(body);
-                if (root.has("metadata") && root.get("metadata").has("user_id")) {
-                    metadataUserId = root.get("metadata").get("user_id").asText();
-                }
-            } catch (Exception e) {
-                // ignore parse errors
-            }
-        }
 
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, model={}",
                 apiKeyId, userId, group.getId(), group.getName(), model);
@@ -272,6 +314,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 continue;
             }
 
+            // OAuth 伪装决策（必须在 ctx builder 之前计算，供 Phase B 使用）
+            // Body 级 Phase A 操作仍需在协议翻译之后执行（见 try 块内）
+            boolean shouldMimicClaudeCode = account.getPlatform() == Platform.ANTHROPIC
+                    && (account.getType() == AccountType.OAUTH
+                        || account.getType() == AccountType.SETUP_TOKEN)
+                    && !isClaudeCode;
+
             var ctx = GatewayRequestContext.builder()
                     .requestId(requestId).apiKeyId(apiKeyId).userId(userId)
                     .group(group).selectedAccount(account)
@@ -281,6 +330,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .upstreamPath(upstreamPath)
                     .concurrencySlot(slot)
                     .metadataUserId(metadataUserId)
+                    .claudeCode(isClaudeCode)
+                    .shouldMimicClaudeCode(shouldMimicClaudeCode)
+                    .resolvedGroup(group)
                     .build();
             GatewayRequestContext.set(ctx);
 
@@ -297,6 +349,58 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         && !clientFormat.equals(upstreamFormat))
                         ? translationService.translateRequest(body, clientFormat, upstreamFormat)
                         : body;
+
+                // Phase A: OAuth 伪装 — Body 级操作（仅在 failover 循环内执行）
+                // 必须在协议翻译之后执行！rewriteSystemForNonClaudeCode 和
+                // normalizeClaudeOAuthRequestBody 操作的是 Anthropic Messages 格式的 body。
+                // 对于 Chat Completions/Responses 客户端 → Anthropic 上游的场景，
+                // upstreamBody 此时已翻译为 Anthropic 格式。
+                if (shouldMimicClaudeCode) {
+                    if (model != null && !model.toLowerCase().contains("haiku")) {
+                        upstreamBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
+                                upstreamBody, model);
+                    }
+                    // 获取或创建指纹，用于 metadata.user_id 构建
+                    com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fp =
+                            fingerprintService.getOrCreateFingerprint(
+                                    account.getId(),
+                                    extractHeadersMap(request));
+                    upstreamBody = oAuthMimicryService.buildAndInjectMetadataUserID(
+                            upstreamBody, account, fp);
+                    upstreamBody = oAuthMimicryService.normalizeClaudeOAuthRequestBody(
+                            upstreamBody, model);
+                }
+
+                // Passthrough 模式：跳过协议翻译，直接透传原始 body
+                // 仅 OpenAI 平台账号支持，用于绕过 IR 层做轻量代理
+                if (account.getPlatform() == Platform.OPENAI
+                        && upstreamCapabilityService.isPassthroughEnabled(account)) {
+                    upstreamBody = body;
+                    log.debug("Passthrough mode: skipping protocol translation, account_id={}", account.getId());
+                }
+
+                // Responses 降级路径：客户端请求 /v1/responses 但上游不支持时，
+                // 直接做 Responses → Chat Completions 转换（不经过 IR）
+                // 仅对 platform=openai && type=apikey 账号有意义
+                boolean responsesFallback = "responses".equals(requestFormat)
+                        && account.getPlatform() == Platform.OPENAI
+                        && account.getType() == AccountType.API_KEY
+                        && !upstreamCapabilityService.shouldUseResponsesAPI(account);
+
+                if (responsesFallback) {
+                    log.info("Responses fallback: downgrading to Chat Completions, account_id={}", account.getId());
+                    // 直接使用 ResponsesToChatCompletionsConverter 做请求转换（不经过 IR）
+                    try {
+                        var responsesConverter = converterRegistry.get("responses");
+                        var chatConverter = converterRegistry.get("chat_completions");
+                        if (responsesConverter != null && chatConverter != null) {
+                            // Upstream body: Responses → Chat Completions
+                            upstreamBody = translationService.translateRequest(body, "responses", "chat_completions");
+                        }
+                    } catch (Exception e) {
+                        log.warn("Responses fallback translation failed: {}", e.getMessage());
+                    }
+                }
 
                 // 根据选中账户的平台构造对应的上游请求
                 IRequestTransformer transformer = getTransformerFor(account);
@@ -714,5 +818,94 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    // ========================
+    // Claude Code 分组降级
+    // ========================
+
+    /**
+     * 解析 claude_code_only 分组链路。
+     * <p>
+     * 如果 Group 是 claude_code_only 但客户端不是 Claude Code，
+     * 沿 fallback_group_id 链路查找可用分组。链路末端无 fallback 时抛出异常。
+     * 支持环形检测。
+     *
+     * @param group        原始分组
+     * @param isClaudeCode 客户端是否是 Claude Code
+     * @return 解析后的分组（可能是 fallback 链路上的其他分组）
+     * @throws ClaudeCodeOnlyException 链路末端无可用 fallback
+     */
+    private GroupEntity resolveGatewayGroup(GroupEntity group, boolean isClaudeCode) {
+        Long currentId = group.getId();
+        java.util.Set<Long> visited = new java.util.HashSet<>();
+
+        while (true) {
+            if (!visited.add(currentId)) {
+                throw new ClaudeCodeOnlyException(
+                        "Fallback group cycle detected for group " + currentId);
+            }
+
+            // 重新加载当前 group（链路中每一步都是不同的 group）
+            GroupEntity currentGroup = currentId.equals(group.getId())
+                    ? group
+                    : groupRepository.findById(currentId).orElse(null);
+
+            if (currentGroup == null || currentGroup.getDeletedAt() != null) {
+                throw new ClaudeCodeOnlyException(
+                        "Fallback group " + currentId + " not found or deleted");
+            }
+
+            // 终止条件：非 claude_code_only 或客户端是 Claude Code
+            if (!Boolean.TRUE.equals(currentGroup.getClaudeCodeOnly()) || isClaudeCode) {
+                return currentGroup;
+            }
+
+            // claude_code_only 且非 CC 客户端：尝试降级
+            if (currentGroup.getFallbackGroupId() == null) {
+                throw new ClaudeCodeOnlyException(
+                        "Group '" + currentGroup.getName() + "' requires Claude Code client.");
+            }
+            currentId = currentGroup.getFallbackGroupId();
+        }
+    }
+
+    // ========================
+    // 辅助方法
+    // ========================
+
+    /** 从请求 body 中提取 metadata.user_id */
+    private static String extractMetadataUserIdFromBody(String body) {
+        try {
+            JsonNode root = JSON_MAPPER.readTree(body);
+            if (root.has("metadata") && root.get("metadata").has("user_id")) {
+                return root.get("metadata").get("user_id").asText();
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+        return null;
+    }
+
+    /** 从请求 body 中提取 max_tokens */
+    private static int extractMaxTokens(String body) {
+        try {
+            JsonNode root = JSON_MAPPER.readTree(body);
+            if (root.has("max_tokens")) return root.get("max_tokens").asInt();
+        } catch (Exception e) {
+            // ignore
+        }
+        return 0;
+    }
+
+    /** 将 HttpServletRequest 的 header 提取为 Map */
+    private static java.util.Map<String, String> extractHeadersMap(HttpServletRequest request) {
+        java.util.Map<String, String> headers = new java.util.HashMap<>();
+        var headerNames = request.getHeaderNames();
+        while (headerNames.hasMoreElements()) {
+            String name = headerNames.nextElement();
+            headers.put(name, request.getHeader(name));
+        }
+        return headers;
     }
 }
