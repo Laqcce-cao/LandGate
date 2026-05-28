@@ -531,12 +531,18 @@ public class ResponsesToAnthropicConverter {
 
                         // stop_reason
                         String stopReason;
-                        if ("response.incomplete".equals(type) && root.has("response")) {
+                        if (("response.incomplete".equals(type) || "response.done".equals(type))
+                                && root.has("response")) {
                             JsonNode resp = root.get("response");
-                            String incompleteReason = resp.has("incomplete_details")
-                                    && resp.get("incomplete_details").has("reason")
-                                    ? resp.get("incomplete_details").get("reason").asText() : "";
-                            stopReason = "max_output_tokens".equals(incompleteReason) ? "max_tokens" : "end_turn";
+                            String respStatus = resp.has("status") ? resp.get("status").asText() : "";
+                            if ("incomplete".equals(respStatus)) {
+                                String incompleteReason = resp.has("incomplete_details")
+                                        && resp.get("incomplete_details").has("reason")
+                                        ? resp.get("incomplete_details").get("reason").asText() : "";
+                                stopReason = "max_output_tokens".equals(incompleteReason) ? "max_tokens" : "end_turn";
+                            } else {
+                                stopReason = hasToolCall ? "tool_use" : "end_turn";
+                            }
                         } else {
                             stopReason = hasToolCall ? "tool_use" : "end_turn";
                         }
@@ -687,6 +693,9 @@ public class ResponsesToAnthropicConverter {
                     textBlock.put("type", "text");
                     textBlock.put("text", part.has("text") ? part.get("text").asText() : "");
                     blocks.add(textBlock);
+                } else if ("tool_use".equals(partType)) {
+                    // tool_use 块透传
+                    blocks.add(part);
                 }
             }
             if (blocks.size() == 0) {
