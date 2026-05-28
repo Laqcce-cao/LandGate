@@ -133,16 +133,20 @@ public class AuthController {
     public ResponseEntity<?> listApiKeys(@RequestAttribute("user_id") Long userId) {
         log.debug("List API keys: user_id={}", userId);
         List<ApiKeyEntity> keys = authDomainService.listApiKeys(userId);
-        return ResponseEntity.ok(keys.stream().map(k -> Map.of(
-                "id", k.getId(),
-                "key", k.getKey(),
-                "name", k.getName(),
-                "status", k.getStatus().name(),
-                "groupId", k.getGroupId() != null ? k.getGroupId() : "",
-                "createdAt", k.getCreatedAt() != null ? k.getCreatedAt().toString() : "",
-                "quota", k.getQuota() != null ? k.getQuota() : BigDecimal.ZERO,
-                "quotaUsed", k.getQuotaUsed() != null ? k.getQuotaUsed() : BigDecimal.ZERO
-        )).toList());
+        return ResponseEntity.ok(keys.stream().map(k -> {
+            Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("id", k.getId());
+            m.put("key", k.getKey());
+            m.put("name", k.getName());
+            m.put("status", k.getStatus().name());
+            m.put("groupId", k.getGroupId() != null ? k.getGroupId() : "");
+            m.put("createdAt", k.getCreatedAt() != null ? k.getCreatedAt().toString() : "");
+            m.put("lastUsedAt", k.getLastUsedAt() != null ? k.getLastUsedAt().toString() : "");
+            m.put("expiresAt", k.getExpiresAt() != null ? k.getExpiresAt().toString() : "");
+            m.put("quota", k.getQuota() != null ? k.getQuota() : BigDecimal.ZERO);
+            m.put("quotaUsed", k.getQuotaUsed() != null ? k.getQuotaUsed() : BigDecimal.ZERO);
+            return m;
+        }).toList());
     }
 
     @PostMapping("/api-keys")

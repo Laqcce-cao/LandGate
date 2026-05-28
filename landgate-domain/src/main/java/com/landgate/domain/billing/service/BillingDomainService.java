@@ -15,6 +15,7 @@ import com.landgate.domain.group.model.entity.GroupEntity;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -315,6 +316,7 @@ public class BillingDomainService {
         apiKeyRepository.findById(apiKeyId).ifPresent(apiKey -> {
             BigDecimal current = apiKey.getQuotaUsed() != null ? apiKey.getQuotaUsed() : BigDecimal.ZERO;
             apiKey.setQuotaUsed(current.add(actualCost));
+            apiKey.setLastUsedAt(Instant.now());
             apiKeyRepository.save(apiKey);
             log.debug("API key quota accumulated: api_key_id={}, used=${}, total=${}",
                     apiKeyId, actualCost, apiKey.getQuotaUsed());
