@@ -42,19 +42,28 @@ public class ProtocolTranslationService {
      * @return 翻译后的请求 JSON 字符串
      */
     public String translateRequest(String body, Platform from, Platform to) {
-        if (from == to) return body;
+        return translateRequest(body, platformToFormatId(from), platformToFormatId(to));
+    }
 
-        String fromFormat = platformToFormatId(from);
-        String toFormat = platformToFormatId(to);
+    /**
+     * 基于 formatId 的请求翻译（与 platform 解耦，便于同平台多端点场景，如 OpenAI 的 chat/responses）。
+     *
+     * @param body       客户端请求 JSON 字符串
+     * @param fromFormat 客户端格式 ID（如 "messages"、"chat_completions"、"responses"）
+     * @param toFormat   上游格式 ID
+     * @return 翻译后的请求 JSON 字符串；任一格式不可识别时透传原 body
+     */
+    public String translateRequest(String body, String fromFormat, String toFormat) {
         if (fromFormat == null || toFormat == null) {
-            log.debug("No format mapping for {}→{}, passing through", from, to);
+            log.debug("No format mapping for {}→{}, passing through", fromFormat, toFormat);
             return body;
         }
+        if (fromFormat.equals(toFormat)) return body;
 
         ProtocolConverter clientConv = converterRegistry.get(fromFormat);
         ProtocolConverter upstreamConv = converterRegistry.get(toFormat);
         if (clientConv == null || upstreamConv == null) {
-            log.debug("No converter for {}→{}, passing through", from, to);
+            log.debug("No converter for {}→{}, passing through", fromFormat, toFormat);
             return body;
         }
 
@@ -64,7 +73,7 @@ public class ProtocolTranslationService {
             return upstreamConv.requestFromIR(ir);
         } catch (Exception e) {
             log.warn("Hub-and-Spoke request translation failed for {}→{}, passing through: {}",
-                    from, to, e.getMessage());
+                    fromFormat, toFormat, e.getMessage());
             return body;
         }
     }
@@ -85,19 +94,23 @@ public class ProtocolTranslationService {
      * @return 翻译后的响应 JSON 字符串
      */
     public String translateResponse(String body, Platform from, Platform to) {
-        if (from == to) return body;
+        return translateResponse(body, platformToFormatId(from), platformToFormatId(to));
+    }
 
-        String fromFormat = platformToFormatId(from);
-        String toFormat = platformToFormatId(to);
+    /**
+     * 基于 formatId 的响应翻译（与 platform 解耦）。
+     */
+    public String translateResponse(String body, String fromFormat, String toFormat) {
         if (fromFormat == null || toFormat == null) {
-            log.debug("No format mapping for {}→{}, passing through", from, to);
+            log.debug("No format mapping for {}→{}, passing through", fromFormat, toFormat);
             return body;
         }
+        if (fromFormat.equals(toFormat)) return body;
 
         ProtocolConverter upstreamConv = converterRegistry.get(fromFormat);
         ProtocolConverter clientConv = converterRegistry.get(toFormat);
         if (upstreamConv == null || clientConv == null) {
-            log.debug("No converter for {}→{}, passing through", from, to);
+            log.debug("No converter for {}→{}, passing through", fromFormat, toFormat);
             return body;
         }
 
@@ -107,7 +120,7 @@ public class ProtocolTranslationService {
             return clientConv.responseFromIR(ir);
         } catch (Exception e) {
             log.warn("Hub-and-Spoke response translation failed for {}→{}, passing through: {}",
-                    from, to, e.getMessage());
+                    fromFormat, toFormat, e.getMessage());
             return body;
         }
     }
@@ -122,20 +135,22 @@ public class ProtocolTranslationService {
      * 映射关系：
      * <ul>
      *   <li>ANTHROPIC → {@code "messages"}</li>
-     *   <li>OPENAI → {@code "chat_completions"}</li>
-     *   <li>OPENAI_RESPONSES → {@code "responses"}</li>
+     *   <li>OPENAI → {@code "chat_completions"}（默认值，仅作为 platform 缺省格式）</li>
+     *   <li>ANTIGRAVITY → {@code "messages"}（Antigravity 协议与 Anthropic 兼容）</li>
      * </ul>
      * 未支持的平台返回 {@code null}（透传模式）。
      * <p>
      * 注意：本方法仅做 Platform → 默认 formatId 的简单映射。
-     * 客户端真实请求格式由 {@code GatewayDispatcher} 根据 URL 路径单独识别（Phase 2 引入），
+     * 客户端真实请求格式由 {@code GatewayDispatcher} 根据 URL 路径单独识别
+     * ({@link com.landgate.trigger.gateway.GatewayDispatcher#ATTR_REQUEST_FORMAT})，
      * 调用方应优先使用 request format 而非依赖此处的映射结果。
      */
     public static String platformToFormatId(Platform platform) {
+        if (platform == null) return null;
         return switch (platform) {
             case ANTHROPIC -> "messages";
             case OPENAI -> "chat_completions";
-            case OPENAI_RESPONSES -> "responses";
+            case ANTIGRAVITY -> "messages";
             default -> null;
         };
     }

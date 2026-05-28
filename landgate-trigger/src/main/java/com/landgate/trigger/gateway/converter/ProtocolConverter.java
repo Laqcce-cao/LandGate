@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
 
 /**
- * 协议格式转换器 —— 一种外部 API 格式与 IR（Anthropic Messages API 格式）之间的双向转换。
+ * 协议格式转换器 —— 一种外部 API 格式与 IR（OpenAI Responses API 格式）之间的双向转换。
  * <p>
  * 外部格式标识（如 "messages"、"chat_completions"、"responses"）通过 {@link #getFormatId()} 获取，
  * 每个 Converter 注册到 {@link ConverterRegistry}，由 Gateway 按 (客户端格式, 上游格式) 查表。
@@ -27,7 +27,7 @@ public interface ProtocolConverter {
     // ========================
 
     /**
-     * 将外部格式请求体转为 IR（Anthropic Messages API 格式）。
+     * 将外部格式请求体转为 IR（OpenAI Responses API 格式）。
      *
      * @param body 外部格式的请求 JSON 字符串
      * @return IR 格式的 JsonNode

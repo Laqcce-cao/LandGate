@@ -16,14 +16,12 @@ public enum Platform {
 
     /** Anthropic Claude —— 支持 Messages / Text Completions API */
     ANTHROPIC("anthropic", 1, "Anthropic Claude"),
-    /** OpenAI —— 支持 Chat Completions / Embeddings API */
+    /** OpenAI —— 支持 Chat Completions / Responses API */
     OPENAI("openai", 2, "OpenAI"),
     /** Google Gemini —— 支持 Gemini API */
     GEMINI("gemini", 3, "Google Gemini"),
     /** Antigravity —— 自定义代理平台 */
-    ANTIGRAVITY("antigravity", 4, "Antigravity"),
-    /** OpenAI Responses API —— 新版语义 API（Codex CLI 使用） */
-    OPENAI_RESPONSES("openai_responses", 5, "OpenAI Responses API");
+    ANTIGRAVITY("antigravity", 4, "Antigravity");
 
     /** 代码标识 */
     @JsonValue

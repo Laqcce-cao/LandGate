@@ -110,7 +110,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
     /** 根据账户平台获取对应的用量解析器 */
     protected IUsageParser getUsageParserFor(AccountEntity account) {
-        return platformRouter.getUsageParser(account.getPlatform());
+        // 优先使用 ctx.requestFormat（URL 路径决定）进行细化路由，
+        // 用于区分 OpenAI 平台 chat/responses 两种端点的 usage schema 差异。
+        GatewayRequestContext ctx = GatewayRequestContext.get();
+        String format = ctx != null ? ctx.getRequestFormat() : null;
+        return platformRouter.getUsageParser(account.getPlatform(), format);
     }
 
     // --- 通用请求解析（账户选择前调用，与平台无关）---
@@ -184,8 +188,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
         Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
+        String requestFormat = (String) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT);
         // Responses API 无 stream 字段，默认流式
-        boolean stream = requestPlatform == Platform.OPENAI_RESPONSES || isStreamRequest(body);
+        boolean stream = "responses".equals(requestFormat) || isStreamRequest(body);
         String requestId = UUID.randomUUID().toString();
 
         log.info("Gateway request: key_id={}, user_id={}, group_id={}, group={}, model={}",
@@ -258,6 +263,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .group(group).selectedAccount(account)
                     .stream(stream).requestedModel(model)
                     .requestPlatform(requestPlatform)
+                    .requestFormat(requestFormat)
                     .upstreamPath(upstreamPath)
                     .concurrencySlot(slot)
                     .build();
@@ -265,9 +271,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
             try {
                 // 请求协议翻译：客户端格式 ≠ 上游格式时转换 body
+                // 客户端 format 优先使用 ctx.getRequestFormat()（URL 路径决定），
+                // 仅在缺失时回退到 platformToFormatId（保持向后兼容）。
                 Platform accountPlatform = account.getPlatform();
-                String upstreamBody = (requestPlatform != null && requestPlatform != accountPlatform)
-                        ? translationService.translateRequest(body, requestPlatform, accountPlatform)
+                String clientFormat = requestFormat != null
+                        ? requestFormat
+                        : ProtocolTranslationService.platformToFormatId(requestPlatform);
+                String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
+                String upstreamBody = (clientFormat != null && upstreamFormat != null
+                        && !clientFormat.equals(upstreamFormat))
+                        ? translationService.translateRequest(body, clientFormat, upstreamFormat)
                         : body;
 
                 // 根据选中账户的平台构造对应的上游请求
@@ -474,7 +487,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         StreamTranslator irToClient = null;
 
         if (needTranslation) {
-            String clientFormat = ProtocolTranslationService.platformToFormatId(requestPlatform);
+            // 客户端 format 优先使用 ctx.getRequestFormat()（由 URL 路径决定），
+            // 仅在缺失时回退到 platformToFormatId（保持向后兼容）。
+            String clientFormat = ctx.getRequestFormat() != null
+                    ? ctx.getRequestFormat()
+                    : ProtocolTranslationService.platformToFormatId(requestPlatform);
             String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
             if (clientFormat != null && upstreamFormat != null) {
                 ProtocolConverter clientConv = converterRegistry.get(clientFormat);
@@ -586,8 +603,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
         Platform accountPlatform = ctx != null && ctx.getSelectedAccount() != null
                 ? ctx.getSelectedAccount().getPlatform() : null;
-        String clientBody = (requestPlatform != null && accountPlatform != null && requestPlatform != accountPlatform)
-                ? translationService.translateResponse(responseBody, accountPlatform, requestPlatform)
+        // 客户端 format 优先使用 ctx.getRequestFormat()（URL 路径决定），
+        // 缺失时回退到 platformToFormatId
+        String clientFormat = ctx != null && ctx.getRequestFormat() != null
+                ? ctx.getRequestFormat()
+                : ProtocolTranslationService.platformToFormatId(requestPlatform);
+        String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
+        String clientBody = (clientFormat != null && upstreamFormat != null
+                && !clientFormat.equals(upstreamFormat))
+                ? translationService.translateResponse(responseBody, upstreamFormat, clientFormat)
                 : responseBody;
 
         try (var output = response.getOutputStream()) {

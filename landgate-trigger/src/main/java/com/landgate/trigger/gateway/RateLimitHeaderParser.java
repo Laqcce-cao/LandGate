@@ -54,8 +54,8 @@ public class RateLimitHeaderParser {
         }
         try {
             return switch (platform) {
-                case ANTHROPIC -> parseAnthropic(headers);
-                case OPENAI, OPENAI_RESPONSES -> parseOpenAI(headers);
+                case ANTHROPIC, ANTIGRAVITY -> parseAnthropic(headers);
+                case OPENAI -> parseOpenAI(headers);
                 default -> empty();
             };
         } catch (Exception e) {

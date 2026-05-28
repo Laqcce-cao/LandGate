@@ -24,6 +24,7 @@ import java.util.Map;
 public class PlatformRouter {
 
     private final AnthropicTransformer anthropicTransformer;
+    private final AntigravityTransformer antigravityTransformer;
     private final OpenAiTransformer openAiTransformer;
     private final GeminiTransformer geminiTransformer;
 
@@ -43,22 +44,29 @@ public class PlatformRouter {
     @PostConstruct
     void init() {
         transformerMap.put(Platform.ANTHROPIC, anthropicTransformer);
-        transformerMap.put(Platform.ANTIGRAVITY, anthropicTransformer);
+        transformerMap.put(Platform.ANTIGRAVITY, antigravityTransformer);
         transformerMap.put(Platform.OPENAI, openAiTransformer);
-        transformerMap.put(Platform.OPENAI_RESPONSES, openAiTransformer);
         transformerMap.put(Platform.GEMINI, geminiTransformer);
 
+        // OpenAI 平台同时承载 chat_completions 和 responses 两种端点，
+        // UsageParser 由 AbstractGatewayHandler 根据 requestFormat 二次决策时再做细分；
+        // 这里按平台粗粒度注册 OpenAI 默认使用 chat completions usage parser。
         usageParserMap.put(Platform.ANTHROPIC, usageParser);
         usageParserMap.put(Platform.ANTIGRAVITY, usageParser);
         usageParserMap.put(Platform.OPENAI, openAiUsageParser);
-        usageParserMap.put(Platform.OPENAI_RESPONSES, responsesUsageParser);
         usageParserMap.put(Platform.GEMINI, geminiUsageParser);
 
         errorWriterMap.put(Platform.ANTHROPIC, anthropicErrorWriter);
         errorWriterMap.put(Platform.ANTIGRAVITY, anthropicErrorWriter);
         errorWriterMap.put(Platform.OPENAI, openAiErrorWriter);
-        errorWriterMap.put(Platform.OPENAI_RESPONSES, openAiErrorWriter);
         errorWriterMap.put(Platform.GEMINI, geminiErrorWriter);
+
+        // responsesUsageParser 暂未按平台映射；当客户端使用 /v1/responses 端点时，
+        // 由调用方（AbstractGatewayHandler）通过 ctx.requestFormat 显式选择，
+        // 此处保留字段以便后续 Phase 8 改造 UpstreamCapabilityService 时使用。
+        if (responsesUsageParser == null) {
+            log.debug("ResponsesUsageParser not yet wired into PlatformRouter (waiting for Phase 8)");
+        }
 
         log.info("PlatformRouter initialized with {} platforms", transformerMap.size());
     }
@@ -79,6 +87,27 @@ public class PlatformRouter {
             throw new IllegalArgumentException("No IUsageParser for platform: " + platform);
         }
         return p;
+    }
+
+    /**
+     * 根据平台 + 上游 formatId 获取用量解析器。
+     * <p>
+     * 用于区分 OpenAI 平台下两种端点的不同 usage schema：
+     * <ul>
+     *   <li>{@code "responses"} → {@link ResponsesUsageParser}（input_tokens / output_tokens / total_tokens）</li>
+     *   <li>其他 → {@link OpenAiUsageParser}（prompt_tokens / completion_tokens）</li>
+     * </ul>
+     * 非 OpenAI 平台忽略 formatId 参数，与 {@link #getUsageParser(Platform)} 行为一致。
+     *
+     * @param platform   账号平台
+     * @param formatId   上游请求格式 ID（{@code "chat_completions"} / {@code "responses"} 等），可为 null
+     * @return 对应的 UsageParser；找不到时抛出 IllegalArgumentException
+     */
+    public IUsageParser getUsageParser(Platform platform, String formatId) {
+        if (platform == Platform.OPENAI && "responses".equals(formatId)) {
+            return responsesUsageParser;
+        }
+        return getUsageParser(platform);
     }
 
     /** 根据平台获取错误响应写入器 */
