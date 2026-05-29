@@ -175,6 +175,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return isStreamRequest(body);
     }
 
+    /** 根据客户端/路由意图和上游实际 Content-Type 决定响应处理方式。 */
+    protected static boolean shouldHandleResponseAsStreaming(boolean stream,
+                                                            HttpResponse<InputStream> upstreamResp) {
+        if (stream) return true;
+        if (upstreamResp == null || upstreamResp.headers() == null) return false;
+        return upstreamResp.headers().firstValue("content-type")
+                .map(contentType -> contentType.toLowerCase().contains("text/event-stream"))
+                .orElse(false);
+    }
+
     // ========================
     // 模板方法
     // ========================
@@ -499,7 +509,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
                     IUsageParser usageParser = getUsageParserFor(account);
                     UsageTokens usage;
-                    if (stream) {
+                    boolean handleAsStreaming = shouldHandleResponseAsStreaming(stream, upstreamResp);
+                    if (handleAsStreaming) {
                         log.info("[{}] 开始流式响应处理", requestId);
                         usage = handleStreaming(upstreamResp, response, ctx, usageParser);
                     } else {
@@ -722,6 +733,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     lastRenewal = System.currentTimeMillis();
                 }
 
+                // 统一从上游原始 SSE 行解析用量，确保透传和协议翻译路径使用同一套计费来源
+                mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line);
+
                 if (upstreamToIR == null || irToClient == null) {
                     // === 透传模式（无翻译或 Converter 不可用） ===
                     if (usageParser.isStreamDone(line)) {
@@ -729,13 +743,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         writer.write("\n");
                         writer.flush();
                         break;
-                    }
-                    // 解析 data: 行中的 token 用量
-                    if (line.startsWith("data: ")) {
-                        UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
-                        if (eventUsage != null) {
-                            totalUsage.merge(eventUsage);
-                        }
                     }
                     writer.write(line);
                     writer.write("\n");
@@ -783,6 +790,19 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
         return totalUsage;
+    }
+
+    /** 从上游原始 SSE 行解析用量，避免协议翻译路径丢失缓存 Token。 */
+    private void mergeStreamingUsageFromUpstreamLine(UsageTokens totalUsage,
+                                                     IUsageParser usageParser,
+                                                     String line) {
+        if (totalUsage == null || usageParser == null || line == null) return;
+        if (!line.startsWith("data: ")) return;
+
+        UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
+        if (eventUsage != null) {
+            totalUsage.merge(eventUsage);
+        }
     }
 
     protected UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,
