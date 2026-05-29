@@ -158,6 +158,21 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return false;
     }
 
+    /** 判断本次请求是否应按流式响应处理。 */
+    protected static boolean shouldHandleAsStreaming(String requestFormat, String body, AccountEntity account) {
+        // Responses API 端点当前默认按 SSE 响应处理。
+        if ("responses".equals(requestFormat)) return true;
+
+        // OpenAI OAuth 固定转发到 ChatGPT Codex Responses 端点，该端点请求体会被强制 stream=true。
+        if (account != null
+                && account.getPlatform() == Platform.OPENAI
+                && account.getType() == AccountType.OAUTH) {
+            return true;
+        }
+
+        return isStreamRequest(body);
+    }
+
     // ========================
     // 模板方法
     // ========================
@@ -266,11 +281,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             model = extractModel(body);
         }
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
-        // Responses API 无 stream 字段，默认流式
-        boolean stream = "responses".equals(requestFormat) || isStreamRequest(body);
+        // 账户选择前只能判断客户端显式流式意图；OpenAI OAuth Codex 强制流式需在选中账号后再计算。
+        boolean clientStream = shouldHandleAsStreaming(requestFormat, body, null);
 
         log.info("[{}] 请求解析: model={}, stream={}, request_format={}",
-                requestId, model, stream, requestFormat);
+                requestId, model, clientStream, requestFormat);
 
         // Step 4: Session 粘滞（IP + UA + API Key）
         String sessionHash = sessionHashService.generateHash(request, apiKeyId);
@@ -357,6 +372,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     && (account.getType() == AccountType.OAUTH
                         || account.getType() == AccountType.SETUP_TOKEN)
                     && !isClaudeCode;
+
+            boolean stream = shouldHandleAsStreaming(requestFormat, body, account);
 
             var ctx = GatewayRequestContext.builder()
                     .requestId(requestId).apiKeyId(apiKeyId).userId(userId)
