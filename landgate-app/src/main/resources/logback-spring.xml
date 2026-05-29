@@ -19,8 +19,8 @@
     <property name="CONSOLE_PATTERN"
               value="%clr(%d{yy-MM-dd.HH:mm:ss.SSS}){faint} %clr([%-16t]){faint} %highlight(%-5p) %clr(%-22c{0}){cyan} - %m%n%wEx"/>
 
-    <!-- ==================== 控制台（dev/test 环境） ==================== -->
-    <springProfile name="dev,test">
+    <!-- ==================== 控制台（全环境） ==================== -->
+    <springProfile name="dev,test,prod">
         <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
             <encoder>
                 <pattern>${CONSOLE_PATTERN}</pattern>
@@ -107,7 +107,7 @@
     </root>
 
     <!-- dev/test 环境额外输出到控制台 -->
-    <springProfile name="dev,test">
+    <springProfile name="dev,test,prod">
         <root level="INFO">
             <appender-ref ref="CONSOLE"/>
             <appender-ref ref="ASYNC_INFO"/>
