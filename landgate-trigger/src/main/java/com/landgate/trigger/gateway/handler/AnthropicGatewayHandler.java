@@ -11,6 +11,7 @@ import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
 import com.landgate.trigger.gateway.*;
 import com.landgate.trigger.gateway.error.AnthropicErrorWriter;
+import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import org.springframework.stereotype.Component;
 
 /**
@@ -44,6 +45,7 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
             UpstreamCapabilityService upstreamCapabilityService,
+            UpstreamRouteResolver upstreamRouteResolver,
             AnthropicErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 groupRepository, userRepository, billingDomainService, balanceDomainService,
@@ -51,7 +53,7 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
                 translationService, converterRegistry,
                 claudeCodeDetector, oAuthMimicryService, fingerprintService,
-                upstreamCapabilityService);
+                upstreamCapabilityService, upstreamRouteResolver);
         this.errorWriter = errorWriter;
     }
 

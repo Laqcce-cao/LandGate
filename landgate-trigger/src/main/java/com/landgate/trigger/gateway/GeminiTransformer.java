@@ -27,28 +27,8 @@ public class GeminiTransformer implements IRequestTransformer {
     @Override
     public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
         GatewayRequestContext ctx = GatewayRequestContext.get();
-        String upstreamUrl;
-
-        if (ctx != null && ctx.getUpstreamPath() != null) {
-            // 使用 Controller 注入的完整路径
-            String baseUrl = GEMINI_API_BASE;
-            if (account.getExtra() != null && !account.getExtra().equals("{}")) {
-                try {
-                    JsonNode extra = JSON.readTree(account.getExtra());
-                    if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
-                        baseUrl = extra.get("base_url").asText();
-                    }
-                } catch (Exception e) {
-                    log.warn("Failed to parse base_url for Gemini account: account_id={}", account.getId());
-                }
-            }
-            upstreamUrl = baseUrl + ctx.getUpstreamPath()
-                    + (ctx.getUpstreamPath().contains("?") ? "&" : "?") + "key=" + accessToken;
-        } else {
-            // 回退：无上下文时仅用 API Key 查询参数
-            String modelPath = ctx != null ? ctx.getRequestedModel() : "unknown";
-            upstreamUrl = GEMINI_API_BASE + "/v1beta/models/" + modelPath + ":generateContent?key=" + accessToken;
-        }
+        String targetUrl = resolveTargetUrl(account, ctx);
+        String upstreamUrl = targetUrl + (targetUrl.contains("?") ? "&" : "?") + "key=" + accessToken;
 
         log.debug("Gemini upstream URL: {}", upstreamUrl.substring(0, Math.min(200, upstreamUrl.length())));
 
@@ -60,6 +40,29 @@ public class GeminiTransformer implements IRequestTransformer {
                         ? HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)
                         : HttpRequest.BodyPublishers.noBody())
                 .build();
+    }
+
+    /** 解析上游目标地址，正常网关路径优先使用策略路由结果。 */
+    private String resolveTargetUrl(AccountEntity account, GatewayRequestContext ctx) {
+        if (ctx != null && ctx.getUpstreamRoute() != null && ctx.getUpstreamRoute().targetUrl() != null) {
+            return ctx.getUpstreamRoute().targetUrl();
+        }
+        if (ctx != null && ctx.getUpstreamPath() != null) {
+            String baseUrl = GEMINI_API_BASE;
+            if (account.getExtra() != null && !account.getExtra().equals("{}")) {
+                try {
+                    JsonNode extra = JSON.readTree(account.getExtra());
+                    if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
+                        baseUrl = extra.get("base_url").asText();
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to parse base_url for Gemini account: account_id={}", account.getId());
+                }
+            }
+            return baseUrl + ctx.getUpstreamPath();
+        }
+        String modelPath = ctx != null ? ctx.getRequestedModel() : "unknown";
+        return GEMINI_API_BASE + "/v1beta/models/" + modelPath + ":generateContent";
     }
 
     @Override

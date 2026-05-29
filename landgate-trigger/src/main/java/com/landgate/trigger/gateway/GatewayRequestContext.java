@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.group.model.entity.GroupEntity;
+import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.Platform;
 import lombok.Builder;
 import lombok.Data;
@@ -33,6 +34,8 @@ public class GatewayRequestContext {
      * 如 OPENAI 平台同时支持 /v1/chat/completions 和 /v1/responses），用于决定流式默认值、上游路径选择等。
      */
     private String requestFormat;
+    /** 经过策略路由解析后的上游端点与协议格式决策，是上游请求/响应处理的单一事实来源。 */
+    private UpstreamRoute upstreamRoute;
     /**
      * Anthropic 请求中的 metadata.user_id，用于上游请求重建。
      * <p>

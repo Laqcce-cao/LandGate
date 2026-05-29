@@ -1,8 +1,5 @@
 package com.landgate.trigger.gateway;
 
-import com.landgate.domain.account.model.entity.AccountEntity;
-import com.landgate.types.enums.AccountType;
-import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -16,12 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AbstractGatewayHandlerTest {
 
     @Test
-    @DisplayName("OpenAI OAuth Codex 账号强制按流式响应处理")
-    void openAiOAuthCodexAccountForcesStreaming() {
-        AccountEntity account = AccountEntity.builder()
-                .platform(Platform.OPENAI)
-                .type(AccountType.OAUTH)
-                .build();
+    @DisplayName("Chat Completions 客户端 stream=false 时不要求流式")
+    void chatCompletionsStreamFalseIsNotClientStreamingIntent() {
         String body = """
                 {
                   "model":"gpt-5.5",
@@ -29,39 +22,31 @@ class AbstractGatewayHandlerTest {
                   "messages":[{"role":"user","content":"Hi"}]
                 }""";
 
-        assertTrue(AbstractGatewayHandler.shouldHandleAsStreaming("chat_completions", body, account));
+        assertFalse(AbstractGatewayHandler.shouldClientRequestStreaming("chat_completions", body));
     }
 
     @Test
-    @DisplayName("普通 OpenAI API Key 账号保留客户端非流式选择")
-    void openAiApiKeyAccountKeepsClientNonStreamingChoice() {
-        AccountEntity account = AccountEntity.builder()
-                .platform(Platform.OPENAI)
-                .type(AccountType.API_KEY)
-                .build();
+    @DisplayName("Chat Completions 客户端 stream=true 时要求流式")
+    void chatCompletionsStreamTrueIsClientStreamingIntent() {
         String body = """
                 {
                   "model":"gpt-5.5",
-                  "stream":false,
+                  "stream":true,
                   "messages":[{"role":"user","content":"Hi"}]
                 }""";
 
-        assertFalse(AbstractGatewayHandler.shouldHandleAsStreaming("chat_completions", body, account));
+        assertTrue(AbstractGatewayHandler.shouldClientRequestStreaming("chat_completions", body));
     }
 
     @Test
     @DisplayName("Responses 客户端格式默认按流式响应处理")
     void responsesRequestFormatDefaultsToStreaming() {
-        AccountEntity account = AccountEntity.builder()
-                .platform(Platform.OPENAI)
-                .type(AccountType.API_KEY)
-                .build();
         String body = """
                 {
                   "model":"gpt-5.5",
                   "input":"Hi"
                 }""";
 
-        assertTrue(AbstractGatewayHandler.shouldHandleAsStreaming("responses", body, account));
+        assertTrue(AbstractGatewayHandler.shouldClientRequestStreaming("responses", body));
     }
 }

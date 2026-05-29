@@ -3,6 +3,8 @@ package com.landgate.trigger.gateway;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.trigger.gateway.route.EndpointKind;
+import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
@@ -21,9 +23,41 @@ class OpenAiTransformerTest {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     @Test
+    @DisplayName("构建请求时优先使用 GatewayRequestContext 中的上游路由地址")
+    void buildRequestUsesResolvedUpstreamRouteTargetUrl() {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "responses",
+                        "chat_completions",
+                        EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "https://proxy.example.com/v1/chat/completions",
+                        false,
+                        false,
+                        false,
+                        "chat_completions",
+                        "test_route"))
+                .build());
+
+        try {
+            var request = transformer.buildUpstreamRequest("{}", account, "token-1");
+
+            assertEquals("https://proxy.example.com/v1/chat/completions", request.uri().toString());
+        } finally {
+            GatewayRequestContext.clear();
+        }
+    }
+
+    @Test
     @DisplayName("OAuth Codex 请求移除不支持字段并补齐 instructions")
     void codexOAuthRequestRemovesUnsupportedFieldsAndAddsInstructions() throws Exception {
-        OpenAiTransformer transformer = new OpenAiTransformer(new UpstreamCapabilityService());
+        OpenAiTransformer transformer = new OpenAiTransformer();
         AccountEntity account = AccountEntity.builder()
                 .id(6L)
                 .platform(Platform.OPENAI)
@@ -60,7 +94,7 @@ class OpenAiTransformerTest {
     @Test
     @DisplayName("OAuth Codex 请求将 system 输入移入 instructions")
     void codexOAuthRequestMovesSystemInputToInstructions() throws Exception {
-        OpenAiTransformer transformer = new OpenAiTransformer(new UpstreamCapabilityService());
+        OpenAiTransformer transformer = new OpenAiTransformer();
         AccountEntity account = AccountEntity.builder()
                 .id(6L)
                 .platform(Platform.OPENAI)

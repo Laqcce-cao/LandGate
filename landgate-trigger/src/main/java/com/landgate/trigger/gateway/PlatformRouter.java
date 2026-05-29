@@ -3,6 +3,7 @@ package com.landgate.trigger.gateway;
 import com.landgate.trigger.gateway.error.AnthropicErrorWriter;
 import com.landgate.trigger.gateway.error.GeminiErrorWriter;
 import com.landgate.trigger.gateway.error.OpenAiErrorWriter;
+import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.Platform;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -48,9 +49,8 @@ public class PlatformRouter {
         transformerMap.put(Platform.OPENAI, openAiTransformer);
         transformerMap.put(Platform.GEMINI, geminiTransformer);
 
-        // OpenAI 平台同时承载 chat_completions 和 responses 两种端点，
-        // UsageParser 由 AbstractGatewayHandler 根据 requestFormat 二次决策时再做细分；
-        // 这里按平台粗粒度注册 OpenAI 默认使用 chat completions usage parser。
+        // OpenAI 平台同时承载 chat_completions 和 responses 两种 usage schema；
+        // 平台粗粒度默认使用 Chat Completions，正常网关路径优先通过 UpstreamRoute.usageFormat 精确选择。
         usageParserMap.put(Platform.ANTHROPIC, usageParser);
         usageParserMap.put(Platform.ANTIGRAVITY, usageParser);
         usageParserMap.put(Platform.OPENAI, openAiUsageParser);
@@ -60,13 +60,6 @@ public class PlatformRouter {
         errorWriterMap.put(Platform.ANTIGRAVITY, anthropicErrorWriter);
         errorWriterMap.put(Platform.OPENAI, openAiErrorWriter);
         errorWriterMap.put(Platform.GEMINI, geminiErrorWriter);
-
-        // responsesUsageParser 暂未按平台映射；当客户端使用 /v1/responses 端点时，
-        // 由调用方（AbstractGatewayHandler）通过 ctx.requestFormat 显式选择，
-        // 此处保留字段以便后续 Phase 8 改造 UpstreamCapabilityService 时使用。
-        if (responsesUsageParser == null) {
-            log.debug("ResponsesUsageParser not yet wired into PlatformRouter (waiting for Phase 8)");
-        }
 
         log.info("PlatformRouter initialized with {} platforms", transformerMap.size());
     }
@@ -108,6 +101,18 @@ public class PlatformRouter {
             return responsesUsageParser;
         }
         return getUsageParser(platform);
+    }
+
+    /**
+     * 根据上游路由计划获取用量解析器。
+     * <p>
+     * OpenAI 平台的 Responses 与 Chat Completions usage schema 不同，必须使用 route.usageFormat 精确区分。
+     */
+    public IUsageParser getUsageParser(UpstreamRoute route) {
+        if (route == null) {
+            throw new IllegalArgumentException("UpstreamRoute is required");
+        }
+        return getUsageParser(route.upstreamPlatform(), route.usageFormat());
     }
 
     /** 根据平台获取错误响应写入器 */

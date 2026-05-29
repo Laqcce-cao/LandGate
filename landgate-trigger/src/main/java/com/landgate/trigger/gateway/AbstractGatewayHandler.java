@@ -17,6 +17,9 @@ import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
 import com.landgate.trigger.gateway.oauth.ClaudeCodeOnlyException;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
+import com.landgate.trigger.gateway.route.UpstreamRoute;
+import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
+import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import jakarta.servlet.http.HttpServletRequest;
@@ -66,6 +69,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final OAuthMimicryService oAuthMimicryService;
     protected final FingerprintService fingerprintService;
     protected final UpstreamCapabilityService upstreamCapabilityService;
+    protected final UpstreamRouteResolver upstreamRouteResolver;
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -91,7 +95,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             ClaudeCodeDetector claudeCodeDetector,
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
-            UpstreamCapabilityService upstreamCapabilityService) {
+            UpstreamCapabilityService upstreamCapabilityService,
+            UpstreamRouteResolver upstreamRouteResolver) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -111,6 +116,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.oAuthMimicryService = oAuthMimicryService;
         this.fingerprintService = fingerprintService;
         this.upstreamCapabilityService = upstreamCapabilityService;
+        this.upstreamRouteResolver = upstreamRouteResolver;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -130,6 +136,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // 优先使用 ctx.requestFormat（URL 路径决定）进行细化路由，
         // 用于区分 OpenAI 平台 chat/responses 两种端点的 usage schema 差异。
         GatewayRequestContext ctx = GatewayRequestContext.get();
+        if (ctx != null && ctx.getUpstreamRoute() != null) {
+            return platformRouter.getUsageParser(ctx.getUpstreamRoute());
+        }
         String format = ctx != null ? ctx.getRequestFormat() : null;
         return platformRouter.getUsageParser(account.getPlatform(), format);
     }
@@ -158,17 +167,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return false;
     }
 
-    /** 判断本次请求是否应按流式响应处理。 */
-    protected static boolean shouldHandleAsStreaming(String requestFormat, String body, AccountEntity account) {
-        // Responses API 端点当前默认按 SSE 响应处理。
+    /** 判断客户端请求本身是否表达了流式响应意图。 */
+    protected static boolean shouldClientRequestStreaming(String requestFormat, String body) {
+        // Responses API 入口当前默认按 SSE 响应处理。
         if ("responses".equals(requestFormat)) return true;
-
-        // OpenAI OAuth 固定转发到 ChatGPT Codex Responses 端点，该端点请求体会被强制 stream=true。
-        if (account != null
-                && account.getPlatform() == Platform.OPENAI
-                && account.getType() == AccountType.OAUTH) {
-            return true;
-        }
 
         return isStreamRequest(body);
     }
@@ -282,7 +284,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
         String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
         // 账户选择前只能判断客户端显式流式意图；OpenAI OAuth Codex 强制流式需在选中账号后再计算。
-        boolean clientStream = shouldHandleAsStreaming(requestFormat, body, null);
+        boolean clientStream = shouldClientRequestStreaming(requestFormat, body);
 
         log.info("[{}] 请求解析: model={}, stream={}, request_format={}",
                 requestId, model, clientStream, requestFormat);
@@ -373,7 +375,18 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         || account.getType() == AccountType.SETUP_TOKEN)
                     && !isClaudeCode;
 
-            boolean stream = shouldHandleAsStreaming(requestFormat, body, account);
+            UpstreamRoute upstreamRoute = upstreamRouteResolver.resolve(UpstreamRouteRequest.builder()
+                    .account(account)
+                    .requestPlatform(requestPlatform)
+                    .requestFormat(requestFormat)
+                    .upstreamPath(upstreamPath)
+                    .requestedModel(model)
+                    .build());
+            log.info("[{}] 上游路由: endpoint={}, upstream_format={}, target={}, reason={}",
+                    requestId, upstreamRoute.endpointKind(), upstreamRoute.upstreamFormat(),
+                    upstreamRoute.targetUrl(), upstreamRoute.reason());
+
+            boolean stream = upstreamRoute.forceStreaming() || shouldClientRequestStreaming(requestFormat, body);
 
             var ctx = GatewayRequestContext.builder()
                     .requestId(requestId).apiKeyId(apiKeyId).userId(userId)
@@ -382,6 +395,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .requestPlatform(requestPlatform)
                     .requestFormat(requestFormat)
                     .upstreamPath(upstreamPath)
+                    .upstreamRoute(upstreamRoute)
                     .concurrencySlot(slot)
                     .metadataUserId(metadataUserId)
                     .claudeCode(isClaudeCode)
@@ -391,28 +405,24 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             GatewayRequestContext.set(ctx);
 
             try {
-                // 请求协议翻译：客户端格式 ≠ 上游格式时转换 body
-                // 客户端 format 优先使用 ctx.getRequestFormat()（URL 路径决定），
-                // 仅在缺失时回退到 platformToFormatId（保持向后兼容）。
+                // 请求协议翻译：客户端格式 ≠ 上游格式时转换 body。
+                // 上游格式由 UpstreamRoute 统一决策，避免在 Handler 中散落平台/账号类型特判。
                 Platform accountPlatform = account.getPlatform();
-                String clientFormat = requestFormat != null
-                        ? requestFormat
+                String clientFormat = upstreamRoute.clientFormat() != null
+                        ? upstreamRoute.clientFormat()
                         : ProtocolTranslationService.platformToFormatId(requestPlatform);
-                // OpenAI OAuth 账号固定走 Codex Responses 端点，上游格式应为 responses 而非 chat_completions
-                String upstreamFormat = (accountPlatform == Platform.OPENAI && account.getType() == AccountType.OAUTH)
-                        ? "responses"
-                        : ProtocolTranslationService.platformToFormatId(accountPlatform);
+                String upstreamFormat = upstreamRoute.upstreamFormat();
                 boolean needTranslation = clientFormat != null && upstreamFormat != null
                         && !clientFormat.equals(upstreamFormat);
                 String upstreamBody = body;
 
-                if (needTranslation) {
+                if (needTranslation && !upstreamRoute.passthrough()) {
                     log.info("[{}] 协议翻译: {} -> {} | account_id={}, platform={}",
                             requestId, clientFormat, upstreamFormat, account.getId(), accountPlatform.name());
                     upstreamBody = translationService.translateRequest(body, clientFormat, upstreamFormat);
                 } else {
-                    log.info("[{}] 无需协议翻译: client_format={}, upstream_format={}",
-                            requestId, clientFormat, upstreamFormat);
+                    log.info("[{}] 无需协议翻译: client_format={}, upstream_format={}, passthrough={}",
+                            requestId, clientFormat, upstreamFormat, upstreamRoute.passthrough());
                 }
 
                 // Phase A: OAuth 伪装 — Body 级操作（仅在 failover 循环内执行）
@@ -438,37 +448,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             upstreamBody, model);
                 }
 
-                // Passthrough 模式：跳过协议翻译，直接透传原始 body
-                // 仅 OpenAI 平台账号支持，用于绕过 IR 层做轻量代理
-                if (account.getPlatform() == Platform.OPENAI
-                        && upstreamCapabilityService.isPassthroughEnabled(account)) {
+                // Passthrough 模式：跳过协议翻译，直接透传原始 body。
+                if (upstreamRoute.passthrough()) {
                     log.info("[{}] Passthrough 透传模式: 跳过协议翻译 | account_id={}",
                             requestId, account.getId());
                     upstreamBody = body;
-                }
-
-                // Responses 降级路径：客户端请求 /v1/responses 但上游不支持时，
-                // 直接做 Responses → Chat Completions 转换（不经过 IR）
-                // 仅对 platform=openai && type=apikey 账号有意义
-                boolean responsesFallback = "responses".equals(requestFormat)
-                        && account.getPlatform() == Platform.OPENAI
-                        && account.getType() == AccountType.API_KEY
-                        && !upstreamCapabilityService.shouldUseResponsesAPI(account);
-
-                if (responsesFallback) {
-                    log.info("[{}] Responses 降级: /v1/responses -> /v1/chat/completions | account_id={}",
-                            requestId, account.getId());
-                    // 直接使用 ResponsesToChatCompletionsConverter 做请求转换（不经过 IR）
-                    try {
-                        var responsesConverter = converterRegistry.get("responses");
-                        var chatConverter = converterRegistry.get("chat_completions");
-                        if (responsesConverter != null && chatConverter != null) {
-                            // Upstream body: Responses → Chat Completions
-                            upstreamBody = translationService.translateRequest(body, "responses", "chat_completions");
-                        }
-                    } catch (Exception e) {
-                        log.warn("[{}] Responses 降级翻译失败: {}", requestId, e.getMessage());
-                    }
                 }
 
                 // 根据选中账户的平台构造对应的上游请求
@@ -684,20 +668,18 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         UsageTokens totalUsage = UsageTokens.builder().build();
 
-        // 判断翻译方向，通过 ConverterRegistry 获取流式翻译器
+        // 判断翻译方向，通过 ConverterRegistry 获取流式翻译器。
+        // 优先使用 UpstreamRoute 中的格式，保证请求和响应翻译走同一份路由决策。
         Platform requestPlatform = ctx.getRequestPlatform();
-        Platform accountPlatform = ctx.getSelectedAccount().getPlatform();
-        AccountEntity streamAccount = ctx.getSelectedAccount();
-
-        // 客户端 format 优先使用 ctx.getRequestFormat()（由 URL 路径决定），
-        // 仅在缺失时回退到 platformToFormatId（保持向后兼容）。
-        String clientFormat = ctx.getRequestFormat() != null
-                ? ctx.getRequestFormat()
-                : ProtocolTranslationService.platformToFormatId(requestPlatform);
-        // OpenAI OAuth 账号固定走 Codex Responses 端点，上游流式响应为 Responses 格式
-        String upstreamFormat = (accountPlatform == Platform.OPENAI && streamAccount.getType() == AccountType.OAUTH)
-                ? "responses"
-                : ProtocolTranslationService.platformToFormatId(accountPlatform);
+        UpstreamRoute route = ctx.getUpstreamRoute();
+        String clientFormat = route != null && route.clientFormat() != null
+                ? route.clientFormat()
+                : (ctx.getRequestFormat() != null
+                        ? ctx.getRequestFormat()
+                        : ProtocolTranslationService.platformToFormatId(requestPlatform));
+        String upstreamFormat = route != null
+                ? route.upstreamFormat()
+                : ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform());
         boolean needTranslation = clientFormat != null && upstreamFormat != null
                 && !clientFormat.equals(upstreamFormat);
 
@@ -818,22 +800,21 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // 先解析用量（用上游格式），再做响应协议翻译
         UsageTokens usage = usageParser.parseNonStreaming(responseBody);
 
-        // 协议翻译：上游格式 → 客户端格式
+        // 协议翻译：上游格式 → 客户端格式。
+        // 优先使用 UpstreamRoute 中的格式，保证与请求翻译、usage parser 的路由决策一致。
         GatewayRequestContext ctx = GatewayRequestContext.get();
         Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
-        Platform accountPlatform = ctx != null && ctx.getSelectedAccount() != null
-                ? ctx.getSelectedAccount().getPlatform() : null;
-        // 客户端 format 优先使用 ctx.getRequestFormat()（URL 路径决定），
-        // 缺失时回退到 platformToFormatId
-        String clientFormat = ctx != null && ctx.getRequestFormat() != null
-                ? ctx.getRequestFormat()
-                : ProtocolTranslationService.platformToFormatId(requestPlatform);
-        // OpenAI OAuth 账号固定走 Codex Responses 端点，上游响应格式为 responses
-        AccountEntity respAccount = ctx != null ? ctx.getSelectedAccount() : null;
-        String upstreamFormat = (accountPlatform == Platform.OPENAI
-                && respAccount != null && respAccount.getType() == AccountType.OAUTH)
-                ? "responses"
-                : ProtocolTranslationService.platformToFormatId(accountPlatform);
+        UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
+        String clientFormat = route != null && route.clientFormat() != null
+                ? route.clientFormat()
+                : (ctx != null && ctx.getRequestFormat() != null
+                        ? ctx.getRequestFormat()
+                        : ProtocolTranslationService.platformToFormatId(requestPlatform));
+        String upstreamFormat = route != null
+                ? route.upstreamFormat()
+                : (ctx != null && ctx.getSelectedAccount() != null
+                        ? ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform())
+                        : null);
         boolean needRespTranslation = clientFormat != null && upstreamFormat != null
                 && !clientFormat.equals(upstreamFormat);
         String clientBody = responseBody;

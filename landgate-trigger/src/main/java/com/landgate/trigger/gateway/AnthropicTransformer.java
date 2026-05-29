@@ -104,17 +104,7 @@ public class AnthropicTransformer implements IRequestTransformer {
         }
 
         String modelName = extractModel(body);
-        String targetUrl = ANTHROPIC_API_URL;
-        if (account.getExtra() != null && !account.getExtra().equals("{}")) {
-            try {
-                JsonNode extra = JSON.readTree(account.getExtra());
-                if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
-                    targetUrl = extra.get("base_url").asText() + "/v1/messages";
-                }
-            } catch (Exception e) {
-                log.warn("Failed to parse account extra for base_url: account_id={}", account.getId());
-            }
-        }
+        String targetUrl = resolveTargetUrl(account, ctx);
 
         var headers = buildHeaders(account, accessToken, ctx);
         log.debug("Building upstream request: url={}, model={}, account_id={}", targetUrl, modelName, account.getId());
@@ -138,6 +128,25 @@ public class AnthropicTransformer implements IRequestTransformer {
         }
 
         return requestBuilder.build();
+    }
+
+    /** 解析上游目标地址，正常网关路径优先使用策略路由结果。 */
+    private String resolveTargetUrl(AccountEntity account, GatewayRequestContext ctx) {
+        if (ctx != null && ctx.getUpstreamRoute() != null && ctx.getUpstreamRoute().targetUrl() != null) {
+            return ctx.getUpstreamRoute().targetUrl();
+        }
+        String targetUrl = ANTHROPIC_API_URL;
+        if (account.getExtra() != null && !account.getExtra().equals("{}")) {
+            try {
+                JsonNode extra = JSON.readTree(account.getExtra());
+                if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
+                    targetUrl = extra.get("base_url").asText() + "/v1/messages";
+                }
+            } catch (Exception e) {
+                log.warn("Failed to parse account extra for base_url: account_id={}", account.getId());
+            }
+        }
+        return targetUrl;
     }
 
     private String[] buildHeaders(AccountEntity account, String accessToken, GatewayRequestContext ctx) {

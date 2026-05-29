@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.AccountType;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -19,17 +20,10 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * OpenAI 协议请求转换器 —— 构建转发至 OpenAI API 的上游请求。
+ * OpenAI 协议请求转换器 —— 根据已解析的 {@link UpstreamRoute} 构建 OpenAI 上游 HTTP 请求。
  * <p>
- * 负责：设置认证头 → 配置代理 → 上游路径选择（基于账号类型和能力探测）。
- * <p>
- * 上游 URL 选择策略：
- * <ul>
- *   <li><strong>OAuth 账号</strong>：固定 {@code https://chatgpt.com/backend-api/codex/responses}
- *       （ChatGPT 内部 Codex 端点，不经过 /v1/responses vs /v1/chat/completions 二选一）</li>
- *   <li><strong>API Key + 支持 Responses</strong>：{@code /v1/responses}</li>
- *   <li><strong>API Key + 不支持 Responses</strong>：{@code /v1/chat/completions}</li>
- * </ul>
+ * 负责：设置认证头、Content-Type、超时和请求体；endpoint 选择由 route strategy 完成。
+ * 无 {@link GatewayRequestContext} 的直接调用仅保留兼容 fallback，不作为正常网关路由路径。
  */
 @Slf4j
 @Component
@@ -46,10 +40,7 @@ public class OpenAiTransformer implements IRequestTransformer {
             "frequency_penalty", "presence_penalty", "user", "metadata",
             "prompt_cache_retention", "safety_identifier", "stream_options");
 
-    private final UpstreamCapabilityService upstreamCapabilityService;
-
-    public OpenAiTransformer(UpstreamCapabilityService upstreamCapabilityService) {
-        this.upstreamCapabilityService = upstreamCapabilityService;
+    public OpenAiTransformer() {
     }
 
     @Override
@@ -59,27 +50,19 @@ public class OpenAiTransformer implements IRequestTransformer {
 
         String targetUrl;
         boolean isOAuth = account.getType() == AccountType.OAUTH;
+        UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
 
-        if (isOAuth) {
-            // OAuth 账号：固定走 Codex 端点（ChatGPT 内部 Responses API）
+        if (route != null) {
+            targetUrl = route.targetUrl();
+            if (route.normalizeCodexOAuthBody()) {
+                body = normalizeCodexOAuthRequestBody(body, account);
+            }
+        } else if (isOAuth) {
+            // 兼容无 GatewayRequestContext 的单元调用；正常网关路径由 UpstreamRoute 决定端点。
             targetUrl = CODEX_RESPONSES_URL;
             body = normalizeCodexOAuthRequestBody(body, account);
         } else {
-            boolean useResponses = ctx != null && "responses".equals(ctx.getRequestFormat())
-                    && upstreamCapabilityService.shouldUseResponsesAPI(account);
-            String pathSuffix = useResponses ? "/v1/responses" : "/v1/chat/completions";
-            targetUrl = useResponses ? OPENAI_RESPONSES_URL : OPENAI_CHAT_URL;
-
-            if (account.getExtra() != null && !account.getExtra().equals("{}")) {
-                try {
-                    var extra = JSON.readTree(account.getExtra());
-                    if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
-                        targetUrl = extra.get("base_url").asText() + pathSuffix;
-                    }
-                } catch (Exception e) {
-                    log.warn("Failed to parse base_url for OpenAI account: account_id={}", account.getId());
-                }
-            }
+            targetUrl = OPENAI_CHAT_URL;
         }
 
         log.debug("OpenAI upstream URL: url={}, account_id={}, isOAuth={}", targetUrl, account.getId(), isOAuth);
