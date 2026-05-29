@@ -108,7 +108,7 @@ public class OpenAiTransformer implements IRequestTransformer {
         }
     }
 
-    /** 将 input 中的 system role 消息移入顶层 instructions，并从 input 中移除。 */
+    /** 将 input 中的 system/developer role 消息移入顶层 instructions，并从 input 中移除。 */
     private static void extractSystemMessagesToInstructions(ObjectNode root) {
         JsonNode inputNode = root.get("input");
         if (inputNode == null || !inputNode.isArray()) return;
@@ -117,7 +117,7 @@ public class OpenAiTransformer implements IRequestTransformer {
         ArrayNode filtered = JSON.createArrayNode();
         for (JsonNode item : inputNode) {
             String role = item.has("role") ? item.get("role").asText() : "";
-            if ("system".equals(role)) {
+            if ("system".equals(role) || "developer".equals(role)) {
                 String text = extractTextFromContent(item.get("content"));
                 if (!text.isBlank()) systemTexts.add(text);
             } else {

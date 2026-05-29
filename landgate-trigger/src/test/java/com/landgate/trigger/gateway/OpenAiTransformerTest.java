@@ -55,8 +55,8 @@ class OpenAiTransformerTest {
     }
 
     @Test
-    @DisplayName("OAuth Codex 请求移除不支持字段并补齐 instructions")
-    void codexOAuthRequestRemovesUnsupportedFieldsAndAddsInstructions() throws Exception {
+    @DisplayName("OAuth Codex 请求将 developer 输入移入 instructions")
+    void codexOAuthRequestMovesDeveloperInputToInstructions() throws Exception {
         OpenAiTransformer transformer = new OpenAiTransformer();
         AccountEntity account = AccountEntity.builder()
                 .id(6L)
@@ -88,7 +88,9 @@ class OpenAiTransformerTest {
         assertFalse(root.has("stream_options"));
         assertFalse(root.get("store").asBoolean());
         assertTrue(root.get("stream").asBoolean());
-        assertEquals("You are a helpful coding assistant.", root.get("instructions").asText());
+        assertEquals("Project rules", root.get("instructions").asText());
+        assertEquals(1, root.get("input").size());
+        assertEquals("user", root.get("input").get(0).get("role").asText());
     }
 
     @Test
