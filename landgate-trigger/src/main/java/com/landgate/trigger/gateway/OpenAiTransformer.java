@@ -2,6 +2,8 @@ package com.landgate.trigger.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.types.enums.AccountType;
@@ -14,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * OpenAI 协议请求转换器 —— 构建转发至 OpenAI API 的上游请求。
@@ -37,6 +40,11 @@ public class OpenAiTransformer implements IRequestTransformer {
     /** ChatGPT 内部 Codex 端点（OAuth 账号专用） */
     private static final String CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
     private static final ObjectMapper JSON = new ObjectMapper();
+    /** ChatGPT 内部 Codex 端点不支持的请求字段（参考 sub2api OpenAI OAuth transform） */
+    private static final Set<String> CODEX_UNSUPPORTED_FIELDS = Set.of(
+            "max_output_tokens", "max_completion_tokens", "temperature", "top_p",
+            "frequency_penalty", "presence_penalty", "user", "metadata",
+            "prompt_cache_retention", "safety_identifier", "stream_options");
 
     private final UpstreamCapabilityService upstreamCapabilityService;
 
@@ -55,6 +63,7 @@ public class OpenAiTransformer implements IRequestTransformer {
         if (isOAuth) {
             // OAuth 账号：固定走 Codex 端点（ChatGPT 内部 Responses API）
             targetUrl = CODEX_RESPONSES_URL;
+            body = normalizeCodexOAuthRequestBody(body, account);
         } else {
             boolean useResponses = ctx != null && "responses".equals(ctx.getRequestFormat())
                     && upstreamCapabilityService.shouldUseResponsesAPI(account);
@@ -85,6 +94,85 @@ public class OpenAiTransformer implements IRequestTransformer {
                 .headers(headers.toArray(new String[0]))
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build();
+    }
+
+    /**
+     * 规范化 OpenAI OAuth Codex 请求体。
+     * <p>
+     * ChatGPT 内部 Codex 端点不是公开 Responses API：它要求顶层 instructions，
+     * 且不支持 max_output_tokens 等公开 Responses 字段。此逻辑只在 OAuth Codex
+     * 路由层执行，避免影响普通 OpenAI API Key 的 Responses 请求。
+     */
+    private String normalizeCodexOAuthRequestBody(String body, AccountEntity account) {
+        try {
+            ObjectNode root = (ObjectNode) JSON.readTree(body);
+
+            for (String field : CODEX_UNSUPPORTED_FIELDS) {
+                root.remove(field);
+            }
+            root.put("store", false);
+            root.put("stream", true);
+
+            extractSystemMessagesToInstructions(root);
+            if (isBlankText(root.get("instructions"))) {
+                root.put("instructions", "You are a helpful coding assistant.");
+            }
+
+            return JSON.writeValueAsString(root);
+        } catch (Exception e) {
+            log.warn("Failed to normalize Codex OAuth request body: account_id={}", account.getId(), e);
+            return body;
+        }
+    }
+
+    /** 将 input 中的 system role 消息移入顶层 instructions，并从 input 中移除。 */
+    private static void extractSystemMessagesToInstructions(ObjectNode root) {
+        JsonNode inputNode = root.get("input");
+        if (inputNode == null || !inputNode.isArray()) return;
+
+        List<String> systemTexts = new ArrayList<>();
+        ArrayNode filtered = JSON.createArrayNode();
+        for (JsonNode item : inputNode) {
+            String role = item.has("role") ? item.get("role").asText() : "";
+            if ("system".equals(role)) {
+                String text = extractTextFromContent(item.get("content"));
+                if (!text.isBlank()) systemTexts.add(text);
+            } else {
+                filtered.add(item);
+            }
+        }
+        if (systemTexts.isEmpty()) return;
+
+        String extracted = String.join("\n\n", systemTexts);
+        JsonNode existing = root.get("instructions");
+        if (!isBlankText(existing)) {
+            root.put("instructions", extracted + "\n\n" + existing.asText());
+        } else {
+            root.put("instructions", extracted);
+        }
+        root.set("input", filtered);
+    }
+
+    /** 提取 Responses content 中的文本，兼容字符串和 content parts 数组。 */
+    private static String extractTextFromContent(JsonNode contentNode) {
+        if (contentNode == null || contentNode.isNull()) return "";
+        if (contentNode.isTextual()) return contentNode.asText();
+        if (contentNode.isArray()) {
+            List<String> texts = new ArrayList<>();
+            for (JsonNode part : contentNode) {
+                if (part.has("text")) {
+                    String text = part.get("text").asText();
+                    if (!text.isBlank()) texts.add(text);
+                }
+            }
+            return String.join("\n", texts);
+        }
+        return contentNode.asText();
+    }
+
+    /** 判断 instructions 是否缺失或为空白。 */
+    private static boolean isBlankText(JsonNode node) {
+        return node == null || node.isNull() || !node.isTextual() || node.asText().isBlank();
     }
 
     @Override

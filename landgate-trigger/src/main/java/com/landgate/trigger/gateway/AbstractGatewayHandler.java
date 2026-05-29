@@ -381,7 +381,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 String clientFormat = requestFormat != null
                         ? requestFormat
                         : ProtocolTranslationService.platformToFormatId(requestPlatform);
-                String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
+                // OpenAI OAuth 账号固定走 Codex Responses 端点，上游格式应为 responses 而非 chat_completions
+                String upstreamFormat = (accountPlatform == Platform.OPENAI && account.getType() == AccountType.OAUTH)
+                        ? "responses"
+                        : ProtocolTranslationService.platformToFormatId(accountPlatform);
                 boolean needTranslation = clientFormat != null && upstreamFormat != null
                         && !clientFormat.equals(upstreamFormat);
                 String upstreamBody = body;
@@ -667,19 +670,25 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // 判断翻译方向，通过 ConverterRegistry 获取流式翻译器
         Platform requestPlatform = ctx.getRequestPlatform();
         Platform accountPlatform = ctx.getSelectedAccount().getPlatform();
-        boolean needTranslation = requestPlatform != null && requestPlatform != accountPlatform;
+        AccountEntity streamAccount = ctx.getSelectedAccount();
+
+        // 客户端 format 优先使用 ctx.getRequestFormat()（由 URL 路径决定），
+        // 仅在缺失时回退到 platformToFormatId（保持向后兼容）。
+        String clientFormat = ctx.getRequestFormat() != null
+                ? ctx.getRequestFormat()
+                : ProtocolTranslationService.platformToFormatId(requestPlatform);
+        // OpenAI OAuth 账号固定走 Codex Responses 端点，上游流式响应为 Responses 格式
+        String upstreamFormat = (accountPlatform == Platform.OPENAI && streamAccount.getType() == AccountType.OAUTH)
+                ? "responses"
+                : ProtocolTranslationService.platformToFormatId(accountPlatform);
+        boolean needTranslation = clientFormat != null && upstreamFormat != null
+                && !clientFormat.equals(upstreamFormat);
 
         // Hub-and-Spoke 流式翻译器：上游 SSE → IR SSE，IR SSE → 客户端 SSE
         StreamTranslator upstreamToIR = null;
         StreamTranslator irToClient = null;
 
         if (needTranslation) {
-            // 客户端 format 优先使用 ctx.getRequestFormat()（由 URL 路径决定），
-            // 仅在缺失时回退到 platformToFormatId（保持向后兼容）。
-            String clientFormat = ctx.getRequestFormat() != null
-                    ? ctx.getRequestFormat()
-                    : ProtocolTranslationService.platformToFormatId(requestPlatform);
-            String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
             log.info("[{}] 流式翻译: {} -> IR -> {} | account={}",
                     ctx.getRequestId(), upstreamFormat, clientFormat, ctx.getSelectedAccount().getName());
             if (clientFormat != null && upstreamFormat != null) {
@@ -802,7 +811,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         String clientFormat = ctx != null && ctx.getRequestFormat() != null
                 ? ctx.getRequestFormat()
                 : ProtocolTranslationService.platformToFormatId(requestPlatform);
-        String upstreamFormat = ProtocolTranslationService.platformToFormatId(accountPlatform);
+        // OpenAI OAuth 账号固定走 Codex Responses 端点，上游响应格式为 responses
+        AccountEntity respAccount = ctx != null ? ctx.getSelectedAccount() : null;
+        String upstreamFormat = (accountPlatform == Platform.OPENAI
+                && respAccount != null && respAccount.getType() == AccountType.OAUTH)
+                ? "responses"
+                : ProtocolTranslationService.platformToFormatId(accountPlatform);
         boolean needRespTranslation = clientFormat != null && upstreamFormat != null
                 && !clientFormat.equals(upstreamFormat);
         String clientBody = responseBody;
