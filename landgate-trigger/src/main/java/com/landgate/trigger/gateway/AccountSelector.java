@@ -145,6 +145,14 @@ public class AccountSelector {
             log.debug("账户不可调度: account_id={}, reason={}", accountId, account.getTempUnschedulableReason());
             return null;
         }
+        if (account.isRateLimited()) {
+            log.debug("账户正在限流冷却: account_id={}, reset_at={}", accountId, account.getRateLimitResetAt());
+            return null;
+        }
+        if (account.isOverloaded()) {
+            log.debug("账户过载冷却中: account_id={}, until={}", accountId, account.getOverloadUntil());
+            return null;
+        }
         return account;
     }
 
@@ -437,11 +445,34 @@ public class AccountSelector {
     }
 
     public void markRateLimited(Long accountId, Instant resetAt) {
+        markRateLimited(accountId, resetAt, true);
+    }
+
+    /**
+     * 标记账号进入限流冷却。
+     * <p>
+     * 上游明确返回 Retry-After 时尊重更长冷却；未返回 Retry-After 时，如果账号仍在冷却中，
+     * 不刷新 reset_at，避免客户端连续重试导致冷却窗口无限顺延。
+     */
+    public void markRateLimited(Long accountId, Instant resetAt, boolean explicitRetryAfter) {
         accountRepository.findById(accountId).ifPresent(a -> {
-            a.setRateLimitedAt(Instant.now());
-            a.setRateLimitResetAt(resetAt);
+            Instant currentResetAt = a.getRateLimitResetAt();
+            Instant now = Instant.now();
+            if (!explicitRetryAfter && currentResetAt != null && currentResetAt.isAfter(now)) {
+                log.info("Account already rate-limited, keep existing reset_at: id={}, name={}, reset_at={}",
+                        accountId, a.getName(), currentResetAt);
+                return;
+            }
+
+            Instant effectiveResetAt = resetAt;
+            if (explicitRetryAfter && currentResetAt != null && currentResetAt.isAfter(resetAt)) {
+                effectiveResetAt = currentResetAt;
+            }
+
+            a.setRateLimitedAt(now);
+            a.setRateLimitResetAt(effectiveResetAt);
             accountRepository.save(a);
-            log.info("Account rate-limited: id={}, name={}, reset_at={}", accountId, a.getName(), resetAt);
+            log.info("Account rate-limited: id={}, name={}, reset_at={}", accountId, a.getName(), effectiveResetAt);
         });
     }
 

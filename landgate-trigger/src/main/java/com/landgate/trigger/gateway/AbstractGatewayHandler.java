@@ -897,13 +897,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         var now = java.time.Instant.now();
 
         if (statusCode == 429) {
-            long retryAfterSecs = upstreamResp.headers()
-                    .firstValue("Retry-After")
+            var retryAfterHeader = upstreamResp.headers().firstValue("Retry-After");
+            long retryAfterSecs = retryAfterHeader
                     .map(s -> {
-                        try { return Long.parseLong(s); } catch (NumberFormatException e) { return 60L; }
+                        try { return Long.parseLong(s); } catch (NumberFormatException e) { return 10L; }
                     })
-                    .orElse(60L);
-            accountSelector.markRateLimited(account.getId(), now.plusSeconds(retryAfterSecs));
+                    .orElse(10L);
+            accountSelector.markRateLimited(account.getId(), now.plusSeconds(retryAfterSecs), retryAfterHeader.isPresent());
         } else if (statusCode == 529) {
             accountSelector.markOverloaded(account.getId(), now.plusSeconds(30));
         } else if (statusCode == 503) {
