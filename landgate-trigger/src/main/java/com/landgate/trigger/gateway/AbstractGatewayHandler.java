@@ -982,7 +982,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             String lower = name.toLowerCase();
             if (lower.contains("limit") || lower.contains("remaining") || lower.contains("reset")
                     || lower.contains("usage") || lower.contains("quota") || lower.contains("window")) {
-                log.info("[{}] OpenAI OAuth 上游限额响应头: {}={}", requestId, name, values);
+                log.debug("[{}] OpenAI OAuth 上游限额响应头: {}={}", requestId, name, values);
             }
         });
     }

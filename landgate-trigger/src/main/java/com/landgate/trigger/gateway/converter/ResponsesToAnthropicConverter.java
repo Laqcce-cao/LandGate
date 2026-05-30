@@ -86,6 +86,12 @@ public class ResponsesToAnthropicConverter {
                         // 普通 message item
                         inputItems.add(item);
                     }
+                } else if (inputNode.isTextual()) {
+                    // 字符串 input（如 "hello"）→ 转为单条 user message
+                    ObjectNode userMsg = JSON.createObjectNode();
+                    userMsg.put("role", "user");
+                    userMsg.put("content", inputNode.asText());
+                    inputItems.add(userMsg);
                 }
             }
 
