@@ -56,6 +56,7 @@ public class GatewayDispatcher {
         PATH_PLATFORM.put("/v1/responses", Platform.OPENAI);
         // Codex CLI 兼容路径：实际请求体为 Responses API 格式
         PATH_PLATFORM.put("/backend-api/codex/responses", Platform.OPENAI);
+        PATH_PLATFORM.put("/responses", Platform.OPENAI);
         PATH_PLATFORM.put("/v1beta/models/", Platform.GEMINI);
 
         PATH_FORMAT = new LinkedHashMap<>();
@@ -63,6 +64,7 @@ public class GatewayDispatcher {
         PATH_FORMAT.put("/v1/chat/completions", "chat_completions");
         PATH_FORMAT.put("/v1/responses", "responses");
         PATH_FORMAT.put("/backend-api/codex/responses", "responses");
+        PATH_FORMAT.put("/responses", "responses");
         PATH_FORMAT.put("/v1beta/models/", "gemini");
     }
 

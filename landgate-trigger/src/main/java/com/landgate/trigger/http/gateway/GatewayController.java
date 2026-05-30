@@ -86,14 +86,28 @@ public class GatewayController {
 
     // ---- OpenAI Responses API ----
 
-    @PostMapping("/v1/responses")
+    @PostMapping({"/v1/responses", "/responses", "/backend-api/codex/responses"})
     public void responses(@RequestBody String body,
                           HttpServletRequest request,
                           HttpServletResponse response) throws IOException {
+        handleResponses(body, request, response);
+    }
+
+    @PostMapping({"/v1/responses/**", "/responses/**", "/backend-api/codex/responses/**"})
+    public void responsesSubpath(@RequestBody String body,
+                                 HttpServletRequest request,
+                                 HttpServletResponse response) throws IOException {
+        handleResponses(body, request, response);
+    }
+
+    /** 处理 OpenAI Responses 与 Codex CLI 兼容入口。 */
+    private void handleResponses(String body,
+                                 HttpServletRequest request,
+                                 HttpServletResponse response) throws IOException {
         String requestId = UUID.randomUUID().toString();
         request.setAttribute(ATTR_REQUEST_ID, requestId);
-        log.info("[{}] => POST /v1/responses | content_length={} | remote_addr={} | ua={}",
-                requestId, body != null ? body.length() : 0,
+        log.info("[{}] => POST {} | content_length={} | remote_addr={} | ua={}",
+                requestId, request.getServletPath(), body != null ? body.length() : 0,
                 request.getRemoteAddr(), request.getHeader("User-Agent"));
 
         Long groupId = (Long) request.getAttribute("group_id");

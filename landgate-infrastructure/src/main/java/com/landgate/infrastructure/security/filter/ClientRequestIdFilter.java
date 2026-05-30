@@ -48,6 +48,7 @@ public class ClientRequestIdFilter extends OncePerRequestFilter {
                 && !path.startsWith("/chat/")
                 && !path.startsWith("/images/")
                 && !path.startsWith("/responses")
+                && !path.startsWith("/backend-api/codex/")
                 && !path.startsWith("/antigravity/");
     }
 }
