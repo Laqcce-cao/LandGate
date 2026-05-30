@@ -37,6 +37,9 @@
         <result column="ip_address"              property="ipAddress"/>
         <result column="image_count"             property="imageCount"/>
         <result column="image_size"             property="imageSize"/>
+        <result column="billing_status"         property="billingStatus"/>
+        <result column="billing_error"          property="billingError"/>
+        <result column="client_disconnected"    property="clientDisconnected"/>
         <result column="created_at"              property="createdAt"/>
     </resultMap>
 
@@ -56,7 +59,7 @@
             cache_creation_5m_cost, cache_creation_1h_cost,
             total_cost, actual_cost, rate_multiplier,
             stream, duration_ms, first_token_ms, user_agent, ip_address,
-            image_count, image_size, created_at
+            image_count, image_size, billing_status, billing_error, client_disconnected, created_at
         ) VALUES (
             #{userId}, #{apiKeyId}, #{accountId}, #{groupId}, #{subscriptionId},
             #{requestId}, #{model}, #{platform}, #{requestedModel}, #{upstreamModel}, #{billingMode},
@@ -66,9 +69,24 @@
             #{cacheCreation5mCost}, #{cacheCreation1hCost},
             #{totalCost}, #{actualCost}, #{rateMultiplier},
             #{stream}, #{durationMs}, #{firstTokenMs}, #{userAgent}, #{ipAddress},
-            #{imageCount}, #{imageSize}, NOW()
+            #{imageCount}, #{imageSize}, #{billingStatus}, #{billingError}, #{clientDisconnected}, NOW()
         )
     </insert>
+
+    <update id="updateBillingStatus">
+        UPDATE usage_logs
+        SET billing_status = #{billingStatus},
+            billing_error = #{billingError}
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectByBillingStatusBefore" resultMap="UsageLogResultMap">
+        SELECT * FROM usage_logs
+        WHERE billing_status = #{billingStatus}
+          AND created_at &lt; #{cutoff}
+        ORDER BY created_at ASC
+        LIMIT #{limit}
+    </select>
 
     <select id="selectAll" resultMap="UsageLogResultMap">
         SELECT * FROM usage_logs ORDER BY created_at DESC LIMIT #{size} OFFSET #{offset}

@@ -136,6 +136,17 @@ public class UsageLogPO {
     /** 图片尺寸等级（1K / 2K / 4K） */
     private String imageSize;
 
+    /** 计费状态：PENDING / SETTLING / DEDUCTED / FAILED */
+    @Builder.Default
+    private String billingStatus = "PENDING";
+
+    /** 扣费失败原因 */
+    private String billingError;
+
+    /** 流式响应期间客户端是否断开 */
+    @Builder.Default
+    private Boolean clientDisconnected = false;
+
     /** 创建时间 */
     private Instant createdAt;
 }

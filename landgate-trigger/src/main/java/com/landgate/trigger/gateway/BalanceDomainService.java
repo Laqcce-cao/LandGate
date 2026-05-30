@@ -36,8 +36,7 @@ public class BalanceDomainService {
             // Balance not loaded in Redis — load from DB and retry
             UserEntity user = userRepository.findById(userId).orElse(null);
             if (user == null) {
-                log.warn("User not found for deduction: user_id={}", userId);
-                return;
+                throw new IllegalStateException("User not found for deduction: user_id=" + userId);
             }
             balanceRedisService.loadBalance(userId, user.getBalance());
             result = balanceRedisService.tryDeduct(userId, cost);
@@ -45,9 +44,10 @@ public class BalanceDomainService {
 
         if (result == 1) {
             log.debug("Balance deducted: user_id={}, cost={}", userId, cost);
-        } else {
-            log.warn("Balance deduction failed: user_id={}, cost={}, result={}", userId, cost, result);
+            return;
         }
+        throw new IllegalStateException("Balance deduction failed: user_id=" + userId
+                + ", cost=" + cost + ", result=" + result);
     }
 
     /**

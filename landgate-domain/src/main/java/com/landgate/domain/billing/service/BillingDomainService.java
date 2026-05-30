@@ -69,6 +69,20 @@ public class BillingDomainService {
                                                 BigDecimal groupRateMultiplier,
                                                 boolean stream, long durationMs,
                                                 String userAgent, String ipAddress) {
+        return calculateAndBuildLog(usage, model, platform, userId, apiKeyId, accountId, groupId,
+                groupRateMultiplier, stream, durationMs, userAgent, ipAddress, false);
+    }
+
+    /**
+     * 计算费用并保存用量日志，附带客户端断开审计标记。
+     */
+    public UsageLogEntity calculateAndBuildLog(UsageTokens usage, String model,
+                                                String platform, Long userId, Long apiKeyId,
+                                                Long accountId, Long groupId,
+                                                BigDecimal groupRateMultiplier,
+                                                boolean stream, long durationMs,
+                                                String userAgent, String ipAddress,
+                                                boolean clientDisconnected) {
         BigDecimal inputPrice = pricingService.getInputPrice(model);
         BigDecimal outputPrice = pricingService.getOutputPrice(model);
         BigDecimal cacheWritePrice = pricingService.getCacheWritePrice(model);
@@ -134,15 +148,17 @@ public class BillingDomainService {
                 .rateMultiplier(groupMultiplier.setScale(4, RoundingMode.HALF_UP))
                 .stream(stream).durationMs((int) durationMs)
                 .userAgent(userAgent).ipAddress(ipAddress)
+                .billingStatus("PENDING")
+                .clientDisconnected(clientDisconnected)
                 .build();
 
-        usageLogRepository.save(logEntry);
+        UsageLogEntity savedLog = usageLogRepository.save(logEntry);
         log.info("Billing: platform={}, model={}, tokens={}/{}/{}/{}(5m={},1h={}), total=${}, actual=${}",
                 platform, model, usage.getInputTokens(), usage.getOutputTokens(),
                 usage.getCacheCreationTokens(), usage.getCacheReadTokens(),
                 usage.getCacheCreation5mTokens(), usage.getCacheCreation1hTokens(),
                 totalCost, actualCost);
-        return logEntry;
+        return savedLog;
     }
 
     /** 图片 1K 默认单价（USD） */
@@ -209,12 +225,14 @@ public class BillingDomainService {
                 .rateMultiplier(multiplier.setScale(4, RoundingMode.HALF_UP))
                 .stream(stream).durationMs((int) durationMs)
                 .userAgent(userAgent).ipAddress(ipAddress)
+                .billingStatus("PENDING")
+                .clientDisconnected(false)
                 .build();
 
-        usageLogRepository.save(logEntry);
+        UsageLogEntity savedLog = usageLogRepository.save(logEntry);
         log.info("Image billing: model={}, size={}, count={}, unit_price=${}, total=${}, actual=${}",
                 model, imageSize, imageCount, unitPrice, totalCost, actualCost);
-        return logEntry;
+        return savedLog;
     }
 
     /**
@@ -280,6 +298,51 @@ public class BillingDomainService {
         return calculateAndBuildLog(UsageTokens.fromClaude(usage), model, "ANTHROPIC",
                 userId, apiKeyId, accountId, groupId,
                 groupRateMultiplier, stream, durationMs, userAgent, ipAddress);
+    }
+
+    /**
+     * 标记用量日志正在扣费，避免对账任务重复处理同一条日志。
+     */
+    public void markLogSettling(Long logId) {
+        if (logId == null) return;
+        usageLogRepository.updateBillingStatus(logId, "SETTLING", null);
+    }
+
+    /**
+     * 标记用量日志已完成余额扣减但后续处理失败，需要人工对账，不能自动重扣。
+     */
+    public void markLogSettlingFailed(Long logId, String reason) {
+        if (logId == null) return;
+        usageLogRepository.updateBillingStatus(logId, "SETTLING", truncateBillingError(reason));
+    }
+
+    /**
+     * 标记用量日志已完成扣费。
+     */
+    public void markLogDeducted(Long logId) {
+        if (logId == null) return;
+        usageLogRepository.updateBillingStatus(logId, "DEDUCTED", null);
+    }
+
+    /**
+     * 标记用量日志扣费失败，保留错误原因用于对账。
+     */
+    public void markLogFailed(Long logId, String reason) {
+        if (logId == null) return;
+        usageLogRepository.updateBillingStatus(logId, "FAILED", truncateBillingError(reason));
+    }
+
+    /**
+     * 查询超时未完成扣费的日志。
+     */
+    public java.util.List<UsageLogEntity> findBillingLogsByStatusBefore(String status, Instant cutoff, int limit) {
+        return usageLogRepository.findByBillingStatusBefore(status, cutoff, limit);
+    }
+
+    /** 限制失败原因长度，避免异常信息过长导致写库失败。 */
+    private String truncateBillingError(String reason) {
+        if (reason == null || reason.isBlank()) return "unknown";
+        return reason.length() <= 500 ? reason : reason.substring(0, 500);
     }
 
     // ---- API Key 配额管理 ----

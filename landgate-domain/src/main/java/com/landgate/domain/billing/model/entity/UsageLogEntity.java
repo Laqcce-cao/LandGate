@@ -95,5 +95,16 @@ public class UsageLogEntity {
     private Integer imageCount = 0;
     private String imageSize;
 
+    /** 计费状态：PENDING / SETTLING / DEDUCTED / FAILED */
+    @Builder.Default
+    private String billingStatus = "PENDING";
+
+    /** 扣费失败原因，便于对账和人工排查 */
+    private String billingError;
+
+    /** 流式响应期间客户端是否断开 */
+    @Builder.Default
+    private Boolean clientDisconnected = false;
+
     private Instant createdAt;
 }

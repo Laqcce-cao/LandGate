@@ -176,7 +176,7 @@ class AbstractGatewayHandlerTest {
 
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {
             return handleStreaming(new InputStreamHttpResponse(sse, "text/event-stream"), new MockHttpServletResponse(),
-                    GatewayRequestContext.get(), usageParser);
+                    GatewayRequestContext.get(), usageParser).usage();
         }
 
         @Override

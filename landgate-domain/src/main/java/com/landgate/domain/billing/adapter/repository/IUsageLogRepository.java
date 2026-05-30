@@ -100,6 +100,25 @@ public interface IUsageLogRepository {
     UsageLogEntity save(UsageLogEntity entity);
 
     /**
+     * 更新用量日志计费状态。
+     *
+     * @param id            用量日志 ID
+     * @param billingStatus 计费状态
+     * @param billingError  失败原因，成功时为 null
+     */
+    void updateBillingStatus(Long id, String billingStatus, String billingError);
+
+    /**
+     * 查询指定状态且早于 cutoff 的用量日志，用于扣费对账。
+     *
+     * @param billingStatus 计费状态
+     * @param cutoff        创建时间上限
+     * @param limit         最大返回数量
+     * @return 待处理用量日志
+     */
+    List<UsageLogEntity> findByBillingStatusBefore(String billingStatus, Instant cutoff, int limit);
+
+    /**
      * 分页查询所有使用日志
      *
      * @param page 页码（从0开始）

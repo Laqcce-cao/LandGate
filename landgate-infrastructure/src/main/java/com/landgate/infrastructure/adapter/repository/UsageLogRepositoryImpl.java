@@ -104,6 +104,18 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
     }
 
     @Override
+    public void updateBillingStatus(Long id, String billingStatus, String billingError) {
+        usageLogDao.updateBillingStatus(id, billingStatus, billingError);
+    }
+
+    @Override
+    public List<UsageLogEntity> findByBillingStatusBefore(String billingStatus, Instant cutoff, int limit) {
+        return usageLogDao.selectByBillingStatusBefore(billingStatus, cutoff, limit).stream()
+                .map(usageLogMapper::toEntity)
+                .collect(Collectors.toList());
+    }
+
+    @Override
     public List<UsageLogEntity> findAll(int page, int size) {
         int offset = page * size;
         return usageLogDao.selectAll(offset, size).stream()

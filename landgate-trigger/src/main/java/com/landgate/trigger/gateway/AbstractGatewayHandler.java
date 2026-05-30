@@ -3,6 +3,7 @@ package com.landgate.trigger.gateway;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
+import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
@@ -510,9 +511,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     IUsageParser usageParser = getUsageParserFor(account);
                     UsageTokens usage;
                     boolean handleAsStreaming = shouldHandleResponseAsStreaming(stream, upstreamResp);
+                    StreamingResult streamingResult = null;
                     if (handleAsStreaming) {
                         log.info("[{}] 开始流式响应处理", requestId);
-                        usage = handleStreaming(upstreamResp, response, ctx, usageParser);
+                        streamingResult = handleStreaming(upstreamResp, response, ctx, usageParser);
+                        usage = streamingResult.usage();
                     } else {
                         log.info("[{}] 开始非流式响应处理", requestId);
                         usage = handleNonStreaming(upstreamResp, response, usageParser);
@@ -522,26 +525,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         log.info("[{}] 用量统计: input={}, output={}, cache_write={}, cache_read={}",
                                 requestId, usage.getInputTokens(), usage.getOutputTokens(),
                                 usage.getCacheCreationTokens(), usage.getCacheReadTokens());
-                        try {
-                            var logEntry = billingDomainService.calculateAndBuildLog(
-                                    usage, model, accountPlatform.name(),
-                                    userId, apiKeyId, account.getId(), group.getId(),
-                                    group.getRateMultiplier(),
-                                    stream, durationMs,
-                                    request.getHeader("User-Agent"),
-                                    request.getRemoteAddr());
-                            if (!user.isPrivileged()) {
-                                balanceDomainService.deduct(userId, logEntry.getActualCost());
-                                log.info("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
-                            } else {
-                                log.info("[{}] 特权用户跳过扣费: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
-                            }
-                            // 累加 API Key 已用额度
-                            billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
-                        } catch (Exception e) {
-                            log.error("[{}] 计费/扣款失败（响应已发送）: user_id={}, model={}",
-                                    requestId, userId, model, e);
-                        }
+                        settleUsageLog(usage, model, accountPlatform.name(), userId, apiKeyId, account, group, user,
+                                stream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
+                                request, requestId);
                     }
 
                     // 捕获上游 Rate Limit 头（仅 OAUTH 账号）
@@ -666,7 +652,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 .orElse(null);
     }
 
-    protected UsageTokens handleStreaming(HttpResponse<InputStream> upstreamResp,
+    protected StreamingResult handleStreaming(HttpResponse<InputStream> upstreamResp,
                                            HttpServletResponse response,
                                            GatewayRequestContext ctx,
                                            IUsageParser usageParser) throws IOException {
@@ -717,6 +703,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             log.info("[{}] 流式透传模式: platform={}", ctx.getRequestId(), requestPlatform);
         }
 
+        boolean clientDisconnected = false;
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8));
              var writer = response.getWriter()) {
@@ -761,7 +748,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
         } catch (IOException e) {
             if (response.isCommitted()) {
-                log.debug("Client disconnected during SSE stream: request_id={}", ctx.getRequestId());
+                clientDisconnected = true;
+                log.warn("[{}] 客户端在流式响应期间断开: input={}, output={}, cache_w={}, cache_r={}",
+                        ctx.getRequestId(), totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
+                        totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
             } else {
                 log.warn("SSE stream error", e);
                 throw e;
@@ -789,7 +779,74 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 ctx.getRequestId(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
-        return totalUsage;
+        return new StreamingResult(totalUsage, clientDisconnected);
+    }
+
+    /** 流式响应处理结果，包含用量和客户端断开审计标记。 */
+    protected record StreamingResult(UsageTokens usage, boolean clientDisconnected) {
+    }
+
+    /**
+     * 保存用量日志并完成余额扣减，失败时保留可对账状态，避免资损静默发生。
+     */
+    private void settleUsageLog(UsageTokens usage,
+                                String model,
+                                String platform,
+                                Long userId,
+                                Long apiKeyId,
+                                AccountEntity account,
+                                GroupEntity group,
+                                UserEntity user,
+                                boolean stream,
+                                boolean clientDisconnected,
+                                long durationMs,
+                                HttpServletRequest request,
+                                String requestId) {
+        UsageLogEntity logEntry;
+        try {
+            logEntry = billingDomainService.calculateAndBuildLog(
+                    usage, model, platform,
+                    userId, apiKeyId, account.getId(), group.getId(),
+                    group.getRateMultiplier(),
+                    stream, durationMs,
+                    request.getHeader("User-Agent"),
+                    request.getRemoteAddr(),
+                    clientDisconnected);
+        } catch (Exception e) {
+            log.error("[{}] 用量日志保存失败，无法扣费: user_id={}, model={}, usage={}",
+                    requestId, userId, model, usage, e);
+            return;
+        }
+
+        boolean deducted = false;
+        try {
+            if (!user.isPrivileged()) {
+                try {
+                    billingDomainService.markLogSettling(logEntry.getId());
+                    balanceDomainService.deduct(userId, logEntry.getActualCost());
+                    deducted = true;
+                    log.info("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
+                } catch (Exception e) {
+                    log.error("[{}] 扣费失败，日志已保留待对账: log_id={}, user_id={}, cost={}",
+                            requestId, logEntry.getId(), userId, logEntry.getActualCost(), e);
+                    billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
+                    return;
+                }
+            } else {
+                log.info("[{}] 特权用户跳过扣费: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
+            }
+
+            billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
+            billingDomainService.markLogDeducted(logEntry.getId());
+        } catch (Exception e) {
+            log.error("[{}] 扣费后处理失败，日志保持 SETTLING 待人工对账: log_id={}, user_id={}, cost={}, deducted={}",
+                    requestId, logEntry.getId(), userId, logEntry.getActualCost(), deducted, e);
+            if (deducted) {
+                billingDomainService.markLogSettlingFailed(logEntry.getId(), e.getMessage());
+            } else {
+                billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
+            }
+        }
     }
 
     /** 从上游原始 SSE 行解析用量，避免协议翻译路径丢失缓存 Token。 */

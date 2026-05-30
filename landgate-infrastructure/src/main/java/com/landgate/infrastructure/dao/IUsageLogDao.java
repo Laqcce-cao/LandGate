@@ -22,6 +22,16 @@ public interface IUsageLogDao {
     /** 插入日志，useGeneratedKeys 回填 ID */
     int insert(UsageLogPO log);
 
+    /** 更新日志计费状态 */
+    int updateBillingStatus(@Param("id") Long id,
+                            @Param("billingStatus") String billingStatus,
+                            @Param("billingError") String billingError);
+
+    /** 查询指定计费状态且早于 cutoff 的日志 */
+    List<UsageLogPO> selectByBillingStatusBefore(@Param("billingStatus") String billingStatus,
+                                                 @Param("cutoff") Instant cutoff,
+                                                 @Param("limit") int limit);
+
     /** 查询所有日志（分页） */
     List<UsageLogPO> selectAll(@Param("offset") int offset, @Param("size") int size);
 
