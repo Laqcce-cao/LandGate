@@ -94,6 +94,7 @@ public class OpenAiTransformer implements IRequestTransformer {
                 root.remove(field);
             }
             root.put("store", false);
+            // ChatGPT Codex 内部 Responses 端点只接受流式请求；客户端非流式由网关聚合后返回。
             root.put("stream", true);
 
             extractSystemMessagesToInstructions(root);

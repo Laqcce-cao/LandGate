@@ -94,6 +94,31 @@ class OpenAiTransformerTest {
     }
 
     @Test
+    @DisplayName("OAuth Codex 请求强制上游流式")
+    void codexOAuthRequestForcesUpstreamStreaming() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .build();
+        Method method = OpenAiTransformer.class.getDeclaredMethod(
+                "normalizeCodexOAuthRequestBody", String.class, AccountEntity.class);
+        method.setAccessible(true);
+
+        String streamTrue = (String) method.invoke(transformer,
+                "{\"model\":\"gpt-5.5\",\"input\":[],\"stream\":true}", account);
+        String streamFalse = (String) method.invoke(transformer,
+                "{\"model\":\"gpt-5.5\",\"input\":[],\"stream\":false}", account);
+        String streamMissing = (String) method.invoke(transformer,
+                "{\"model\":\"gpt-5.5\",\"input\":[]}", account);
+
+        assertTrue(JSON.readTree(streamTrue).get("stream").asBoolean());
+        assertTrue(JSON.readTree(streamFalse).get("stream").asBoolean());
+        assertTrue(JSON.readTree(streamMissing).get("stream").asBoolean());
+    }
+
+    @Test
     @DisplayName("OAuth Codex 请求将 system 输入移入 instructions")
     void codexOAuthRequestMovesSystemInputToInstructions() throws Exception {
         OpenAiTransformer transformer = new OpenAiTransformer();

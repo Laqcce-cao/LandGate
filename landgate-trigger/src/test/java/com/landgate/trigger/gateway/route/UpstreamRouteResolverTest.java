@@ -27,7 +27,7 @@ class UpstreamRouteResolverTest {
     ));
 
     @Test
-    @DisplayName("OpenAI OAuth 账号路由到 Codex Responses 并强制流式")
+    @DisplayName("OpenAI OAuth 账号路由到 Codex Responses 并强制上游流式")
     void openAiOAuthRoutesToCodexResponses() {
         AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH, null);
 

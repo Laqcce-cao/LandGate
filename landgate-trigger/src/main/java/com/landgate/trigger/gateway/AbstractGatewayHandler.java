@@ -28,6 +28,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.*;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
@@ -397,12 +398,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     requestId, upstreamRoute.endpointKind(), upstreamRoute.upstreamFormat(),
                     upstreamRoute.targetUrl(), upstreamRoute.reason());
 
-            boolean stream = upstreamRoute.forceStreaming() || shouldClientRequestStreaming(requestFormat, body);
+            boolean upstreamStream = upstreamRoute.forceStreaming() || clientStream;
 
             var ctx = GatewayRequestContext.builder()
                     .requestId(requestId).apiKeyId(apiKeyId).userId(userId)
                     .group(group).selectedAccount(account)
-                    .stream(stream).requestedModel(model)
+                    .stream(upstreamStream).requestedModel(model)
                     .requestPlatform(requestPlatform)
                     .requestFormat(requestFormat)
                     .upstreamPath(upstreamPath)
@@ -478,9 +479,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     continue;
                 }
 
-                log.info("[{}] 转发上游: account={}(id={}), model={}, platform={}, stream={}, attempt={}/{}",
+                log.info("[{}] 转发上游: account={}(id={}), model={}, platform={}, client_stream={}, upstream_stream={}, attempt={}/{}",
                         requestId, account.getName(), account.getId(), model,
-                        accountPlatform.name(), stream, failoverCount + 1, MAX_FAILOVER_SWITCHES);
+                        accountPlatform.name(), clientStream, upstreamStream, failoverCount + 1, MAX_FAILOVER_SWITCHES);
 
                 HttpResponse<InputStream> upstreamResp;
                 try {
@@ -510,12 +511,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
                     IUsageParser usageParser = getUsageParserFor(account);
                     UsageTokens usage;
-                    boolean handleAsStreaming = shouldHandleResponseAsStreaming(stream, upstreamResp);
+                    boolean handleAsStreaming = shouldHandleResponseAsStreaming(upstreamStream, upstreamResp);
                     StreamingResult streamingResult = null;
-                    if (handleAsStreaming) {
+                    if (handleAsStreaming && clientStream) {
                         log.info("[{}] 开始流式响应处理", requestId);
                         streamingResult = handleStreaming(upstreamResp, response, ctx, usageParser);
                         usage = streamingResult.usage();
+                    } else if (handleAsStreaming) {
+                        log.info("[{}] 开始上游流式聚合为非流式响应", requestId);
+                        usage = handleStreamingAsNonStreaming(upstreamResp, response, ctx, usageParser);
                     } else {
                         log.info("[{}] 开始非流式响应处理", requestId);
                         usage = handleNonStreaming(upstreamResp, response, usageParser);
@@ -526,13 +530,19 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 requestId, usage.getInputTokens(), usage.getOutputTokens(),
                                 usage.getCacheCreationTokens(), usage.getCacheReadTokens());
                         settleUsageLog(usage, model, accountPlatform.name(), userId, apiKeyId, account, group, user,
-                                stream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
+                                clientStream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
                                 request, requestId);
+                    } else {
+                        log.warn("[{}] 上游成功但未解析到用量，不写入 usage_logs: account_id={}, platform={}, endpoint={}, parser={}, client_stream={}, upstream_stream={}, handled_as_stream={}, content_type={}",
+                                requestId, account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
+                                usageParser.getClass().getSimpleName(), clientStream, upstreamStream, handleAsStreaming,
+                                upstreamResp.headers().firstValue("Content-Type").orElse(""));
                     }
 
                     // 捕获上游 Rate Limit 头（仅 OAUTH 账号）
                     RateLimitSnapshot rateLimitSnapshot = null;
                     if (account.getType() == AccountType.OAUTH) {
+                        logOpenAiOAuthQuotaHeaders(requestId, account, upstreamResp.headers());
                         rateLimitSnapshot = rateLimitHeaderParser.parse(
                                 upstreamResp.headers(), account.getPlatform());
                     }
@@ -704,6 +714,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
 
         boolean clientDisconnected = false;
+        int sseDataLines = 0;
+        int usageEventLines = 0;
+        boolean doneSignalSeen = false;
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8));
              var writer = response.getWriter()) {
@@ -720,8 +733,18 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     lastRenewal = System.currentTimeMillis();
                 }
 
+                // 记录 SSE 结构化摘要，不输出完整响应内容，避免泄露用户数据。
+                if (line.startsWith("data: ")) {
+                    sseDataLines++;
+                }
+                if (usageParser.isStreamDone(line)) {
+                    doneSignalSeen = true;
+                }
+
                 // 统一从上游原始 SSE 行解析用量，确保透传和协议翻译路径使用同一套计费来源
-                mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line);
+                if (mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line)) {
+                    usageEventLines++;
+                }
 
                 if (upstreamToIR == null || irToClient == null) {
                     // === 透传模式（无翻译或 Converter 不可用） ===
@@ -775,11 +798,111 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
         }
 
-        log.info("[{}] 流式完成: input={}, output={}, cache_w={}, cache_r={}",
-                ctx.getRequestId(),
+        log.info("[{}] 流式完成: parser={}, content_type={}, data_lines={}, usage_events={}, done_seen={}, client_disconnected={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
+                ctx.getRequestId(), usageParser.getClass().getSimpleName(),
+                upstreamResp.headers().firstValue("Content-Type").orElse(""),
+                sseDataLines, usageEventLines, doneSignalSeen, clientDisconnected, totalUsage.hasUsage(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
         return new StreamingResult(totalUsage, clientDisconnected);
+    }
+
+    /** 将上游 SSE 聚合为客户端非流式响应，适配 OpenAI OAuth Codex 仅支持上游流式的场景。 */
+    protected UsageTokens handleStreamingAsNonStreaming(HttpResponse<InputStream> upstreamResp,
+                                                        HttpServletResponse response,
+                                                        GatewayRequestContext ctx,
+                                                        IUsageParser usageParser) throws IOException {
+        response.setStatus(200);
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+
+        UsageTokens totalUsage = UsageTokens.builder().build();
+        StringBuilder responseText = new StringBuilder();
+        String responseId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+        String responseModel = ctx != null && ctx.getRequestedModel() != null ? ctx.getRequestedModel() : "unknown";
+        String stopReason = "end_turn";
+
+        try (var upstreamInput = upstreamResp.body();
+             var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line);
+                if (!line.startsWith("data: ")) continue;
+
+                JsonNode event;
+                try {
+                    event = JSON_MAPPER.readTree(line.substring(6));
+                } catch (Exception e) {
+                    continue;
+                }
+                String type = event.path("type").asText("");
+                if ("response.created".equals(type) && event.has("response")) {
+                    JsonNode resp = event.get("response");
+                    if (resp.has("id")) responseId = resp.get("id").asText(responseId);
+                    if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
+                } else if ("response.output_text.delta".equals(type)) {
+                    responseText.append(event.path("delta").asText(""));
+                } else if ("response.completed".equals(type) || "response.done".equals(type)) {
+                    if (event.has("response")) {
+                        JsonNode resp = event.get("response");
+                        if (resp.has("id")) responseId = resp.get("id").asText(responseId);
+                        if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
+                        if ("incomplete".equals(resp.path("status").asText(""))) {
+                            String reason = resp.path("incomplete_details").path("reason").asText("");
+                            stopReason = "max_output_tokens".equals(reason) ? "max_tokens" : "end_turn";
+                        }
+                    }
+                    break;
+                } else if ("response.incomplete".equals(type)) {
+                    stopReason = "max_tokens";
+                    break;
+                } else if ("response.failed".equals(type)) {
+                    stopReason = "end_turn";
+                    break;
+                }
+            }
+        }
+
+        String clientBody = buildAnthropicMessageJson(responseId, responseModel, responseText.toString(), stopReason, totalUsage);
+        try (var output = response.getOutputStream()) {
+            output.write(clientBody.getBytes(StandardCharsets.UTF_8));
+            output.flush();
+        }
+
+        log.info("[{}] 流式聚合完成: has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
+                ctx != null ? ctx.getRequestId() : "?", totalUsage.hasUsage(),
+                totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
+                totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
+        return totalUsage;
+    }
+
+    /** 构造 Anthropic Messages 非流式响应 JSON。 */
+    private String buildAnthropicMessageJson(String id, String model, String text, String stopReason, UsageTokens usage)
+            throws IOException {
+        var root = JSON_MAPPER.createObjectNode();
+        root.put("id", id);
+        root.put("type", "message");
+        root.put("role", "assistant");
+        root.put("model", model);
+        var content = JSON_MAPPER.createArrayNode();
+        var textBlock = JSON_MAPPER.createObjectNode();
+        textBlock.put("type", "text");
+        textBlock.put("text", text);
+        content.add(textBlock);
+        root.set("content", content);
+        root.put("stop_reason", stopReason);
+        root.putNull("stop_sequence");
+        var usageNode = JSON_MAPPER.createObjectNode();
+        usageNode.put("input_tokens", usage != null ? usage.getInputTokens() : 0);
+        usageNode.put("output_tokens", usage != null ? usage.getOutputTokens() : 0);
+        if (usage != null && usage.getCacheCreationTokens() > 0) {
+            usageNode.put("cache_creation_input_tokens", usage.getCacheCreationTokens());
+        }
+        if (usage != null && usage.getCacheReadTokens() > 0) {
+            usageNode.put("cache_read_input_tokens", usage.getCacheReadTokens());
+        }
+        root.set("usage", usageNode);
+        return JSON_MAPPER.writeValueAsString(root);
     }
 
     /** 流式响应处理结果，包含用量和客户端断开审计标记。 */
@@ -849,17 +972,34 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
     }
 
+    /** 打印 OpenAI OAuth 上游限额相关响应头，用于确认 5h/7d 窗口的真实 header 名称。 */
+    private void logOpenAiOAuthQuotaHeaders(String requestId, AccountEntity account, HttpHeaders headers) {
+        if (account == null || account.getPlatform() != Platform.OPENAI || account.getType() != AccountType.OAUTH
+                || headers == null) {
+            return;
+        }
+        headers.map().forEach((name, values) -> {
+            String lower = name.toLowerCase();
+            if (lower.contains("limit") || lower.contains("remaining") || lower.contains("reset")
+                    || lower.contains("usage") || lower.contains("quota") || lower.contains("window")) {
+                log.info("[{}] OpenAI OAuth 上游限额响应头: {}={}", requestId, name, values);
+            }
+        });
+    }
+
     /** 从上游原始 SSE 行解析用量，避免协议翻译路径丢失缓存 Token。 */
-    private void mergeStreamingUsageFromUpstreamLine(UsageTokens totalUsage,
-                                                     IUsageParser usageParser,
-                                                     String line) {
-        if (totalUsage == null || usageParser == null || line == null) return;
-        if (!line.startsWith("data: ")) return;
+    private boolean mergeStreamingUsageFromUpstreamLine(UsageTokens totalUsage,
+                                                        IUsageParser usageParser,
+                                                        String line) {
+        if (totalUsage == null || usageParser == null || line == null) return false;
+        if (!line.startsWith("data: ")) return false;
 
         UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
         if (eventUsage != null) {
             totalUsage.merge(eventUsage);
+            return eventUsage.hasUsage();
         }
+        return false;
     }
 
     protected UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,
@@ -880,6 +1020,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // 协议翻译：上游格式 → 客户端格式。
         // 优先使用 UpstreamRoute 中的格式，保证与请求翻译、usage parser 的路由决策一致。
         GatewayRequestContext ctx = GatewayRequestContext.get();
+        log.info("[{}] 非流式用量解析: parser={}, body_bytes={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
+                ctx != null ? ctx.getRequestId() : "?",
+                usageParser.getClass().getSimpleName(),
+                responseBody.getBytes(StandardCharsets.UTF_8).length,
+                usage != null && usage.hasUsage(),
+                usage != null ? usage.getInputTokens() : 0,
+                usage != null ? usage.getOutputTokens() : 0,
+                usage != null ? usage.getCacheCreationTokens() : 0,
+                usage != null ? usage.getCacheReadTokens() : 0);
         Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
         UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
         String clientFormat = route != null && route.clientFormat() != null

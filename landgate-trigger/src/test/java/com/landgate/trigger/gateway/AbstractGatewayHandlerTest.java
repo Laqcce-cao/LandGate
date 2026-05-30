@@ -118,11 +118,60 @@ class AbstractGatewayHandlerTest {
     }
 
     @Test
-    @DisplayName("上游返回 text/event-stream 时即使客户端非流式也按流式处理")
+    @DisplayName("上游返回 text/event-stream 时按流式读取")
     void upstreamEventStreamResponseForcesStreamingHandling() {
         var upstreamResp = new InputStreamHttpResponse("data: {}\n", "text/event-stream;charset=UTF-8");
 
         assertTrue(AbstractGatewayHandler.shouldHandleResponseAsStreaming(false, upstreamResp));
+    }
+
+    @Test
+    @DisplayName("OpenAI OAuth 上游流式可聚合为客户端非流式 messages 响应")
+    void forcedUpstreamStreamingCanAggregateToNonStreamingMessages() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("test-stream-to-json")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(AccountEntity.builder().id(1L).name("openai-oauth").platform(Platform.OPENAI).build())
+                .stream(true)
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://chatgpt.com/backend-api/codex/responses",
+                        false,
+                        true,
+                        true,
+                        "responses",
+                        "openai_oauth_codex"))
+                .build());
+        String sse = """
+                data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.5"}}
+
+                data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+                data: {"type":"response.output_text.delta","output_index":0,"delta":"non"}
+
+                data: {"type":"response.output_text.delta","output_index":0,"delta":" stream ok"}
+
+                data: {"type":"response.output_text.done","output_index":0}
+
+                data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.5","status":"completed","usage":{"input_tokens":100,"output_tokens":6,"input_tokens_details":{"cached_tokens":80}}}}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UsageTokens usage = handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertTrue(response.getContentType().startsWith("application/json"));
+        assertTrue(response.getContentAsString().contains("\"type\":\"message\""));
+        assertTrue(response.getContentAsString().contains("non stream ok"));
+        assertEquals(20, usage.getInputTokens());
+        assertEquals(6, usage.getOutputTokens());
+        assertEquals(80, usage.getCacheReadTokens());
     }
 
     @Test
@@ -177,6 +226,12 @@ class AbstractGatewayHandlerTest {
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {
             return handleStreaming(new InputStreamHttpResponse(sse, "text/event-stream"), new MockHttpServletResponse(),
                     GatewayRequestContext.get(), usageParser).usage();
+        }
+
+        UsageTokens captureStreamingAsNonStreaming(String sse, MockHttpServletResponse response,
+                                                   IUsageParser usageParser) throws IOException {
+            return handleStreamingAsNonStreaming(new InputStreamHttpResponse(sse, "text/event-stream"), response,
+                    GatewayRequestContext.get(), usageParser);
         }
 
         @Override
