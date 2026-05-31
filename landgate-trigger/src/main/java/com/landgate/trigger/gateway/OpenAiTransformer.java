@@ -98,8 +98,8 @@ public class OpenAiTransformer implements IRequestTransformer {
             root.put("stream", true);
 
             extractSystemMessagesToInstructions(root);
-            // 过滤上游不支持的 tool 类型（如 Codex CLI 的 namespace MCP 工具）
-            filterUnsupportedTools(root);
+//            // 过滤上游不支持的 tool 类型（如 Codex CLI 的 namespace MCP 工具）
+//            filterUnsupportedTools(root);
             if (isBlankText(root.get("instructions"))) {
                 root.put("instructions", "You are a helpful coding assistant.");
             }
@@ -156,20 +156,20 @@ public class OpenAiTransformer implements IRequestTransformer {
         return contentNode.asText();
     }
 
-    /** 过滤上游不支持的 tool 类型（如 Codex CLI 的 namespace MCP 工具），只保留 web_search 系列。 */
-    private static void filterUnsupportedTools(ObjectNode root) {
-        JsonNode tools = root.get("tools");
-        if (tools == null || !tools.isArray()) return;
-
-        ArrayNode filtered = JSON.createArrayNode();
-        for (JsonNode tool : tools) {
-            String type = tool.has("type") ? tool.get("type").asText() : "";
-            if (type.startsWith("web_search")) {
-                filtered.add(tool);
-            }
-        }
-        root.set("tools", filtered);
-    }
+//    /** 过滤上游不支持的 tool 类型（如 Codex CLI 的 namespace MCP 工具），只保留 web_search 系列。 */
+//    private static void filterUnsupportedTools(ObjectNode root) {
+//        JsonNode tools = root.get("tools");
+//        if (tools == null || !tools.isArray()) return;
+//
+//        ArrayNode filtered = JSON.createArrayNode();
+//        for (JsonNode tool : tools) {
+//            String type = tool.has("type") ? tool.get("type").asText() : "";
+//            if (type.startsWith("web_search")) {
+//                filtered.add(tool);
+//            }
+//        }
+//        root.set("tools", filtered);
+//    }
 
     /** 判断 instructions 是否缺失或为空白。 */
     private static boolean isBlankText(JsonNode node) {
