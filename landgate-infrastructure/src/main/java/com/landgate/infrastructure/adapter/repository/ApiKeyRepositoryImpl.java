@@ -64,4 +64,14 @@ public class ApiKeyRepositoryImpl implements IApiKeyRepository {
             apiKeyDao.update(po);
         }
     }
+
+    @Override
+    public long count() {
+        return apiKeyDao.countAll();
+    }
+
+    @Override
+    public long countByStatus(String status) {
+        return apiKeyDao.countByStatus(status);
+    }
 }

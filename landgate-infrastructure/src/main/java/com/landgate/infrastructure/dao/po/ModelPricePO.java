@@ -22,9 +22,16 @@ public class ModelPricePO extends BasePO {
     /** 模型标识（如 gpt-4o, claude-sonnet-4-20250514） */
     private String model;
 
-    /** 所属 AI 平台（数据库存储为字符串，映射到实体时转为 Platform 枚举） */
-    private String platform;
+    /** 计费模式：token（按 token）、per_request（按次）、image（按图片） */
+    @Builder.Default
+    private String billingMode = "token";
 
+    /** model 字段是否为通配符模式（如 claude-opus-*） */
+    @Builder.Default
+    private Boolean wildcardMatch = false;
+
+    /** 图片尺寸（image 模式专用）：1K、2K、4K */
+    private String imageSize;
     /** 输入 token 单价（USD） */
     @Builder.Default
     private BigDecimal inputPrice = BigDecimal.ZERO;

@@ -41,8 +41,7 @@ public class ModelPriceAdminController {
 
     @PostMapping
     public ResponseEntity<?> create(@RequestBody ModelPriceEntity price) {
-        log.info("Create model price: model={}, platform={}",
-                price.getModel(), price.getPlatform());
+        log.info("Create model price: model={}", price.getModel());
         ModelPriceEntity created = modelPriceRepository.save(price);
         pricingDomainService.invalidateCache(price.getModel());
         return ResponseEntity.ok(created);
@@ -50,7 +49,7 @@ public class ModelPriceAdminController {
 
     @PutMapping("/{id}")
     public ResponseEntity<?> update(@PathVariable Long id, @RequestBody ModelPriceEntity updates) {
-        log.info("Update model price: id={}, model={}, platform={}", id, updates.getModel(), updates.getPlatform());
+        log.info("Update model price: id={}, model={}", id, updates.getModel());
         ModelPriceEntity existing = modelPriceRepository.findById(id).orElse(null);
         if (existing == null) {
             return ResponseEntity.notFound().build();
@@ -76,9 +75,4 @@ public class ModelPriceAdminController {
         return ResponseEntity.ok(Map.of("success", true));
     }
 
-    @GetMapping("/platform/{platform}")
-    public ResponseEntity<?> listByPlatform(@PathVariable String platform) {
-        List<ModelPriceEntity> prices = modelPriceRepository.findByPlatform(platform);
-        return ResponseEntity.ok(Map.of("prices", prices, "total", prices.size()));
-    }
 }

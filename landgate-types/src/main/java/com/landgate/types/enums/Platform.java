@@ -16,7 +16,7 @@ public enum Platform {
 
     /** Anthropic Claude —— 支持 Messages / Text Completions API */
     ANTHROPIC("anthropic", 1, "Anthropic Claude"),
-    /** OpenAI —— 支持 Chat Completions / Embeddings API */
+    /** OpenAI —— 支持 Chat Completions / Responses API */
     OPENAI("openai", 2, "OpenAI"),
     /** Google Gemini —— 支持 Gemini API */
     GEMINI("gemini", 3, "Google Gemini"),

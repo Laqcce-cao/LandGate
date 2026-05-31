@@ -5,6 +5,9 @@
     <resultMap id="GroupResultMap" type="com.landgate.infrastructure.dao.po.GroupPO">
         <id     column="id"                                   property="id"/>
         <result column="name"                                 property="name"/>
+        <result column="provider"                             property="provider"/>
+        <result column="supported_protocols"                  property="supportedProtocols"/>
+        <result column="protocol_strategy"                    property="protocolStrategy"/>
         <result column="description"                          property="description"/>
         <result column="rate_multiplier"                      property="rateMultiplier"/>
         <result column="is_exclusive"                         property="isExclusive"/>
@@ -47,7 +50,8 @@
 
     <insert id="insert" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO `groups` (
-            name, description, rate_multiplier, is_exclusive, status, subscription_type,
+            name, provider, supported_protocols, protocol_strategy,
+            description, rate_multiplier, is_exclusive, status, subscription_type,
             daily_limit_usd, weekly_limit_usd, monthly_limit_usd, default_validity_days,
             allow_image_generation, image_rate_independent, image_rate_multiplier,
             image_price_1k, image_price_2k, image_price_4k,
@@ -57,7 +61,8 @@
             default_mapped_model, messages_dispatch_model_config, rpm_limit, excluded_models,
             created_at, updated_at, deleted_at
         ) VALUES (
-            #{name}, #{description}, #{rateMultiplier}, #{isExclusive}, #{status}, #{subscriptionType},
+            #{name}, #{provider}, #{supportedProtocols}, #{protocolStrategy},
+            #{description}, #{rateMultiplier}, #{isExclusive}, #{status}, #{subscriptionType},
             #{dailyLimitUsd}, #{weeklyLimitUsd}, #{monthlyLimitUsd}, #{defaultValidityDays},
             #{allowImageGeneration}, #{imageRateIndependent}, #{imageRateMultiplier},
             #{imagePrice1k}, #{imagePrice2k}, #{imagePrice4k},
@@ -71,7 +76,9 @@
 
     <update id="update">
         UPDATE `groups` SET
-            name = #{name}, description = #{description}, rate_multiplier = #{rateMultiplier},
+            name = #{name}, provider = #{provider},
+            supported_protocols = #{supportedProtocols},
+            protocol_strategy = #{protocolStrategy}, description = #{description}, rate_multiplier = #{rateMultiplier},
             is_exclusive = #{isExclusive}, status = #{status},
             subscription_type = #{subscriptionType},
             daily_limit_usd = #{dailyLimitUsd}, weekly_limit_usd = #{weeklyLimitUsd},

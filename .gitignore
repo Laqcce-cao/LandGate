@@ -36,3 +36,4 @@ dist/
 /landgate-app/src/test/
 /.env-prod
 /data/
+/CLAUDE.md

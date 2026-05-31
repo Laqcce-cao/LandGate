@@ -117,7 +117,8 @@ public class OAuthTokenRefreshService {
                                 expiresAt, accountId);
                         if (creds.has("access_token")) {
                             String token = creds.get("access_token").asText();
-                            if (token.length() > 100) {
+                            boolean encrypted = creds.has("token_encrypted") && creds.get("token_encrypted").asBoolean();
+                            if (encrypted) {
                                 try { return credentialService.decrypt(token); }
                                 catch (Exception e) { return token; }
                             }
@@ -229,6 +230,7 @@ public class OAuthTokenRefreshService {
             newCreds.put("refresh_token", encryptedRefresh);
             newCreds.put("token_expires_at", expiresAt.toString());
             newCreds.put("oauth_provider", providerKey);
+            newCreds.put("token_encrypted", true);
 
             account.setCredentials(newCreds.toString());
             accountRepository.save(account);

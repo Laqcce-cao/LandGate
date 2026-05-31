@@ -29,6 +29,8 @@
         <result column="session_window_end"          property="sessionWindowEnd"/>
         <result column="session_window_status"       property="sessionWindowStatus"/>
         <result column="supported_models"            property="supportedModels"/>
+        <result column="supported_protocols"         property="supportedProtocols"/>
+        <result column="mixed_scheduling"            property="mixedScheduling"/>
         <result column="created_at"                  property="createdAt"/>
         <result column="updated_at"                  property="updatedAt"/>
         <result column="deleted_at"                  property="deletedAt"/>
@@ -58,7 +60,7 @@
             rate_limited_at, rate_limit_reset_at, overload_until,
             temp_unschedulable_until, temp_unschedulable_reason,
             session_window_start, session_window_end, session_window_status,
-            supported_models,
+            supported_models, supported_protocols, mixed_scheduling,
             created_at, updated_at, deleted_at
         ) VALUES (
             #{name}, #{notes}, #{platform}, #{type}, #{credentials}, #{extra}, #{proxyId},
@@ -67,7 +69,7 @@
             #{rateLimitedAt}, #{rateLimitResetAt}, #{overloadUntil},
             #{tempUnschedulableUntil}, #{tempUnschedulableReason},
             #{sessionWindowStart}, #{sessionWindowEnd}, #{sessionWindowStatus},
-            #{supportedModels},
+            #{supportedModels}, #{supportedProtocols}, #{mixedScheduling},
             NOW(), NOW(), NULL
         )
     </insert>
@@ -89,6 +91,8 @@
             session_window_end = #{sessionWindowEnd},
             session_window_status = #{sessionWindowStatus},
             supported_models = #{supportedModels},
+            supported_protocols = #{supportedProtocols},
+            mixed_scheduling = #{mixedScheduling},
             deleted_at = #{deletedAt},
             updated_at = NOW()
         WHERE id = #{id}
@@ -125,6 +129,10 @@
         WHERE platform = #{platform} AND status = #{status}
           AND schedulable = TRUE
           AND deleted_at IS NULL
+    </select>
+
+    <select id="countByStatus" resultType="long">
+        SELECT COUNT(*) FROM accounts WHERE status = #{status} AND deleted_at IS NULL
     </select>
 
 </mapper>

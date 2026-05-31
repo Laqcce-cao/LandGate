@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 /**
  * OpenAI 用量解析器 —— 从 OpenAI API 响应中提取 Token 用量。
  * <p>
- * 非流式响应：{@code {"usage": {"prompt_tokens": N, "completion_tokens": N}}}
+ * 非流式响应：{@code {"usage": {"prompt_tokens": N, "completion_tokens": N, "prompt_tokens_details": {"cached_tokens": N}}}}
  * <p>
  * 流式（SSE）响应：用量仅出现在最后一个 chunk 中：
  * {@code data: {"choices": [...], "usage": {...}}}
@@ -32,9 +32,13 @@ public class OpenAiUsageParser implements IUsageParser {
             if (usage.isMissingNode() || usage.isNull()) {
                 return new UsageTokens();
             }
+            // OpenAI API: prompt_tokens 包含缓存部分，需减去避免重复计费
+            int rawPromptTokens = usage.path("prompt_tokens").asInt();
+            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt();
             return UsageTokens.builder()
-                    .inputTokens(usage.path("prompt_tokens").asInt())
+                    .inputTokens(Math.max(0, rawPromptTokens - cachedTokens))
                     .outputTokens(usage.path("completion_tokens").asInt())
+                    .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
             log.debug("Failed to parse OpenAI non-streaming usage", e);
@@ -53,9 +57,13 @@ public class OpenAiUsageParser implements IUsageParser {
             if (usage.isMissingNode() || usage.isNull()) {
                 return null;
             }
+            // OpenAI API: prompt_tokens 包含缓存部分，需减去避免重复计费
+            int rawPromptTokens = usage.path("prompt_tokens").asInt();
+            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt();
             return UsageTokens.builder()
-                    .inputTokens(usage.path("prompt_tokens").asInt())
+                    .inputTokens(Math.max(0, rawPromptTokens - cachedTokens))
                     .outputTokens(usage.path("completion_tokens").asInt())
+                    .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
             log.debug("Failed to parse OpenAI SSE line", e);

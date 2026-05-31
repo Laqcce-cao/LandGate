@@ -38,8 +38,8 @@ public class ModelPriceRepositoryImpl implements IModelPriceRepository {
     }
 
     @Override
-    public List<ModelPriceEntity> findByPlatform(String platform) {
-        return modelPriceDao.selectByPlatform(platform).stream()
+    public List<ModelPriceEntity> findByWildcard() {
+        return modelPriceDao.selectWildcardMatches().stream()
                 .map(modelPriceMapper::toEntity)
                 .collect(Collectors.toList());
     }

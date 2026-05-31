@@ -1,6 +1,7 @@
 package com.landgate.trigger.gateway;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.types.enums.Platform;
 import lombok.extern.slf4j.Slf4j;
@@ -8,7 +9,10 @@ import org.springframework.stereotype.Component;
 
 import java.net.http.HttpHeaders;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -41,6 +45,19 @@ public class RateLimitHeaderParser {
     private static final String OPENAI_REQ_REMAINING   = "x-ratelimit-remaining-requests";
     private static final String OPENAI_REQ_RESET       = "x-ratelimit-reset-requests";
 
+    // ---- OpenAI OAuth Codex 内部端点限额头 ----
+    private static final String CODEX_ACTIVE_LIMIT = "x-codex-active-limit";
+    private static final String CODEX_CREDITS_UNLIMITED = "x-codex-credits-unlimited";
+    private static final String CODEX_PRIMARY_USED_PERCENT = "x-codex-primary-used-percent";
+    private static final String CODEX_PRIMARY_RESET_AFTER_SECONDS = "x-codex-primary-reset-after-seconds";
+    private static final String CODEX_PRIMARY_RESET_AT = "x-codex-primary-reset-at";
+    private static final String CODEX_PRIMARY_WINDOW_MINUTES = "x-codex-primary-window-minutes";
+    private static final String CODEX_SECONDARY_USED_PERCENT = "x-codex-secondary-used-percent";
+    private static final String CODEX_SECONDARY_RESET_AFTER_SECONDS = "x-codex-secondary-reset-after-seconds";
+    private static final String CODEX_SECONDARY_RESET_AT = "x-codex-secondary-reset-at";
+    private static final String CODEX_SECONDARY_WINDOW_MINUTES = "x-codex-secondary-window-minutes";
+    private static final String CODEX_PRIMARY_OVER_SECONDARY_LIMIT_PERCENT = "x-codex-primary-over-secondary-limit-percent";
+
     /**
      * 解析上游响应头，提取 Rate Limit 信息。
      *
@@ -54,7 +71,7 @@ public class RateLimitHeaderParser {
         }
         try {
             return switch (platform) {
-                case ANTHROPIC -> parseAnthropic(headers);
+                case ANTHROPIC, ANTIGRAVITY -> parseAnthropic(headers);
                 case OPENAI -> parseOpenAI(headers);
                 default -> empty();
             };
@@ -80,6 +97,11 @@ public class RateLimitHeaderParser {
     // ---- OpenAI 解析 ----
 
     private RateLimitSnapshot parseOpenAI(HttpHeaders headers) {
+        RateLimitSnapshot codexSnapshot = parseCodex(headers);
+        if (codexSnapshot.hasData()) {
+            return codexSnapshot;
+        }
+
         Map<String, Bucket> buckets = new LinkedHashMap<>();
 
         parseBucket(headers, OPENAI_TOKEN_LIMIT, OPENAI_TOKEN_REMAINING,
@@ -90,9 +112,184 @@ public class RateLimitHeaderParser {
         return buildSnapshot(buckets);
     }
 
+    /** 解析 ChatGPT Codex 内部端点返回的 5h/7d 限额窗口。 */
+    private RateLimitSnapshot parseCodex(HttpHeaders headers) {
+        CodexWindow primary = parseCodexWindow(headers, "primary", CODEX_PRIMARY_USED_PERCENT,
+                CODEX_PRIMARY_RESET_AFTER_SECONDS, CODEX_PRIMARY_RESET_AT, CODEX_PRIMARY_WINDOW_MINUTES);
+        CodexWindow secondary = parseCodexWindow(headers, "secondary", CODEX_SECONDARY_USED_PERCENT,
+                CODEX_SECONDARY_RESET_AFTER_SECONDS, CODEX_SECONDARY_RESET_AT, CODEX_SECONDARY_WINDOW_MINUTES);
+        Double overSecondaryPercent = parseDouble(headers, CODEX_PRIMARY_OVER_SECONDARY_LIMIT_PERCENT).orElse(null);
+        String activeLimit = headers.firstValue(CODEX_ACTIVE_LIMIT).orElse(null);
+        Boolean creditsUnlimited = parseBoolean(headers, CODEX_CREDITS_UNLIMITED).orElse(null);
+
+        boolean hasData = primary.hasData() || secondary.hasData() || overSecondaryPercent != null
+                || activeLimit != null || creditsUnlimited != null;
+        if (!hasData) {
+            return empty();
+        }
+
+        List<CodexWindow> windows = normalizeCodexWindows(primary, secondary);
+        Instant now = Instant.now();
+        Instant farthestReset = windows.stream()
+                .map(CodexWindow::resetAt)
+                .filter(r -> r != null)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
+
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("source", "openai_oauth_codex");
+        root.put("captured_at", now.toString());
+        if (activeLimit != null) {
+            root.put("active_limit", activeLimit);
+        } else {
+            root.putNull("active_limit");
+        }
+        if (creditsUnlimited != null) {
+            root.put("credits_unlimited", creditsUnlimited);
+        } else {
+            root.putNull("credits_unlimited");
+        }
+        if (overSecondaryPercent != null) {
+            root.put("primary_over_secondary_limit_percent", overSecondaryPercent);
+        } else {
+            root.putNull("primary_over_secondary_limit_percent");
+        }
+
+        ArrayNode windowNodes = MAPPER.createArrayNode();
+        for (CodexWindow window : windows) {
+            ObjectNode node = MAPPER.createObjectNode();
+            node.put("label", window.label());
+            node.put("scope", window.scope());
+            putNullableInt(node, "window_minutes", window.windowMinutes());
+            putNullableDouble(node, "used_percent", window.usedPercent());
+            putNullableDouble(node, "remaining_percent", window.remainingPercent());
+            putNullableInt(node, "reset_after_seconds", window.resetAfterSeconds());
+            if (window.resetAt() != null) {
+                node.put("reset_at", window.resetAt().toString());
+            } else {
+                node.putNull("reset_at");
+            }
+            windowNodes.add(node);
+        }
+        root.set("windows", windowNodes);
+
+        try {
+            return new RateLimitSnapshot(now, farthestReset, MAPPER.writeValueAsString(root));
+        } catch (Exception e) {
+            log.debug("Failed to serialize Codex rate limit JSON: {}", e.getMessage());
+            return empty();
+        }
+    }
+
     // ---- 通用 bucket 解析 ----
 
     private record Bucket(long limit, long remaining, Instant reset) {}
+
+    private record CodexWindow(String scope, String label, Double usedPercent, Integer resetAfterSeconds,
+                               Instant resetAt, Integer windowMinutes) {
+        boolean hasData() {
+            return usedPercent != null || resetAfterSeconds != null || resetAt != null || windowMinutes != null;
+        }
+
+        Double remainingPercent() {
+            if (usedPercent == null) {
+                return null;
+            }
+            return Math.max(0D, 100D - usedPercent);
+        }
+
+        CodexWindow withLabel(String label) {
+            return new CodexWindow(scope, label, usedPercent, resetAfterSeconds, resetAt, windowMinutes);
+        }
+    }
+
+    private CodexWindow parseCodexWindow(HttpHeaders headers, String scope, String usedHeader,
+                                         String resetAfterHeader, String resetAtHeader, String windowHeader) {
+        Double usedPercent = parseDouble(headers, usedHeader).orElse(null);
+        Integer resetAfterSeconds = parseInt(headers, resetAfterHeader).orElse(null);
+        Instant resetAt = parseEpochSecond(headers, resetAtHeader).orElse(null);
+        Integer windowMinutes = parseInt(headers, windowHeader).orElse(null);
+        return new CodexWindow(scope, scope, usedPercent, resetAfterSeconds, resetAt, windowMinutes);
+    }
+
+    private List<CodexWindow> normalizeCodexWindows(CodexWindow primary, CodexWindow secondary) {
+        List<CodexWindow> windows = new ArrayList<>(2);
+        if (primary.windowMinutes() != null && secondary.windowMinutes() != null) {
+            if (primary.windowMinutes() <= secondary.windowMinutes()) {
+                windows.add(primary.withLabel("5h"));
+                windows.add(secondary.withLabel("7d"));
+            } else {
+                windows.add(secondary.withLabel("5h"));
+                windows.add(primary.withLabel("7d"));
+            }
+        } else if (primary.windowMinutes() != null) {
+            windows.add(primary.withLabel(primary.windowMinutes() <= 360 ? "5h" : "7d"));
+            if (secondary.hasData()) {
+                windows.add(secondary.withLabel(primary.windowMinutes() <= 360 ? "7d" : "5h"));
+            }
+        } else if (secondary.windowMinutes() != null) {
+            windows.add(secondary.withLabel(secondary.windowMinutes() <= 360 ? "5h" : "7d"));
+            if (primary.hasData()) {
+                windows.add(primary.withLabel(secondary.windowMinutes() <= 360 ? "7d" : "5h"));
+            }
+        } else {
+            // 兼容没有 window_minutes 的旧头：沿用 sub2api 的 legacy 假设 primary=7d, secondary=5h。
+            if (secondary.hasData()) {
+                windows.add(secondary.withLabel("5h"));
+            }
+            if (primary.hasData()) {
+                windows.add(primary.withLabel("7d"));
+            }
+        }
+        return windows;
+    }
+
+    private Optional<Integer> parseInt(HttpHeaders headers, String name) {
+        try {
+            return headers.firstValue(name).map(Integer::parseInt);
+        } catch (Exception e) {
+            log.debug("Failed to parse int header '{}': {}", name, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private Optional<Double> parseDouble(HttpHeaders headers, String name) {
+        try {
+            return headers.firstValue(name).map(Double::parseDouble);
+        } catch (Exception e) {
+            log.debug("Failed to parse double header '{}': {}", name, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private Optional<Boolean> parseBoolean(HttpHeaders headers, String name) {
+        return headers.firstValue(name).map(Boolean::parseBoolean);
+    }
+
+    private Optional<Instant> parseEpochSecond(HttpHeaders headers, String name) {
+        try {
+            return headers.firstValue(name).map(value -> Instant.ofEpochSecond(Long.parseLong(value)));
+        } catch (Exception e) {
+            log.debug("Failed to parse epoch second header '{}': {}", name, e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    private void putNullableInt(ObjectNode node, String name, Integer value) {
+        if (value != null) {
+            node.put(name, value);
+        } else {
+            node.putNull(name);
+        }
+    }
+
+    private void putNullableDouble(ObjectNode node, String name, Double value) {
+        if (value != null) {
+            node.put(name, value);
+        } else {
+            node.putNull(name);
+        }
+    }
 
     private Optional<Bucket> parseBucket(HttpHeaders headers,
                                           String limitHeader, String remainingHeader, String resetHeader,

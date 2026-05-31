@@ -42,6 +42,13 @@ public class GroupController {
         return ResponseEntity.ok(group);
     }
 
+    @GetMapping("/{id}/supported-models")
+    public ResponseEntity<?> getSupportedModels(@PathVariable Long id) {
+        log.debug("Get supported models for group: group_id={}", id);
+        String modelsJson = groupDomainService.getSupportedModels(id);
+        return ResponseEntity.ok(Map.of("supportedModels", modelsJson));
+    }
+
     @PostMapping
     public ResponseEntity<?> create(@RequestBody GroupEntity group) {
         log.info("Create group: name={}", group.getName());

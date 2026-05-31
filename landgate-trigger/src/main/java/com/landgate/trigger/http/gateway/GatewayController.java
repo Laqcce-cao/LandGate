@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
+import java.util.UUID;
 
 /**
  * 网关统一入口 —— 处理所有 AI API 代理转发请求。
@@ -24,6 +25,7 @@ public class GatewayController {
 
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
     private static final String ATTR_GATEWAY_UPSTREAM_PATH = "gateway_upstream_path";
+    private static final String ATTR_REQUEST_ID = "gateway_request_id";
 
     // ---- Anthropic Messages API ----
 
@@ -31,8 +33,11 @@ public class GatewayController {
     public void messages(@RequestBody String body,
                          HttpServletRequest request,
                          HttpServletResponse response) throws IOException {
-        log.info("POST /v1/messages: content_length={}, remote_addr={}",
-                body != null ? body.length() : 0, request.getRemoteAddr());
+        String requestId = UUID.randomUUID().toString();
+        request.setAttribute(ATTR_REQUEST_ID, requestId);
+        log.info("[{}] => POST /v1/messages | content_length={} | remote_addr={} | ua={}",
+                requestId, body != null ? body.length() : 0,
+                request.getRemoteAddr(), request.getHeader("User-Agent"));
         dispatcher.dispatch(request, response, body);
     }
 
@@ -59,16 +64,62 @@ public class GatewayController {
     public void chatCompletions(@RequestBody String body,
                                 HttpServletRequest request,
                                 HttpServletResponse response) throws IOException {
-        log.info("POST /v1/chat/completions");
+        String requestId = UUID.randomUUID().toString();
+        request.setAttribute(ATTR_REQUEST_ID, requestId);
+        log.info("[{}] => POST /v1/chat/completions | content_length={} | remote_addr={} | ua={}",
+                requestId, body != null ? body.length() : 0,
+                request.getRemoteAddr(), request.getHeader("User-Agent"));
 
         Long groupId = (Long) request.getAttribute("group_id");
         if (groupId == null) {
+            log.warn("[{}] 缺少 API Key 认证 (group_id=null)，返回 401", requestId);
             response.setStatus(401);
             response.setContentType("application/json;charset=UTF-8");
             response.getWriter().write(
                     "{\"error\":{\"message\":\"Missing API key\",\"type\":\"authentication_error\",\"param\":null,\"code\":null}}");
             return;
         }
+        log.info("[{}] 认证通过: group_id={}", requestId, groupId);
+
+        dispatcher.dispatch(request, response, body);
+    }
+
+    // ---- OpenAI Responses API ----
+
+    @PostMapping({"/v1/responses", "/responses", "/backend-api/codex/responses"})
+    public void responses(@RequestBody String body,
+                          HttpServletRequest request,
+                          HttpServletResponse response) throws IOException {
+        handleResponses(body, request, response);
+    }
+
+    @PostMapping({"/v1/responses/**", "/responses/**", "/backend-api/codex/responses/**"})
+    public void responsesSubpath(@RequestBody String body,
+                                 HttpServletRequest request,
+                                 HttpServletResponse response) throws IOException {
+        handleResponses(body, request, response);
+    }
+
+    /** 处理 OpenAI Responses 与 Codex CLI 兼容入口。 */
+    private void handleResponses(String body,
+                                 HttpServletRequest request,
+                                 HttpServletResponse response) throws IOException {
+        String requestId = UUID.randomUUID().toString();
+        request.setAttribute(ATTR_REQUEST_ID, requestId);
+        log.info("[{}] => POST {} | content_length={} | remote_addr={} | ua={}",
+                requestId, request.getServletPath(), body != null ? body.length() : 0,
+                request.getRemoteAddr(), request.getHeader("User-Agent"));
+
+        Long groupId = (Long) request.getAttribute("group_id");
+        if (groupId == null) {
+            log.warn("[{}] 缺少 API Key 认证 (group_id=null)，返回 401", requestId);
+            response.setStatus(401);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(
+                    "{\"error\":{\"message\":\"Missing API key\",\"type\":\"authentication_error\",\"param\":null,\"code\":null}}");
+            return;
+        }
+        log.info("[{}] 认证通过: group_id={}", requestId, groupId);
 
         dispatcher.dispatch(request, response, body);
     }
@@ -80,9 +131,12 @@ public class GatewayController {
                             @PathVariable String modelPath,
                             HttpServletRequest request,
                             HttpServletResponse response) throws IOException {
+        String requestId = UUID.randomUUID().toString();
+        request.setAttribute(ATTR_REQUEST_ID, requestId);
         String fullPath = request.getServletPath();
-        log.info("POST {}: modelPath={}, bodySize={}", fullPath, modelPath,
-                body != null ? body.length() : 0);
+        log.info("[{}] => POST {} | modelPath={} | bodySize={} | ua={}",
+                requestId, fullPath, modelPath,
+                body != null ? body.length() : 0, request.getHeader("User-Agent"));
 
         // 将 Gemini 特有的路径信息注入 request attribute
         request.setAttribute(ATTR_GATEWAY_MODEL, modelPath);
@@ -90,9 +144,11 @@ public class GatewayController {
 
         Long groupId = (Long) request.getAttribute("group_id");
         if (groupId == null) {
+            log.warn("[{}] 缺少 API Key 认证 (group_id=null)，返回 401", requestId);
             writeGoogleError(response, 401, "MISSING_API_KEY", "Missing API key");
             return;
         }
+        log.info("[{}] 认证通过: group_id={}", requestId, groupId);
 
         dispatcher.dispatch(request, response, body);
     }

@@ -1,6 +1,7 @@
 package com.landgate.trigger.gateway;
 
 import com.landgate.trigger.gateway.handler.AnthropicGatewayHandler;
+import com.landgate.trigger.gateway.handler.AntigravityGatewayHandler;
 import com.landgate.trigger.gateway.handler.GeminiGatewayHandler;
 import com.landgate.trigger.gateway.handler.OpenAiGatewayHandler;
 import com.landgate.types.enums.Platform;
@@ -14,13 +15,15 @@ import java.util.Map;
 /**
  * 网关处理器工厂 —— 根据平台 {@link Platform} 返回对应的 {@link IGatewayHandler}。
  * <p>
- * Antigravity 平台复用 Anthropic 处理器（Antigravity 协议与 Anthropic 兼容）。
+ * Antigravity 平台使用独立的 {@link AntigravityGatewayHandler}（虽然协议与 Anthropic 兼容，
+ * 但通过独立 Handler 实现路由隔离，便于后续 Phase 引入 Anthropic 专属逻辑时不影响 Antigravity）。
  */
 @Component
 @RequiredArgsConstructor
 public class GatewayHandlerFactory {
 
     private final AnthropicGatewayHandler anthropicHandler;
+    private final AntigravityGatewayHandler antigravityHandler;
     private final OpenAiGatewayHandler openAiHandler;
     private final GeminiGatewayHandler geminiHandler;
 
@@ -31,7 +34,7 @@ public class GatewayHandlerFactory {
         registry.put(Platform.ANTHROPIC, anthropicHandler);
         registry.put(Platform.OPENAI, openAiHandler);
         registry.put(Platform.GEMINI, geminiHandler);
-        registry.put(Platform.ANTIGRAVITY, anthropicHandler);
+        registry.put(Platform.ANTIGRAVITY, antigravityHandler);
     }
 
     public IGatewayHandler getHandler(Platform platform) {
@@ -42,3 +45,4 @@ public class GatewayHandlerFactory {
         return handler;
     }
 }
+

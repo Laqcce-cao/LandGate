@@ -51,4 +51,8 @@ public interface IApiKeyRepository {
      * @param id 主键ID
      */
     void deleteById(Long id);
+
+    long count();
+
+    long countByStatus(String status);
 }

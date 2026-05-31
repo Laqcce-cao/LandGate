@@ -79,4 +79,9 @@ public class UserRepositoryImpl implements IUserRepository {
     public int updateBalance(Long id, java.math.BigDecimal newBalance) {
         return userDao.updateBalance(id, newBalance);
     }
+
+    @Override
+    public long countByCreatedAtAfter(java.time.Instant after) {
+        return userDao.countByCreatedAtAfter(after.toString());
+    }
 }

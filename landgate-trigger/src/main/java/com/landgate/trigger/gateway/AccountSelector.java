@@ -21,12 +21,12 @@ import java.util.stream.Collectors;
  * 选择流程：
  * <ol>
  *   <li>加载分组关联的全部候选账户（批量查询，避免 N+1）</li>
- *   <li>责任链过滤：删除 → 健康 → 模型白名单 → 显式路由</li>
+ *   <li>责任链过滤：删除 → 健康 → Provider → 模型白名单 → 显式路由</li>
  *   <li>排序：优先级(高→低) → 负载率(低→高) → 最后使用时间(远→近)</li>
  *   <li>返回排序后的第一个账户</li>
  * </ol>
  * <p>
- * 注意：不按 platform 过滤。AccountSelector 只管"这个号能不能服务这个模型"。
+ * 注意：按 Group Provider 过滤账号阵营，mixed_scheduling 标记的账号可跨阵营混入。
  */
 @Slf4j
 @Component
@@ -71,6 +71,27 @@ public class AccountSelector {
         public String name() { return "HEALTH"; }
     };
 
+    /** 过滤器：按 Group Provider 过滤账号阵营，mixed_scheduling 标记可跨阵营混入 */
+    private static final AccountFilter PROVIDER_FILTER = new AccountFilter() {
+        @Override
+        public boolean pass(AccountEntity account, GroupEntity group, String model) {
+            String groupProvider = group.getProvider();
+            // 未设置 provider → 不限制，全部放行
+            if (groupProvider == null || groupProvider.isEmpty()) return true;
+            // 账号 platform 匹配 Group provider → 同阵营，放行
+            if (account.getPlatform() != null && groupProvider.equalsIgnoreCase(account.getPlatform().getKey())) {
+                return true;
+            }
+            // mixed_scheduling 标记 → 允许跨阵营混入（如 Antigravity 账号服务于 Anthropic Group）
+            if (account.getMixedScheduling() != null && account.getMixedScheduling()) {
+                return true;
+            }
+            return false;
+        }
+        @Override
+        public String name() { return "PROVIDER"; }
+    };
+
     /** 过滤器：根据账户的 supportedModels 白名单过滤 */
     private final AccountFilter modelWhitelistFilter = new AccountFilter() {
         @Override
@@ -94,10 +115,11 @@ public class AccountSelector {
         public String name() { return "EXPLICIT_ROUTE"; }
     };
 
-    /** 过滤器链，按顺序执行 */
+    /** 过滤器链，按顺序执行：删除 → 健康 → Provider → 模型白名单 → 显式路由 */
     private final List<AccountFilter> filterChain = List.of(
             DELETED_FILTER,
             HEALTH_FILTER,
+            PROVIDER_FILTER,
             modelWhitelistFilter,
             explicitRouteFilter
     );
@@ -106,17 +128,38 @@ public class AccountSelector {
 
     public AccountEntity getById(Long accountId) {
         if (accountId == null) return null;
-        return accountRepository.findById(accountId)
-                .filter(a -> a.getDeletedAt() == null)
-                .filter(AccountEntity::isActive)
-                .filter(AccountEntity::isSchedulable)
-                .orElse(null);
+        AccountEntity account = accountRepository.findById(accountId).orElse(null);
+        if (account == null) {
+            log.debug("账户不存在: account_id={}", accountId);
+            return null;
+        }
+        if (account.getDeletedAt() != null) {
+            log.debug("账户已删除: account_id={}", accountId);
+            return null;
+        }
+        if (!account.isActive()) {
+            log.debug("账户未激活: account_id={}", accountId);
+            return null;
+        }
+        if (!account.isSchedulable()) {
+            log.debug("账户不可调度: account_id={}, reason={}", accountId, account.getTempUnschedulableReason());
+            return null;
+        }
+        if (account.isRateLimited()) {
+            log.debug("账户正在限流冷却: account_id={}, reset_at={}", accountId, account.getRateLimitResetAt());
+            return null;
+        }
+        if (account.isOverloaded()) {
+            log.debug("账户过载冷却中: account_id={}, until={}", accountId, account.getOverloadUntil());
+            return null;
+        }
+        return account;
     }
 
     /**
      * 选择最佳账户处理指定模型的请求。
      * <p>
-     * 不按 platform 过滤。AccountSelector 只管"这个号能不能服务这个模型"。
+     * 按 Group Provider 过滤账号阵营。
      *
      * @param group 分组实体
      * @param model 请求的模型名称
@@ -161,19 +204,22 @@ public class AccountSelector {
             for (AccountFilter filter : filterChain) {
                 if (!filter.pass(account, group, model)) {
                     passed = false;
-                    log.debug("Account filtered out by {}: account_id={}, name={}",
-                            filter.name(), account.getId(), account.getName());
+                    log.info("账户被 {} 过滤: account_id={}, name={}, platform={}",
+                            filter.name(), account.getId(), account.getName(), account.getPlatform());
                     break;
                 }
             }
             if (!passed) continue;
 
             double loadRate = calcLoadRate(account);
+            log.debug("账户通过过滤: account_id={}, name={}, priority={}, load_rate={}, active={}, max={}",
+                    account.getId(), account.getName(), link.getPriority(), String.format("%.2f", loadRate),
+                    concurrencyService.getActiveCount(account.getId()), account.getConcurrency());
             candidates.add(new Candidate(account, link.getPriority(), loadRate));
         }
 
         if (candidates.isEmpty()) {
-            log.warn("No available account for group: group_id={}", group.getId());
+            log.warn("无可用账户: group={}, model={}, 总绑定数={}", group.getName(), model, links.size());
             return null;
         }
 
@@ -185,10 +231,9 @@ public class AccountSelector {
                         ? Instant.EPOCH : c.account.getLastUsedAt()));
 
         AccountEntity selected = candidates.get(0).account;
-        log.info("Account selected: account_id={}, name={}, platform={}, priority={}, load_rate={}",
+        log.info("账户选择完成: account_id={}, name={}, platform={}, priority={}, load_rate={}, 候选数={}",
                 selected.getId(), selected.getName(), selected.getPlatform(),
-                candidates.get(0).priority,
-                String.format("%.2f", candidates.get(0).loadRate));
+                candidates.get(0).priority, String.format("%.2f", candidates.get(0).loadRate), candidates.size());
         return selected;
     }
 
@@ -215,9 +260,13 @@ public class AccountSelector {
         try {
             List<String> excluded = OBJECT_MAPPER.readValue(
                     excludedJson, new TypeReference<List<String>>() {});
-            return excluded.contains(model);
+            boolean result = excluded.contains(model);
+            if (result) {
+                log.info("模型被分组排除: model={}, group={}, excluded_list={}", model, group.getName(), excluded);
+            }
+            return result;
         } catch (Exception e) {
-            log.debug("Failed to parse excludedModels for group: group_id={}", group.getId(), e);
+            log.debug("解析 excludedModels 失败: group_id={}", group.getId(), e);
             return false;
         }
     }
@@ -229,10 +278,11 @@ public class AccountSelector {
      * {@code ["*"]} → 通配符，支持所有模型，返回 {@code true}。
      * 其他 → model 必须在白名单中。
      */
-    private boolean isModelSupportedByAccount(AccountEntity account, String model) {
+    public boolean isModelSupportedByAccount(AccountEntity account, String model) {
         String supportedJson = account.getSupportedModels();
         // null / 空字符串 / 空数组 [] = 不支持任何模型
         if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {
+            log.info("账户无模型白名单: account_id={}, name={}, supported_models=空", account.getId(), account.getName());
             return false;
         }
         try {
@@ -242,9 +292,14 @@ public class AccountSelector {
             if (supported.contains("*")) {
                 return true;
             }
-            return supported.contains(model);
+            boolean result = supported.contains(model);
+            if (!result) {
+                log.info("模型不在账户白名单: model={}, account_id={}, name={}, supported={}",
+                        model, account.getId(), account.getName(), supported);
+            }
+            return result;
         } catch (Exception e) {
-            log.debug("Failed to parse supportedModels for account: account_id={}", account.getId(), e);
+            log.debug("解析 supportedModels 失败: account_id={}", account.getId(), e);
             return false;
         }
     }
@@ -390,11 +445,34 @@ public class AccountSelector {
     }
 
     public void markRateLimited(Long accountId, Instant resetAt) {
+        markRateLimited(accountId, resetAt, true);
+    }
+
+    /**
+     * 标记账号进入限流冷却。
+     * <p>
+     * 上游明确返回 Retry-After 时尊重更长冷却；未返回 Retry-After 时，如果账号仍在冷却中，
+     * 不刷新 reset_at，避免客户端连续重试导致冷却窗口无限顺延。
+     */
+    public void markRateLimited(Long accountId, Instant resetAt, boolean explicitRetryAfter) {
         accountRepository.findById(accountId).ifPresent(a -> {
-            a.setRateLimitedAt(Instant.now());
-            a.setRateLimitResetAt(resetAt);
+            Instant currentResetAt = a.getRateLimitResetAt();
+            Instant now = Instant.now();
+            if (!explicitRetryAfter && currentResetAt != null && currentResetAt.isAfter(now)) {
+                log.info("Account already rate-limited, keep existing reset_at: id={}, name={}, reset_at={}",
+                        accountId, a.getName(), currentResetAt);
+                return;
+            }
+
+            Instant effectiveResetAt = resetAt;
+            if (explicitRetryAfter && currentResetAt != null && currentResetAt.isAfter(resetAt)) {
+                effectiveResetAt = currentResetAt;
+            }
+
+            a.setRateLimitedAt(now);
+            a.setRateLimitResetAt(effectiveResetAt);
             accountRepository.save(a);
-            log.info("Account rate-limited: id={}, name={}, reset_at={}", accountId, a.getName(), resetAt);
+            log.info("Account rate-limited: id={}, name={}, reset_at={}", accountId, a.getName(), effectiveResetAt);
         });
     }
 
@@ -413,6 +491,19 @@ public class AccountSelector {
             accountRepository.save(a);
             log.info("Account temp-unschedulable: id={}, name={}, until={}, reason={}",
                     accountId, a.getName(), until, reason);
+        });
+    }
+
+    /**
+     * 将账号标记为 ERROR 状态 —— 用于凭证级永久故障（API Key 吊销、OAuth 无 refresh_token 等）。
+     * 不会自动恢复，需要管理员手动介入。
+     */
+    public void markError(Long accountId, String reason) {
+        accountRepository.findById(accountId).ifPresent(a -> {
+            a.setStatus(com.landgate.types.enums.Status.ERROR);
+            a.setErrorMessage(reason);
+            accountRepository.save(a);
+            log.warn("Account marked ERROR: id={}, name={}, reason={}", accountId, a.getName(), reason);
         });
     }
 }

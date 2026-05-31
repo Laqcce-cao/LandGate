@@ -59,17 +59,23 @@ public class ConcurrencyService {
         // 前置检查：无可用槽位时直接返回，不做无效等待
         int available = semaphore.availablePermits();
         if (available <= 0) {
-            log.debug("Concurrency slot full (skip wait): account_id={}, max={}", accountId, maxConcurrency);
+            log.info("并发槽位已满(快速失败): account_id={}, max={}, available={}",
+                    accountId, maxConcurrency, available);
             return null;
         }
 
+        log.debug("开始等待并发槽位: account_id={}, available={}, max={}",
+                accountId, available, maxConcurrency);
+
         long baseWaitMs = BASE_WAIT_MS;
         long deadline = System.currentTimeMillis() + MAX_WAIT_SECONDS * 1000L;
+        int waitIteration = 0;
 
         while (true) {
             long remaining = deadline - System.currentTimeMillis();
             if (remaining <= 0) {
-                log.warn("Concurrency slot timeout: account_id={}, max={}", accountId, maxConcurrency);
+                log.warn("并发槽位等待超时: account_id={}, max={}, 等待{}ms",
+                        accountId, maxConcurrency, MAX_WAIT_SECONDS * 1000L);
                 return null;
             }
 
@@ -77,19 +83,22 @@ public class ConcurrencyService {
                 long pollMs = Math.min(remaining, MAX_POLL_MS);
                 String permitId = semaphore.tryAcquire(pollMs, PERMIT_LEASE_SECONDS, TimeUnit.SECONDS);
                 if (permitId != null) {
-                    log.debug("Concurrency slot acquired: account_id={}, permit_id={}, available={}",
-                            accountId, permitId, semaphore.availablePermits());
+                    log.info("并发槽位获取成功: account_id={}, available_after={}, wait_iterations={}",
+                            accountId, semaphore.availablePermits(), waitIteration);
                     return ConcurrencySlot.of(permitId, accountId);
                 }
+                waitIteration++;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                log.warn("Concurrency wait interrupted: account_id={}", accountId);
+                log.warn("并发等待被中断: account_id={}", accountId);
                 return null;
             }
 
             // 指数退避 + ±20% jitter
             double jitter = baseWaitMs * JITTER_FACTOR * (ThreadLocalRandom.current().nextDouble() * 2 - 1);
             long sleepMs = (long) (baseWaitMs + jitter);
+            log.debug("并发槽位重试: account_id={}, iteration={}, backoff={}ms",
+                    accountId, waitIteration, sleepMs);
             baseWaitMs = (long) Math.min(baseWaitMs * BACKOFF_MULTIPLIER, MAX_POLL_MS);
 
             try {
@@ -113,8 +122,8 @@ public class ConcurrencyService {
         RPermitExpirableSemaphore semaphore = redissonClient.getPermitExpirableSemaphore(
                 SEMAPHORE_PREFIX + slot.getAccountId());
         semaphore.release(slot.getPermitId());
-        log.debug("Concurrency slot released: account_id={}, permit_id={}, available={}",
-                slot.getAccountId(), slot.getPermitId(), semaphore.availablePermits());
+        log.info("并发槽位释放: account_id={}, available_after={}",
+                slot.getAccountId(), semaphore.availablePermits());
     }
 
     /**

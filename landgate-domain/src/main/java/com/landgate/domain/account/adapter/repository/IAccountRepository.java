@@ -58,4 +58,8 @@ public interface IAccountRepository {
      * @return 全部账户列表
      */
     List<AccountEntity> findAll();
+
+    long count();
+
+    long countByStatus(String status);
 }

@@ -74,4 +74,14 @@ public class AccountRepositoryImpl implements IAccountRepository {
                 .map(accountMapper::toEntity)
                 .collect(Collectors.toList());
     }
+
+    @Override
+    public long count() {
+        return accountDao.countAll();
+    }
+
+    @Override
+    public long countByStatus(String status) {
+        return accountDao.countByStatus(status);
+    }
 }

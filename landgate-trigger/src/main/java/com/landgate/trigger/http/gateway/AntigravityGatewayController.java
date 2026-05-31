@@ -1,5 +1,6 @@
 package com.landgate.trigger.http.gateway;
 
+import com.landgate.trigger.gateway.GatewayDispatcher;
 import com.landgate.trigger.gateway.IGatewayHandler;
 import com.landgate.trigger.gateway.GatewayHandlerFactory;
 import com.landgate.types.enums.Platform;
@@ -29,10 +30,12 @@ public class AntigravityGatewayController {
                          HttpServletRequest request,
                          HttpServletResponse response) throws IOException {
         log.info("POST /antigravity/v1/messages: content_length={}", body != null ? body.length() : 0);
-        IGatewayHandler handler = resolveHandler(request);
-        if (handler != null) {
-            handler.handle(body, request, response);
-        }
+        // 显式标记请求平台为 ANTIGRAVITY，路由到独立的 AntigravityGatewayHandler，
+        // 避免与 Anthropic 平台共用 Handler 导致 OAuth 伪装等专属逻辑误触发。
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM, Platform.ANTIGRAVITY);
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT, "messages");
+        IGatewayHandler handler = factory.getHandler(Platform.ANTIGRAVITY);
+        handler.handle(body, request, response);
     }
 
     @PostMapping("/antigravity/v1/chat/completions")
@@ -40,10 +43,12 @@ public class AntigravityGatewayController {
                                  HttpServletRequest request,
                                  HttpServletResponse response) throws IOException {
         log.info("POST /antigravity/v1/chat/completions");
-        IGatewayHandler handler = resolveHandler(request);
-        if (handler != null) {
-            handler.handle(body, request, response);
-        }
+        // Antigravity 平台的 Chat Completions 端点：客户端格式为 chat_completions，
+        // platform 仍为 ANTIGRAVITY（账号归属由 platform 决定，请求格式由 format 决定）。
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM, Platform.ANTIGRAVITY);
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT, "chat_completions");
+        IGatewayHandler handler = factory.getHandler(Platform.ANTIGRAVITY);
+        handler.handle(body, request, response);
     }
 
     @PostMapping("/antigravity/v1beta/models/{modelPath}/**")
@@ -57,18 +62,11 @@ public class AntigravityGatewayController {
         request.setAttribute(ATTR_GATEWAY_UPSTREAM_PATH,
                 request.getServletPath().replace("/antigravity", ""));
 
-        // Antigravity Gemini 路由强制使用 Gemini 处理器
+        // Antigravity Gemini 路由：请求格式为 Gemini，仍直接走 Gemini Handler（独立路径，
+        // 不经过 Antigravity Handler；Gemini 不存在 OAuth 伪装问题）。
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM, Platform.GEMINI);
+        request.setAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT, "gemini");
         IGatewayHandler handler = factory.getHandler(Platform.GEMINI);
         handler.handle(body, request, response);
-    }
-
-    private IGatewayHandler resolveHandler(HttpServletRequest request) {
-        // 根据 URL 路径决定平台处理器
-        String path = request.getServletPath();
-        if (path.contains("/chat/completions")) {
-            return factory.getHandler(Platform.OPENAI);
-        }
-        // 默认使用 Anthropic 处理器（/v1/messages）
-        return factory.getHandler(Platform.ANTHROPIC);
     }
 }

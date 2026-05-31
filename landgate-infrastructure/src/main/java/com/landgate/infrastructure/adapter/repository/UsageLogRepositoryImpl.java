@@ -1,14 +1,11 @@
 package com.landgate.infrastructure.adapter.repository;
 
-import com.landgate.api.billing.dto.DailyUsageStats;
-import com.landgate.api.billing.dto.UserUsageSummary;
+import com.landgate.api.billing.dto.*;
 import com.landgate.domain.billing.adapter.repository.IUsageLogRepository;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.infrastructure.adapter.mapper.UsageLogMapper;
 import com.landgate.infrastructure.dao.IUsageLogDao;
-import com.landgate.infrastructure.dao.po.DailyUsageStatsPO;
-import com.landgate.infrastructure.dao.po.UsageLogPO;
-import com.landgate.infrastructure.dao.po.UserUsageSummaryPO;
+import com.landgate.infrastructure.dao.po.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -107,6 +104,18 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
     }
 
     @Override
+    public void updateBillingStatus(Long id, String billingStatus, String billingError) {
+        usageLogDao.updateBillingStatus(id, billingStatus, billingError);
+    }
+
+    @Override
+    public List<UsageLogEntity> findByBillingStatusBefore(String billingStatus, Instant cutoff, int limit) {
+        return usageLogDao.selectByBillingStatusBefore(billingStatus, cutoff, limit).stream()
+                .map(usageLogMapper::toEntity)
+                .collect(Collectors.toList());
+    }
+
+    @Override
     public List<UsageLogEntity> findAll(int page, int size) {
         int offset = page * size;
         return usageLogDao.selectAll(offset, size).stream()
@@ -130,6 +139,72 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
     public List<DailyUsageStats> aggregateByUserAndDate(Long userId, LocalDate start, LocalDate end) {
         return usageLogDao.aggregateByUserAndDate(userId, start.toString(), end.toString()).stream()
                 .map(this::toDailyUsageStats)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public long countByDateRange(Instant start, Instant end) {
+        return usageLogDao.countByDateRange(start, end);
+    }
+
+    @Override
+    public double avgDurationByDateRange(Instant start, Instant end) {
+        return usageLogDao.avgDurationByDateRange(start, end);
+    }
+
+    @Override
+    public TokenCostSummary sumTokensAndCostByDateRange(Instant start, Instant end) {
+        TokenCostSummaryPO po = usageLogDao.sumTokensAndCostByDateRange(start, end);
+        if (po == null) return new TokenCostSummary(0L, java.math.BigDecimal.ZERO);
+        return new TokenCostSummary(po.getTotalTokens(), po.getTotalCost());
+    }
+
+    @Override
+    public List<PlatformDailyStats> aggregatePlatformByDate(Instant start, Instant end) {
+        return usageLogDao.aggregateByDate(start, end).stream()
+                .map(po -> new PlatformDailyStats(
+                        po.getDate(), po.getInputTokens(), po.getOutputTokens(),
+                        po.getCacheReadTokens(), po.getCacheCreationTokens(), po.getCallCount()))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<ModelStats> aggregateByModel(Instant start, Instant end) {
+        return usageLogDao.aggregateByModel(start, end).stream()
+                .map(po -> new ModelStats(po.getModel(), po.getTotalTokens(), po.getTotalCost(), po.getCallCount()))
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public List<UserDailyStats> aggregateTopUsersByDate(Instant start, Instant end, int topN) {
+        return usageLogDao.aggregateTopUsersByDate(start, end, topN).stream()
+                .map(po -> new UserDailyStats(po.getUserId(), po.getDate(), po.getTotalTokens()))
+                .collect(Collectors.toList());
+    }
+
+    // ---- 用户仪表盘聚合查询 ----
+
+    @Override
+    public long countByUserIdAndDateRange(Long userId, Instant start, Instant end) {
+        return usageLogDao.countByUserIdAndDateRange(userId, start, end);
+    }
+
+    @Override
+    public double avgDurationByUserIdAndDateRange(Long userId, Instant start, Instant end) {
+        return usageLogDao.avgDurationByUserIdAndDateRange(userId, start, end);
+    }
+
+    @Override
+    public TokenCostSummary sumTokensAndCostByUserIdAndDateRange(Long userId, Instant start, Instant end) {
+        TokenCostSummaryPO po = usageLogDao.sumTokensAndCostByUserIdAndDateRange(userId, start, end);
+        if (po == null) return new TokenCostSummary(0L, java.math.BigDecimal.ZERO);
+        return new TokenCostSummary(po.getTotalTokens(), po.getTotalCost());
+    }
+
+    @Override
+    public List<ModelStats> aggregateByUserIdAndModel(Long userId, Instant start, Instant end) {
+        return usageLogDao.aggregateByUserIdAndModel(userId, start, end).stream()
+                .map(po -> new ModelStats(po.getModel(), po.getTotalTokens(), po.getTotalCost(), po.getCallCount()))
                 .collect(Collectors.toList());
     }
 

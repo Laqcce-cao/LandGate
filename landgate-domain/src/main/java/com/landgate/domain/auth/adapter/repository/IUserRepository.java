@@ -85,4 +85,9 @@ public interface IUserRepository {
      * @return 受影响的行数
      */
     int updateBalance(Long id, java.math.BigDecimal newBalance);
+
+    /**
+     * 统计指定时间之后注册的用户数
+     */
+    long countByCreatedAtAfter(java.time.Instant after);
 }

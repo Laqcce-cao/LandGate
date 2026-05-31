@@ -123,4 +123,8 @@
         </if>
     </select>
 
+    <select id="countByCreatedAtAfter" resultType="long">
+        SELECT COUNT(*) FROM users WHERE created_at &gt;= #{after} AND deleted_at IS NULL
+    </select>
+
 </mapper>

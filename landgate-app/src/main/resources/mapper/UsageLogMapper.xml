@@ -37,6 +37,9 @@
         <result column="ip_address"              property="ipAddress"/>
         <result column="image_count"             property="imageCount"/>
         <result column="image_size"             property="imageSize"/>
+        <result column="billing_status"         property="billingStatus"/>
+        <result column="billing_error"          property="billingError"/>
+        <result column="client_disconnected"    property="clientDisconnected"/>
         <result column="created_at"              property="createdAt"/>
     </resultMap>
 
@@ -56,7 +59,7 @@
             cache_creation_5m_cost, cache_creation_1h_cost,
             total_cost, actual_cost, rate_multiplier,
             stream, duration_ms, first_token_ms, user_agent, ip_address,
-            image_count, image_size, created_at
+            image_count, image_size, billing_status, billing_error, client_disconnected, created_at
         ) VALUES (
             #{userId}, #{apiKeyId}, #{accountId}, #{groupId}, #{subscriptionId},
             #{requestId}, #{model}, #{platform}, #{requestedModel}, #{upstreamModel}, #{billingMode},
@@ -66,9 +69,24 @@
             #{cacheCreation5mCost}, #{cacheCreation1hCost},
             #{totalCost}, #{actualCost}, #{rateMultiplier},
             #{stream}, #{durationMs}, #{firstTokenMs}, #{userAgent}, #{ipAddress},
-            #{imageCount}, #{imageSize}, NOW()
+            #{imageCount}, #{imageSize}, #{billingStatus}, #{billingError}, #{clientDisconnected}, NOW()
         )
     </insert>
+
+    <update id="updateBillingStatus">
+        UPDATE usage_logs
+        SET billing_status = #{billingStatus},
+            billing_error = #{billingError}
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectByBillingStatusBefore" resultMap="UsageLogResultMap">
+        SELECT * FROM usage_logs
+        WHERE billing_status = #{billingStatus}
+          AND created_at &lt; #{cutoff}
+        ORDER BY created_at ASC
+        LIMIT #{limit}
+    </select>
 
     <select id="selectAll" resultMap="UsageLogResultMap">
         SELECT * FROM usage_logs ORDER BY created_at DESC LIMIT #{size} OFFSET #{offset}
@@ -178,6 +196,188 @@
                 <otherwise>total_cost</otherwise>
             </choose>
             ${sortDir}
+    </select>
+
+    <!-- ==================== 仪表盘聚合统计 ==================== -->
+
+    <select id="countByDateRange" resultType="long">
+        SELECT COUNT(*) FROM usage_logs
+        WHERE created_at &gt;= #{start} AND created_at &lt; #{end}
+    </select>
+
+    <select id="avgDurationByDateRange" resultType="double">
+        SELECT COALESCE(AVG(duration_ms), 0) FROM usage_logs
+        WHERE created_at &gt;= #{start} AND created_at &lt; #{end}
+          AND duration_ms IS NOT NULL
+    </select>
+
+    <resultMap id="TokenCostSummaryResultMap" type="com.landgate.infrastructure.dao.po.TokenCostSummaryPO">
+        <result column="total_tokens" property="totalTokens"/>
+        <result column="total_cost"   property="totalCost"/>
+    </resultMap>
+
+    <select id="sumTokensAndCostByDateRange" resultMap="TokenCostSummaryResultMap">
+        SELECT
+            COALESCE(SUM(
+                input_tokens + output_tokens
+                + COALESCE(cache_read_tokens, 0)
+                + CASE
+                    WHEN COALESCE(cache_creation_5m_tokens, 0) > 0
+                      OR COALESCE(cache_creation_1h_tokens, 0) > 0
+                    THEN COALESCE(cache_creation_5m_tokens, 0)
+                       + COALESCE(cache_creation_1h_tokens, 0)
+                    ELSE COALESCE(cache_creation_tokens, 0)
+                  END
+            ), 0) AS total_tokens,
+            COALESCE(SUM(total_cost), 0) AS total_cost
+        FROM usage_logs
+        WHERE created_at &gt;= #{start} AND created_at &lt; #{end}
+    </select>
+
+    <resultMap id="PlatformDailyStatsResultMap" type="com.landgate.infrastructure.dao.po.PlatformDailyStatsPO">
+        <result column="date"                    property="date"/>
+        <result column="input_tokens"            property="inputTokens"/>
+        <result column="output_tokens"           property="outputTokens"/>
+        <result column="cache_read_tokens"       property="cacheReadTokens"/>
+        <result column="cache_creation_tokens"   property="cacheCreationTokens"/>
+        <result column="call_count"              property="callCount"/>
+    </resultMap>
+
+    <select id="aggregateByDate" resultMap="PlatformDailyStatsResultMap">
+        SELECT
+            DATE(created_at) AS date,
+            COALESCE(SUM(input_tokens), 0)            AS input_tokens,
+            COALESCE(SUM(output_tokens), 0)           AS output_tokens,
+            COALESCE(SUM(cache_read_tokens), 0)       AS cache_read_tokens,
+            COALESCE(SUM(cache_creation_tokens), 0)   AS cache_creation_tokens,
+            COUNT(*) AS call_count
+        FROM usage_logs
+        WHERE created_at &gt;= #{start} AND created_at &lt; #{end}
+        GROUP BY DATE(created_at)
+        ORDER BY date
+    </select>
+
+    <resultMap id="ModelStatsResultMap" type="com.landgate.infrastructure.dao.po.ModelStatsPO">
+        <result column="model"        property="model"/>
+        <result column="total_tokens" property="totalTokens"/>
+        <result column="total_cost"   property="totalCost"/>
+        <result column="call_count"   property="callCount"/>
+    </resultMap>
+
+    <select id="aggregateByModel" resultMap="ModelStatsResultMap">
+        SELECT
+            model,
+            COALESCE(SUM(
+                input_tokens + output_tokens
+                + COALESCE(cache_read_tokens, 0)
+                + CASE
+                    WHEN COALESCE(cache_creation_5m_tokens, 0) > 0
+                      OR COALESCE(cache_creation_1h_tokens, 0) > 0
+                    THEN COALESCE(cache_creation_5m_tokens, 0)
+                       + COALESCE(cache_creation_1h_tokens, 0)
+                    ELSE COALESCE(cache_creation_tokens, 0)
+                  END
+            ), 0) AS total_tokens,
+            COALESCE(SUM(total_cost), 0) AS total_cost,
+            COUNT(*) AS call_count
+        FROM usage_logs
+        WHERE created_at &gt;= #{start} AND created_at &lt; #{end}
+        GROUP BY model
+        ORDER BY total_tokens DESC
+    </select>
+
+    <resultMap id="UserDailyStatsResultMap" type="com.landgate.infrastructure.dao.po.UserDailyStatsPO">
+        <result column="user_id"      property="userId"/>
+        <result column="date"         property="date"/>
+        <result column="total_tokens" property="totalTokens"/>
+    </resultMap>
+
+    <select id="aggregateTopUsersByDate" resultMap="UserDailyStatsResultMap">
+        SELECT
+            ul.user_id,
+            DATE(ul.created_at) AS date,
+            COALESCE(SUM(
+                ul.input_tokens + ul.output_tokens
+                + COALESCE(ul.cache_read_tokens, 0)
+                + CASE
+                    WHEN COALESCE(ul.cache_creation_5m_tokens, 0) > 0
+                      OR COALESCE(ul.cache_creation_1h_tokens, 0) > 0
+                    THEN COALESCE(ul.cache_creation_5m_tokens, 0)
+                       + COALESCE(ul.cache_creation_1h_tokens, 0)
+                    ELSE COALESCE(ul.cache_creation_tokens, 0)
+                  END
+            ), 0) AS total_tokens
+        FROM usage_logs ul
+        INNER JOIN (
+            SELECT user_id
+            FROM usage_logs
+            WHERE created_at &gt;= #{start} AND created_at &lt; #{end}
+            GROUP BY user_id
+            ORDER BY SUM(input_tokens + output_tokens
+                + COALESCE(cache_read_tokens, 0)
+                + COALESCE(cache_creation_tokens, 0)) DESC
+            LIMIT #{topN}
+        ) top_users ON ul.user_id = top_users.user_id
+        WHERE ul.created_at &gt;= #{start} AND ul.created_at &lt; #{end}
+        GROUP BY ul.user_id, DATE(ul.created_at)
+        ORDER BY ul.user_id, date
+    </select>
+
+    <!-- ==================== 用户仪表盘聚合 ==================== -->
+
+    <select id="countByUserIdAndDateRange" resultType="long">
+        SELECT COUNT(*) FROM usage_logs
+        WHERE user_id = #{userId}
+          AND created_at &gt;= #{start} AND created_at &lt; #{end}
+    </select>
+
+    <select id="avgDurationByUserIdAndDateRange" resultType="double">
+        SELECT COALESCE(AVG(duration_ms), 0) FROM usage_logs
+        WHERE user_id = #{userId}
+          AND created_at &gt;= #{start} AND created_at &lt; #{end}
+          AND duration_ms IS NOT NULL
+    </select>
+
+    <select id="sumTokensAndCostByUserIdAndDateRange" resultMap="TokenCostSummaryResultMap">
+        SELECT
+            COALESCE(SUM(
+                input_tokens + output_tokens
+                + COALESCE(cache_read_tokens, 0)
+                + CASE
+                    WHEN COALESCE(cache_creation_5m_tokens, 0) > 0
+                      OR COALESCE(cache_creation_1h_tokens, 0) > 0
+                    THEN COALESCE(cache_creation_5m_tokens, 0)
+                       + COALESCE(cache_creation_1h_tokens, 0)
+                    ELSE COALESCE(cache_creation_tokens, 0)
+                  END
+            ), 0) AS total_tokens,
+            COALESCE(SUM(total_cost), 0) AS total_cost
+        FROM usage_logs
+        WHERE user_id = #{userId}
+          AND created_at &gt;= #{start} AND created_at &lt; #{end}
+    </select>
+
+    <select id="aggregateByUserIdAndModel" resultMap="ModelStatsResultMap">
+        SELECT
+            model,
+            COALESCE(SUM(
+                input_tokens + output_tokens
+                + COALESCE(cache_read_tokens, 0)
+                + CASE
+                    WHEN COALESCE(cache_creation_5m_tokens, 0) > 0
+                      OR COALESCE(cache_creation_1h_tokens, 0) > 0
+                    THEN COALESCE(cache_creation_5m_tokens, 0)
+                       + COALESCE(cache_creation_1h_tokens, 0)
+                    ELSE COALESCE(cache_creation_tokens, 0)
+                  END
+            ), 0) AS total_tokens,
+            COALESCE(SUM(total_cost), 0) AS total_cost,
+            COUNT(*) AS call_count
+        FROM usage_logs
+        WHERE user_id = #{userId}
+          AND created_at &gt;= #{start} AND created_at &lt; #{end}
+        GROUP BY model
+        ORDER BY total_tokens DESC
     </select>
 
     <!-- ==================== 按天聚合统计 ==================== -->

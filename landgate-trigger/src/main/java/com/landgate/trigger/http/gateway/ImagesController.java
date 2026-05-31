@@ -2,6 +2,7 @@ package com.landgate.trigger.http.gateway;
 
 import com.landgate.api.images.dto.OpenAIImagesRequest;
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.domain.group.model.entity.GroupEntity;
@@ -285,20 +286,49 @@ public class ImagesController {
                         // 解析费率倍率（优先图片独立倍率）
                         BigDecimal rateMultiplier = resolveImageRateMultiplier(group);
 
-                        billingDomainService.calculateImageCost(
-                                model, imageSize, imageCount,
-                                group, rateMultiplier,
-                                userId, apiKeyId, account.getId(),
-                                requestId, parsed.isStream(), durationMs,
-                                request.getHeader("User-Agent"),
-                                request.getRemoteAddr());
+                        UsageLogEntity logEntry;
+                        try {
+                            logEntry = billingDomainService.calculateImageCost(
+                                    model, imageSize, imageCount,
+                                    group, rateMultiplier,
+                                    userId, apiKeyId, account.getId(),
+                                    requestId, parsed.isStream(), durationMs,
+                                    request.getHeader("User-Agent"),
+                                    request.getRemoteAddr());
+                        } catch (Exception e) {
+                            log.error("Image usage log save failed, cannot deduct: request_id={}, user_id={}, model={}",
+                                    requestId, userId, model, e);
+                            return;
+                        }
 
                         // 扣减余额 + 累加 API Key 已用额度
                         if (imageCount > 0) {
-                            BigDecimal actualCost = calculateActualImageCost(
-                                    group, imageSize, imageCount, rateMultiplier);
-                            balanceDomainService.deduct(userId, actualCost);
-                            billingDomainService.accumulateQuota(apiKeyId, actualCost);
+                            boolean deducted = false;
+                            try {
+                                try {
+                                    billingDomainService.markLogSettling(logEntry.getId());
+                                    balanceDomainService.deduct(userId, logEntry.getActualCost());
+                                    deducted = true;
+                                } catch (Exception e) {
+                                    log.error("Image billing deduction failed, log saved for reconciliation: log_id={}, user_id={}, cost={}",
+                                            logEntry.getId(), userId, logEntry.getActualCost(), e);
+                                    billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
+                                    return;
+                                }
+
+                                billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
+                                billingDomainService.markLogDeducted(logEntry.getId());
+                            } catch (Exception e) {
+                                log.error("Image billing post-deduction failed, log remains SETTLING for manual reconciliation: log_id={}, user_id={}, cost={}, deducted={}",
+                                        logEntry.getId(), userId, logEntry.getActualCost(), deducted, e);
+                                if (deducted) {
+                                    billingDomainService.markLogSettlingFailed(logEntry.getId(), e.getMessage());
+                                } else {
+                                    billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
+                                }
+                            }
+                        } else {
+                            billingDomainService.markLogDeducted(logEntry.getId());
                         }
 
                         return; // Success
@@ -394,47 +424,4 @@ public class ImagesController {
         return group != null ? group.getRateMultiplier() : BigDecimal.ONE;
     }
 
-    /**
-     * 计算图片实际扣费金额。
-     * <p>
-     * 与 BillingDomainService.calculateImageCost 保持一致的定价逻辑。
-     *
-     * @param group          分组实体
-     * @param imageSize      尺寸等级
-     * @param imageCount     图片数量
-     * @param rateMultiplier 倍率
-     * @return 实际扣费金额
-     */
-    private BigDecimal calculateActualImageCost(GroupEntity group, String imageSize,
-                                                  int imageCount, BigDecimal rateMultiplier) {
-        if (imageCount <= 0) return BigDecimal.ZERO;
-
-        // 获取单价（优先组级定价）
-        BigDecimal unitPrice = new BigDecimal("0.04"); // 默认 $0.04
-        if (group != null) {
-            BigDecimal groupPrice = switch (imageSize != null ? imageSize : "2K") {
-                case "1K" -> group.getImagePrice1k();
-                case "2K" -> group.getImagePrice2k();
-                case "4K" -> group.getImagePrice4k();
-                default -> null;
-            };
-            if (groupPrice != null && groupPrice.compareTo(BigDecimal.ZERO) > 0) {
-                unitPrice = groupPrice;
-            }
-        }
-
-        // 尺寸倍率
-        BigDecimal sizeMultiplier = switch (imageSize != null ? imageSize : "2K") {
-            case "2K" -> new BigDecimal("1.5");
-            case "4K" -> new BigDecimal("2.0");
-            default -> BigDecimal.ONE;
-        };
-
-        BigDecimal multiplier = rateMultiplier != null && rateMultiplier.compareTo(BigDecimal.ZERO) >= 0
-                ? rateMultiplier : BigDecimal.ZERO;
-
-        return unitPrice.multiply(BigDecimal.valueOf(imageCount))
-                .multiply(sizeMultiplier)
-                .multiply(multiplier);
-    }
 }
