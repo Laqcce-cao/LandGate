@@ -3,7 +3,6 @@ package com.landgate.trigger.gateway;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
-import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
@@ -18,6 +17,7 @@ import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
 import com.landgate.trigger.gateway.oauth.ClaudeCodeOnlyException;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
+import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
@@ -72,6 +72,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final FingerprintService fingerprintService;
     protected final UpstreamCapabilityService upstreamCapabilityService;
     protected final UpstreamRouteResolver upstreamRouteResolver;
+    protected final GatewayBillingSettlementService billingSettlementService;
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -98,7 +99,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
             UpstreamCapabilityService upstreamCapabilityService,
-            UpstreamRouteResolver upstreamRouteResolver) {
+            UpstreamRouteResolver upstreamRouteResolver,
+            GatewayBillingSettlementService billingSettlementService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -119,6 +121,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.fingerprintService = fingerprintService;
         this.upstreamCapabilityService = upstreamCapabilityService;
         this.upstreamRouteResolver = upstreamRouteResolver;
+        this.billingSettlementService = billingSettlementService;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -539,7 +542,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         log.info("[{}] 用量统计: input={}, output={}, cache_write={}, cache_read={}",
                                 requestId, usage.getInputTokens(), usage.getOutputTokens(),
                                 usage.getCacheCreationTokens(), usage.getCacheReadTokens());
-                        settleUsageLog(usage, model, accountPlatform.name(), userId, apiKeyId, account, group, user,
+                        billingSettlementService.settleUsageLog(usage, model, accountPlatform.name(), userId, apiKeyId, account, group, user,
                                 clientStream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
                                 request, requestId);
                     } else {
@@ -917,69 +920,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
     /** 流式响应处理结果，包含用量和客户端断开审计标记。 */
     protected record StreamingResult(UsageTokens usage, boolean clientDisconnected) {
-    }
-
-    /**
-     * 保存用量日志并完成余额扣减，失败时保留可对账状态，避免资损静默发生。
-     */
-    private void settleUsageLog(UsageTokens usage,
-                                String model,
-                                String platform,
-                                Long userId,
-                                Long apiKeyId,
-                                AccountEntity account,
-                                GroupEntity group,
-                                UserEntity user,
-                                boolean stream,
-                                boolean clientDisconnected,
-                                long durationMs,
-                                HttpServletRequest request,
-                                String requestId) {
-        UsageLogEntity logEntry;
-        try {
-            logEntry = billingDomainService.calculateAndBuildLog(
-                    usage, model, platform,
-                    userId, apiKeyId, account.getId(), group.getId(),
-                    group.getRateMultiplier(),
-                    stream, durationMs,
-                    request.getHeader("User-Agent"),
-                    request.getRemoteAddr(),
-                    clientDisconnected);
-        } catch (Exception e) {
-            log.error("[{}] 用量日志保存失败，无法扣费: user_id={}, model={}, usage={}",
-                    requestId, userId, model, usage, e);
-            return;
-        }
-
-        boolean deducted = false;
-        try {
-            if (!user.isPrivileged()) {
-                try {
-                    billingDomainService.markLogSettling(logEntry.getId());
-                    balanceDomainService.deduct(userId, logEntry.getActualCost());
-                    deducted = true;
-                    log.info("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
-                } catch (Exception e) {
-                    log.error("[{}] 扣费失败，日志已保留待对账: log_id={}, user_id={}, cost={}",
-                            requestId, logEntry.getId(), userId, logEntry.getActualCost(), e);
-                    billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
-                    return;
-                }
-            } else {
-                log.info("[{}] 特权用户跳过扣费: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
-            }
-
-            billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
-            billingDomainService.markLogDeducted(logEntry.getId());
-        } catch (Exception e) {
-            log.error("[{}] 扣费后处理失败，日志保持 SETTLING 待人工对账: log_id={}, user_id={}, cost={}, deducted={}",
-                    requestId, logEntry.getId(), userId, logEntry.getActualCost(), deducted, e);
-            if (deducted) {
-                billingDomainService.markLogSettlingFailed(logEntry.getId(), e.getMessage());
-            } else {
-                billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
-            }
-        }
     }
 
     /** 打印 OpenAI OAuth 上游限额相关响应头，用于确认 5h/7d 窗口的真实 header 名称。 */
