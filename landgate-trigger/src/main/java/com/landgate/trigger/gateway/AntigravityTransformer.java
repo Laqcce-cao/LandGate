@@ -1,14 +1,11 @@
 package com.landgate.trigger.gateway;
 
-import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.oauth.BillingHeaderService;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.oauth.UserIdRewriter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-
-import java.net.http.HttpRequest;
 
 /**
  * Antigravity 协议请求转换器 —— 构建转发至 Antigravity 上游的请求。
@@ -35,10 +32,4 @@ public class AntigravityTransformer extends AnthropicTransformer {
         super(fingerprintService, userIdRewriter, billingHeaderService, oAuthMimicryService);
     }
 
-    @Override
-    public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
-        // 直接复用 Anthropic 上游请求构建逻辑（URL + Authorization + anthropic-version 等）。
-        // 不在此处注入任何伪装头或重写 body —— 详见类级 Javadoc 中关于 Handler 层隔离的说明。
-        return super.buildUpstreamRequest(body, account, accessToken);
-    }
 }

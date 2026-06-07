@@ -11,6 +11,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -31,8 +32,11 @@ class OpenAiTransformerTest {
                 .platform(Platform.OPENAI)
                 .type(AccountType.API_KEY)
                 .build();
-        GatewayRequestContext.set(GatewayRequestContext.builder()
-                .upstreamRoute(new UpstreamRoute(
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                "{}",
+                account,
+                "token-1",
+                new UpstreamRoute(
                         Platform.OPENAI,
                         "responses",
                         "chat_completions",
@@ -42,16 +46,15 @@ class OpenAiTransformerTest {
                         false,
                         false,
                         "chat_completions",
-                        "test_route"))
-                .build());
+                        "test_route"),
+                null,
+                null,
+                null,
+                false,
+                false,
+                Map.of()));
 
-        try {
-            var request = transformer.buildUpstreamRequest("{}", account, "token-1");
-
-            assertEquals("https://proxy.example.com/v1/chat/completions", request.uri().toString());
-        } finally {
-            GatewayRequestContext.clear();
-        }
+        assertEquals("https://proxy.example.com/v1/chat/completions", request.uri().toString());
     }
 
     @Test

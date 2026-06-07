@@ -44,13 +44,13 @@ public class OpenAiTransformer implements IRequestTransformer {
     }
 
     @Override
-    public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
-        // 根据当前请求上下文中的 requestFormat 选择上游路径
-        GatewayRequestContext ctx = GatewayRequestContext.get();
-
+    public HttpRequest buildUpstreamRequest(UpstreamRequestContext context) {
+        String body = context.body();
+        AccountEntity account = context.account();
+        String accessToken = context.accessToken();
         String targetUrl;
         boolean isOAuth = account.getType() == AccountType.OAUTH;
-        UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
+        UpstreamRoute route = context.upstreamRoute();
 
         if (route != null) {
             targetUrl = route.targetUrl();

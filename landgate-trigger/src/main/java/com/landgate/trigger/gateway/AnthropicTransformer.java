@@ -52,20 +52,21 @@ public class AnthropicTransformer implements IRequestTransformer {
         this.oAuthMimicryService = oAuthMimicryService;
     }
 
-    public HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
-        GatewayRequestContext ctx = GatewayRequestContext.get();
-
+    public HttpRequest buildUpstreamRequest(UpstreamRequestContext context) {
+        String body = context.body();
+        AccountEntity account = context.account();
+        String accessToken = context.accessToken();
         // 如果上下文中存在 metadata.user_id（从原始 Anthropic 客户端请求提取的），
         // 重新注入到上游请求中（因为 Anthropic→Responses IR 转换会丢弃 metadata 字段）
-        if (ctx != null && ctx.getMetadataUserId() != null) {
-            body = injectMetadataUserId(body, ctx.getMetadataUserId());
+        if (context.metadataUserId() != null) {
+            body = injectMetadataUserId(body, context.metadataUserId());
         }
 
         // ========================
         // Phase B: OAuth 伪装（仅对 Anthropic 平台 OAuth/SetupToken 账号生效）
         // ========================
         if (isAnthropicOAuth(account)) {
-            java.util.Map<String, String> requestHeaders = extractRequestHeaders();
+            java.util.Map<String, String> requestHeaders = context.requestHeaders();
 
             // 1. 指纹管理
             FingerprintService.ClientFingerprint fp =
@@ -91,7 +92,7 @@ public class AnthropicTransformer implements IRequestTransformer {
             // 5. 同步 X-Claude-Code-Session-Id（真实 CC 客户端）
             // RewriteUserIDWithMasking 重写了 body 中 metadata.user_id 的 session_id，
             // 必须同步请求头中的 X-Claude-Code-Session-Id 为新 session_id
-            if (ctx != null && !ctx.isShouldMimicClaudeCode()) {
+            if (!context.shouldMimicClaudeCode()) {
                 String sessionHeader = requestHeaders != null
                         ? requestHeaders.get("X-Claude-Code-Session-Id") : null;
                 if (sessionHeader != null && !sessionHeader.isEmpty()) {
@@ -104,9 +105,9 @@ public class AnthropicTransformer implements IRequestTransformer {
         }
 
         String modelName = extractModel(body);
-        String targetUrl = resolveTargetUrl(account, ctx);
+        String targetUrl = resolveTargetUrl(account, context);
 
-        var headers = buildHeaders(account, accessToken, ctx);
+        var headers = buildHeaders(account, accessToken, context);
         log.debug("Building upstream request: url={}, model={}, account_id={}", targetUrl, modelName, account.getId());
 
         var requestBuilder = HttpRequest.newBuilder()
@@ -118,9 +119,9 @@ public class AnthropicTransformer implements IRequestTransformer {
 
         // 6. 应用伪装头 + 指纹头（Phase B 的 header 级操作）
         if (isAnthropicOAuth(account)) {
-            if (ctx != null && ctx.isShouldMimicClaudeCode()) {
+            if (context.shouldMimicClaudeCode()) {
                 oAuthMimicryService.applyClaudeCodeMimicHeaders(requestBuilder,
-                        ctx.isStream(), modelName);
+                        context.stream(), modelName);
             } else {
                 // 真实 CC 客户端：仅应用基础 OAuth 头 + 指纹头
                 oAuthMimicryService.applyOAuthHeaderDefaults(requestBuilder);
@@ -131,9 +132,9 @@ public class AnthropicTransformer implements IRequestTransformer {
     }
 
     /** 解析上游目标地址，正常网关路径优先使用策略路由结果。 */
-    private String resolveTargetUrl(AccountEntity account, GatewayRequestContext ctx) {
-        if (ctx != null && ctx.getUpstreamRoute() != null && ctx.getUpstreamRoute().targetUrl() != null) {
-            return ctx.getUpstreamRoute().targetUrl();
+    private String resolveTargetUrl(AccountEntity account, UpstreamRequestContext context) {
+        if (context.upstreamRoute() != null && context.upstreamRoute().targetUrl() != null) {
+            return context.upstreamRoute().targetUrl();
         }
         String targetUrl = ANTHROPIC_API_URL;
         if (account.getExtra() != null && !account.getExtra().equals("{}")) {
@@ -149,7 +150,7 @@ public class AnthropicTransformer implements IRequestTransformer {
         return targetUrl;
     }
 
-    private String[] buildHeaders(AccountEntity account, String accessToken, GatewayRequestContext ctx) {
+    private String[] buildHeaders(AccountEntity account, String accessToken, UpstreamRequestContext context) {
         var headers = new ArrayList<String>();
         if (account.getType() == AccountType.OAUTH || account.getType() == AccountType.SETUP_TOKEN) {
             headers.addAll(List.of("Authorization", "Bearer " + accessToken));
@@ -161,7 +162,7 @@ public class AnthropicTransformer implements IRequestTransformer {
         // OAuth 账号的 anthropic-beta：伪装模式下由 applyClaudeCodeMimicHeaders 设置，
         // 非伪装模式（真实 CC 客户端）使用基础 beta
         if (isAnthropicOAuth(account)) {
-            if (ctx != null && ctx.isShouldMimicClaudeCode()) {
+            if (context.shouldMimicClaudeCode()) {
                 // 伪装模式：beta 头在 applyClaudeCodeMimicHeaders 中设置
                 headers.addAll(List.of("anthropic-beta", "oauth-2025-04-20"));
             } else {
@@ -236,13 +237,6 @@ public class AnthropicTransformer implements IRequestTransformer {
         return account.getPlatform() == Platform.ANTHROPIC
                 && (account.getType() == AccountType.OAUTH
                     || account.getType() == AccountType.SETUP_TOKEN);
-    }
-
-    /** 从 GatewayRequestContext 获取请求头（通过 ThreadLocal 传递） */
-    private static java.util.Map<String, String> extractRequestHeaders() {
-        // 请求头在 failover 循环之前已通过 extractHeadersMap 提取，
-        // 这里通过 GatewayRequestContext 间接获取（实际调用时由 Handler 传入）
-        return new java.util.HashMap<>();
     }
 
     /** 提取账号的 account_uuid（从 extra JSON 中读取） */

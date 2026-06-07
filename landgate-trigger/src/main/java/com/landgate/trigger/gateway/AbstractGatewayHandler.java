@@ -471,7 +471,17 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 IRequestTransformer transformer = getTransformerFor(account);
                 HttpRequest upstreamReq;
                 try {
-                    upstreamReq = transformer.buildUpstreamRequest(upstreamBody, account, accessToken);
+                    upstreamReq = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                            upstreamBody,
+                            account,
+                            accessToken,
+                            upstreamRoute,
+                            metadataUserId,
+                            upstreamPath,
+                            model,
+                            upstreamStream,
+                            shouldMimicClaudeCode,
+                            extractHeadersMap(request)));
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
                     concurrencyService.release(slot);

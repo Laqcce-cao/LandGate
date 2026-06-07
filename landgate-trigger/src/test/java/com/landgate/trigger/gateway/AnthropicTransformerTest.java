@@ -8,6 +8,8 @@ import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -26,8 +28,11 @@ class AnthropicTransformerTest {
                 .type(AccountType.API_KEY)
                 .extra("{\"base_url\":\"https://extra.example.com\"}")
                 .build();
-        GatewayRequestContext.set(GatewayRequestContext.builder()
-                .upstreamRoute(new UpstreamRoute(
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                "{\"model\":\"claude-test\"}",
+                account,
+                "token-1",
+                new UpstreamRoute(
                         Platform.ANTHROPIC,
                         "messages",
                         "messages",
@@ -37,15 +42,14 @@ class AnthropicTransformerTest {
                         false,
                         false,
                         "messages",
-                        "test_route"))
-                .build());
+                        "test_route"),
+                null,
+                null,
+                null,
+                false,
+                false,
+                Map.of()));
 
-        try {
-            var request = transformer.buildUpstreamRequest("{\"model\":\"claude-test\"}", account, "token-1");
-
-            assertEquals("https://route.example.com/v1/messages", request.uri().toString());
-        } finally {
-            GatewayRequestContext.clear();
-        }
+        assertEquals("https://route.example.com/v1/messages", request.uri().toString());
     }
 }
