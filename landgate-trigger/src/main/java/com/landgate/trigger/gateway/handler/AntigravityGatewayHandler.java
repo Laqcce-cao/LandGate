@@ -7,11 +7,11 @@ import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.billing.service.BillingDomainService;
-import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
 import com.landgate.trigger.gateway.*;
 import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
 import com.landgate.trigger.gateway.error.AnthropicErrorWriter;
+import com.landgate.trigger.gateway.group.GatewayGroupResolver;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import org.springframework.stereotype.Component;
 
@@ -35,7 +35,6 @@ public class AntigravityGatewayHandler extends AbstractGatewayHandler {
             AccountSelector accountSelector,
             GetAccessTokenService getAccessTokenService,
             HttpUpstreamClient httpUpstreamClient,
-            IGroupRepository groupRepository,
             IUserRepository userRepository,
             BillingDomainService billingDomainService,
             BalanceDomainService balanceDomainService,
@@ -53,14 +52,15 @@ public class AntigravityGatewayHandler extends AbstractGatewayHandler {
             UpstreamCapabilityService upstreamCapabilityService,
             UpstreamRouteResolver upstreamRouteResolver,
             GatewayBillingSettlementService billingSettlementService,
+            GatewayGroupResolver gatewayGroupResolver,
             AnthropicErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
-                groupRepository, userRepository, billingDomainService, balanceDomainService,
+                userRepository, billingDomainService, balanceDomainService,
                 concurrencyService, sessionHashService, oauthTokenRefreshService,
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
                 translationService, converterRegistry,
                 claudeCodeDetector, oAuthMimicryService, fingerprintService,
-                upstreamCapabilityService, upstreamRouteResolver, billingSettlementService);
+                upstreamCapabilityService, upstreamRouteResolver, billingSettlementService, gatewayGroupResolver);
         this.errorWriter = errorWriter;
     }
 

@@ -5,7 +5,6 @@ import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.domain.billing.service.BillingDomainService;
-import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -18,6 +17,7 @@ import com.landgate.trigger.gateway.oauth.ClaudeCodeOnlyException;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
+import com.landgate.trigger.gateway.group.GatewayGroupResolver;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
@@ -53,7 +53,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final AccountSelector accountSelector;
     protected final GetAccessTokenService getAccessTokenService;
     protected final HttpUpstreamClient httpUpstreamClient;
-    protected final IGroupRepository groupRepository;
     protected final IUserRepository userRepository;
     protected final BillingDomainService billingDomainService;
     protected final BalanceDomainService balanceDomainService;
@@ -73,6 +72,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final UpstreamCapabilityService upstreamCapabilityService;
     protected final UpstreamRouteResolver upstreamRouteResolver;
     protected final GatewayBillingSettlementService billingSettlementService;
+    protected final GatewayGroupResolver gatewayGroupResolver;
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -83,7 +83,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             AccountSelector accountSelector,
             GetAccessTokenService getAccessTokenService,
             HttpUpstreamClient httpUpstreamClient,
-            IGroupRepository groupRepository,
             IUserRepository userRepository,
             BillingDomainService billingDomainService,
             BalanceDomainService balanceDomainService,
@@ -100,11 +99,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             FingerprintService fingerprintService,
             UpstreamCapabilityService upstreamCapabilityService,
             UpstreamRouteResolver upstreamRouteResolver,
-            GatewayBillingSettlementService billingSettlementService) {
+            GatewayBillingSettlementService billingSettlementService,
+            GatewayGroupResolver gatewayGroupResolver) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
-        this.groupRepository = groupRepository;
         this.userRepository = userRepository;
         this.billingDomainService = billingDomainService;
         this.balanceDomainService = balanceDomainService;
@@ -122,6 +121,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.upstreamCapabilityService = upstreamCapabilityService;
         this.upstreamRouteResolver = upstreamRouteResolver;
         this.billingSettlementService = billingSettlementService;
+        this.gatewayGroupResolver = gatewayGroupResolver;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -215,7 +215,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
 
         // Step 2: 加载并校验 Group
-        GroupEntity group = loadGroup(groupId);
+        GroupEntity group = gatewayGroupResolver.loadGroup(groupId);
         if (group == null) {
             log.warn("[{}] 权限拒绝: group_id={} 不存在或已删除 | api_key_id={}", requestId, groupId, apiKeyId);
             getErrorWriter().writeError(response, 403, "permission_error",
@@ -279,7 +279,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         // /v1/messages 端点走降级链路
         try {
-            GroupEntity resolvedGroup = resolveGatewayGroup(group, isClaudeCode);
+            GroupEntity resolvedGroup = gatewayGroupResolver.resolveGatewayGroup(group, isClaudeCode);
             if (resolvedGroup != group) {
                 log.info("[{}] Claude Code 分组降级: {} -> {} (is_claude_code={})",
                         requestId, group.getName(), resolvedGroup.getName(), isClaudeCode);
@@ -667,13 +667,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     // ========================
     // 受保护辅助方法
     // ========================
-
-    protected GroupEntity loadGroup(Long groupId) {
-        if (groupId == null) return null;
-        return groupRepository.findById(groupId)
-                .filter(g -> g.getDeletedAt() == null)
-                .orElse(null);
-    }
 
     protected StreamingResult handleStreaming(HttpResponse<InputStream> upstreamResp,
                                            HttpServletResponse response,
@@ -1084,64 +1077,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             return creds.has("refresh_token") && !creds.get("refresh_token").asText().isEmpty();
         } catch (Exception e) {
             return false;
-        }
-    }
-
-    // ========================
-    // Claude Code 分组降级
-    // ========================
-
-    /**
-     * 解析 claude_code_only 分组链路。
-     * <p>
-     * 如果 Group 是 claude_code_only 但客户端不是 Claude Code，
-     * 沿 fallback_group_id 链路查找可用分组。链路末端无 fallback 时抛出异常。
-     * 支持环形检测。
-     *
-     * @param group        原始分组
-     * @param isClaudeCode 客户端是否是 Claude Code
-     * @return 解析后的分组（可能是 fallback 链路上的其他分组）
-     * @throws ClaudeCodeOnlyException 链路末端无可用 fallback
-     */
-    private GroupEntity resolveGatewayGroup(GroupEntity group, boolean isClaudeCode) {
-        Long currentId = group.getId();
-        java.util.Set<Long> visited = new java.util.HashSet<>();
-
-        while (true) {
-            if (!visited.add(currentId)) {
-                log.error("Claude Code 分组降级环形引用: current={}, visited={}", currentId, visited);
-                throw new ClaudeCodeOnlyException(
-                        "Fallback group cycle detected for group " + currentId);
-            }
-
-            // 重新加载当前 group（链路中每一步都是不同的 group）
-            GroupEntity currentGroup = currentId.equals(group.getId())
-                    ? group
-                    : groupRepository.findById(currentId).orElse(null);
-
-            if (currentGroup == null || currentGroup.getDeletedAt() != null) {
-                log.error("Claude Code 降级分组不存在或已删除: group_id={}", currentId);
-                throw new ClaudeCodeOnlyException(
-                        "Fallback group " + currentId + " not found or deleted");
-            }
-
-            // 终止条件：非 claude_code_only 或客户端是 Claude Code
-            if (!Boolean.TRUE.equals(currentGroup.getClaudeCodeOnly()) || isClaudeCode) {
-                log.debug("Claude Code 分组解析终止: group={}, claude_code_only={}, is_claude_code={}",
-                        currentGroup.getName(), currentGroup.getClaudeCodeOnly(), isClaudeCode);
-                return currentGroup;
-            }
-
-            log.info("Claude Code 分组降级: {} (claude_code_only=true) -> fallback_group_id={}",
-                    currentGroup.getName(), currentGroup.getFallbackGroupId());
-
-            // claude_code_only 且非 CC 客户端：尝试降级
-            if (currentGroup.getFallbackGroupId() == null) {
-                log.warn("Claude Code 分组降级链路末端: group={}, 无 fallback", currentGroup.getName());
-                throw new ClaudeCodeOnlyException(
-                        "Group '" + currentGroup.getName() + "' requires Claude Code client.");
-            }
-            currentId = currentGroup.getFallbackGroupId();
         }
     }
 
