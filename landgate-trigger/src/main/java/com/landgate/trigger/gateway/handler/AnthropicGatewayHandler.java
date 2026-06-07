@@ -4,14 +4,14 @@ import com.landgate.trigger.gateway.IErrorWriter;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
-import com.landgate.domain.auth.adapter.repository.IUserRepository;
-import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
 import com.landgate.trigger.gateway.*;
+import com.landgate.trigger.gateway.access.GatewayAccessService;
 import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
 import com.landgate.trigger.gateway.client.ClientProfileService;
 import com.landgate.trigger.gateway.error.AnthropicErrorWriter;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
+import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import org.springframework.stereotype.Component;
 
@@ -30,9 +30,7 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
             AccountSelector accountSelector,
             GetAccessTokenService getAccessTokenService,
             HttpUpstreamClient httpUpstreamClient,
-            IUserRepository userRepository,
-            BillingDomainService billingDomainService,
-            BalanceDomainService balanceDomainService,
+            GatewayAccessService gatewayAccessService,
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
             OAuthTokenRefreshService oauthTokenRefreshService,
@@ -48,15 +46,15 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
             GatewayBillingSettlementService billingSettlementService,
             GatewayGroupResolver gatewayGroupResolver,
             ClientProfileService clientProfileService,
+            GatewayRequestParser gatewayRequestParser,
             AnthropicErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
-                userRepository, billingDomainService, balanceDomainService,
-                concurrencyService, sessionHashService, oauthTokenRefreshService,
+                gatewayAccessService, concurrencyService, sessionHashService, oauthTokenRefreshService,
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
                 translationService, converterRegistry,
                 oAuthMimicryService, fingerprintService,
                 upstreamCapabilityService, upstreamRouteResolver, billingSettlementService,
-                gatewayGroupResolver, clientProfileService);
+                gatewayGroupResolver, clientProfileService, gatewayRequestParser);
         this.errorWriter = errorWriter;
     }
 

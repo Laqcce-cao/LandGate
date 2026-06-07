@@ -1,14 +1,14 @@
 package com.landgate.trigger.gateway;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
-import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
-import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.trigger.gateway.access.GatewayAccessResult;
+import com.landgate.trigger.gateway.access.GatewayAccessService;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ProtocolConverter;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
@@ -19,6 +19,8 @@ import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
 import com.landgate.trigger.gateway.client.ClientProfile;
 import com.landgate.trigger.gateway.client.ClientProfileService;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
+import com.landgate.trigger.gateway.request.GatewayRequestInfo;
+import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
@@ -54,9 +56,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final AccountSelector accountSelector;
     protected final GetAccessTokenService getAccessTokenService;
     protected final HttpUpstreamClient httpUpstreamClient;
-    protected final IUserRepository userRepository;
-    protected final BillingDomainService billingDomainService;
-    protected final BalanceDomainService balanceDomainService;
+    protected final GatewayAccessService gatewayAccessService;
     protected final ConcurrencyService concurrencyService;
     protected final SessionHashService sessionHashService;
     protected final OAuthTokenRefreshService oauthTokenRefreshService;
@@ -74,19 +74,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final GatewayBillingSettlementService billingSettlementService;
     protected final GatewayGroupResolver gatewayGroupResolver;
     protected final ClientProfileService clientProfileService;
+    protected final GatewayRequestParser gatewayRequestParser;
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
-    private static final String ATTR_GATEWAY_MODEL = "gateway_model";
-    private static final String ATTR_GATEWAY_UPSTREAM_PATH = "gateway_upstream_path";
 
     protected AbstractGatewayHandler(
             AccountSelector accountSelector,
             GetAccessTokenService getAccessTokenService,
             HttpUpstreamClient httpUpstreamClient,
-            IUserRepository userRepository,
-            BillingDomainService billingDomainService,
-            BalanceDomainService balanceDomainService,
+            GatewayAccessService gatewayAccessService,
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
             OAuthTokenRefreshService oauthTokenRefreshService,
@@ -101,13 +98,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             UpstreamRouteResolver upstreamRouteResolver,
             GatewayBillingSettlementService billingSettlementService,
             GatewayGroupResolver gatewayGroupResolver,
-            ClientProfileService clientProfileService) {
+            ClientProfileService clientProfileService,
+            GatewayRequestParser gatewayRequestParser) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
-        this.userRepository = userRepository;
-        this.billingDomainService = billingDomainService;
-        this.balanceDomainService = balanceDomainService;
+        this.gatewayAccessService = gatewayAccessService;
         this.concurrencyService = concurrencyService;
         this.sessionHashService = sessionHashService;
         this.oauthTokenRefreshService = oauthTokenRefreshService;
@@ -123,6 +119,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.billingSettlementService = billingSettlementService;
         this.gatewayGroupResolver = gatewayGroupResolver;
         this.clientProfileService = clientProfileService;
+        this.gatewayRequestParser = gatewayRequestParser;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -149,38 +146,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return platformRouter.getUsageParser(account.getPlatform(), format);
     }
 
-    // --- 通用请求解析（账户选择前调用，与平台无关）---
-
-    /** 从请求 body JSON 中提取 model 字段 */
-    protected static String extractModel(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("model")) return root.get("model").asText();
-        } catch (Exception e) {
-            // ignore
-        }
-        return "unknown";
-    }
-
-    /** 从请求 body JSON 中提取 stream 字段 */
-    protected static boolean isStreamRequest(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("stream")) return root.get("stream").asBoolean();
-        } catch (Exception e) {
-            // ignore
-        }
-        return false;
-    }
-
-    /** 判断客户端请求本身是否表达了流式响应意图。 */
-    protected static boolean shouldClientRequestStreaming(String requestFormat, String body) {
-        // Responses API 入口当前默认按 SSE 响应处理。
-        if ("responses".equals(requestFormat)) return true;
-
-        return isStreamRequest(body);
-    }
-
     /** 根据客户端/路由意图和上游实际 Content-Type 决定响应处理方式。 */
     protected static boolean shouldHandleResponseAsStreaming(boolean stream,
                                                             HttpResponse<InputStream> upstreamResp) {
@@ -201,43 +166,19 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         long startTime = System.currentTimeMillis();
 
         // Step 1: 提取请求上下文
-        Long apiKeyId = (Long) request.getAttribute("api_key_id");
-        Long userId = (Long) request.getAttribute("user_id");
-        Long groupId = (Long) request.getAttribute("group_id");
         String requestId = (String) request.getAttribute("gateway_request_id");
         if (requestId == null) {
             requestId = UUID.randomUUID().toString();
         }
 
-        if (apiKeyId == null) {
-            log.warn("[{}] 认证失败: 缺少 API Key (api_key_id=null)", requestId);
-            getErrorWriter().writeError(response, 401, "authentication_error", "Missing API key");
+        GatewayAccessResult access = gatewayAccessService.check(requestId, request, response, getErrorWriter());
+        if (access.shouldStop()) {
             return;
         }
-
-        // Step 2: 加载并校验 Group
-        GroupEntity group = gatewayGroupResolver.loadGroup(groupId);
-        if (group == null) {
-            log.warn("[{}] 权限拒绝: group_id={} 不存在或已删除 | api_key_id={}", requestId, groupId, apiKeyId);
-            getErrorWriter().writeError(response, 403, "permission_error",
-                    "API key has no group assigned. Contact admin to assign a group.");
-            return;
-        }
-        if (!group.isActive()) {
-            log.warn("[{}] 权限拒绝: group '{}' 已禁用 | api_key_id={}", requestId, group.getName(), apiKeyId);
-            getErrorWriter().writeError(response, 403, "permission_error",
-                    "Group '" + group.getName() + "' is disabled.");
-            return;
-        }
-
-        // Step 2.5: API Key 配额校验
-        try {
-            billingDomainService.checkQuota(apiKeyId);
-        } catch (com.landgate.types.exception.AuthenticationException e) {
-            log.warn("[{}] 配额超限: api_key_id={} | {}", requestId, apiKeyId, e.getMessage());
-            getErrorWriter().writeError(response, 429, "quota_exceeded", e.getMessage());
-            return;
-        }
+        Long apiKeyId = access.apiKeyId();
+        Long userId = access.userId();
+        GroupEntity group = access.group();
+        UserEntity user = access.user();
 
         // Step 2.6: 客户端识别 + claude_code_only 分组降级
         ClientProfile clientProfile = clientProfileService.detect(body, request);
@@ -277,13 +218,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
 
         // Step 3: 流式检测 + 模型名提取（通用解析，与平台无关）
-        String model = (String) request.getAttribute(ATTR_GATEWAY_MODEL);
-        if (model == null) {
-            model = extractModel(body);
-        }
-        String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
-        // 账户选择前只能判断客户端显式流式意图；OpenAI OAuth Codex 强制流式需在选中账号后再计算。
-        boolean clientStream = shouldClientRequestStreaming(requestFormat, body);
+        GatewayRequestInfo requestInfo = gatewayRequestParser.parse(body, request, requestFormat);
+        String model = requestInfo.model();
+        String upstreamPath = requestInfo.upstreamPath();
+        boolean clientStream = requestInfo.clientStream();
 
         log.info("[{}] 请求解析: model={}, stream={}, request_format={}",
                 requestId, model, clientStream, requestFormat);
@@ -293,20 +231,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
         if (stickyAccountId != null) {
             log.info("[{}] 粘滞会话命中: account_id={}", requestId, stickyAccountId);
-        }
-
-        // Step 5: 余额预检查
-        UserEntity user = userRepository.findById(userId).orElse(null);
-        if (user == null) {
-            log.warn("[{}] 用户不存在: user_id={}", requestId, userId);
-            getErrorWriter().writeError(response, 401, "authentication_error", "User not found");
-            return;
-        }
-        if (!user.isPrivileged() && !balanceDomainService.hasBalance(userId)) {
-            log.warn("[{}] 余额不足: user_id={}, is_privileged={}", requestId, userId, user.isPrivileged());
-            getErrorWriter().writeError(response, 402, "insufficient_balance",
-                    "Insufficient balance. Please recharge your account.");
-            return;
         }
 
         // Step 6: Failover 循环
