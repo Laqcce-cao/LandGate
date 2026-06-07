@@ -2,7 +2,6 @@ package com.landgate.trigger.gateway.handler;
 
 import com.landgate.trigger.gateway.IErrorWriter;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
-import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
@@ -10,6 +9,7 @@ import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
 import com.landgate.trigger.gateway.*;
 import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
+import com.landgate.trigger.gateway.client.ClientProfileService;
 import com.landgate.trigger.gateway.error.OpenAiErrorWriter;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
@@ -41,21 +41,22 @@ public class OpenAiGatewayHandler extends AbstractGatewayHandler {
             PlatformRouter platformRouter,
             ProtocolTranslationService translationService,
             ConverterRegistry converterRegistry,
-            ClaudeCodeDetector claudeCodeDetector,
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
             UpstreamCapabilityService upstreamCapabilityService,
             UpstreamRouteResolver upstreamRouteResolver,
             GatewayBillingSettlementService billingSettlementService,
             GatewayGroupResolver gatewayGroupResolver,
+            ClientProfileService clientProfileService,
             OpenAiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 userRepository, billingDomainService, balanceDomainService,
                 concurrencyService, sessionHashService, oauthTokenRefreshService,
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
                 translationService, converterRegistry,
-                claudeCodeDetector, oAuthMimicryService, fingerprintService,
-                upstreamCapabilityService, upstreamRouteResolver, billingSettlementService, gatewayGroupResolver);
+                oAuthMimicryService, fingerprintService,
+                upstreamCapabilityService, upstreamRouteResolver, billingSettlementService,
+                gatewayGroupResolver, clientProfileService);
         this.errorWriter = errorWriter;
     }
 

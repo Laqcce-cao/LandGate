@@ -12,11 +12,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ProtocolConverter;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
-import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
 import com.landgate.trigger.gateway.oauth.ClaudeCodeOnlyException;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
+import com.landgate.trigger.gateway.client.ClientProfile;
+import com.landgate.trigger.gateway.client.ClientProfileService;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
@@ -66,13 +67,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final ProtocolTranslationService translationService;
     protected final ConverterRegistry converterRegistry;
 
-    protected final ClaudeCodeDetector claudeCodeDetector;
     protected final OAuthMimicryService oAuthMimicryService;
     protected final FingerprintService fingerprintService;
     protected final UpstreamCapabilityService upstreamCapabilityService;
     protected final UpstreamRouteResolver upstreamRouteResolver;
     protected final GatewayBillingSettlementService billingSettlementService;
     protected final GatewayGroupResolver gatewayGroupResolver;
+    protected final ClientProfileService clientProfileService;
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -94,13 +95,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             PlatformRouter platformRouter,
             ProtocolTranslationService translationService,
             ConverterRegistry converterRegistry,
-            ClaudeCodeDetector claudeCodeDetector,
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
             UpstreamCapabilityService upstreamCapabilityService,
             UpstreamRouteResolver upstreamRouteResolver,
             GatewayBillingSettlementService billingSettlementService,
-            GatewayGroupResolver gatewayGroupResolver) {
+            GatewayGroupResolver gatewayGroupResolver,
+            ClientProfileService clientProfileService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -115,13 +116,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.platformRouter = platformRouter;
         this.translationService = translationService;
         this.converterRegistry = converterRegistry;
-        this.claudeCodeDetector = claudeCodeDetector;
         this.oAuthMimicryService = oAuthMimicryService;
         this.fingerprintService = fingerprintService;
         this.upstreamCapabilityService = upstreamCapabilityService;
         this.upstreamRouteResolver = upstreamRouteResolver;
         this.billingSettlementService = billingSettlementService;
         this.gatewayGroupResolver = gatewayGroupResolver;
+        this.clientProfileService = clientProfileService;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -238,32 +239,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             return;
         }
 
-        // Step 2.6: Claude Code 检测 + claude_code_only 分组降级
-        // 先提取 platform/format（loadGroup 之后就需要，用于判断端点类型）
-        Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
-        String requestFormat = (String) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT);
+        // Step 2.6: 客户端识别 + claude_code_only 分组降级
+        ClientProfile clientProfile = clientProfileService.detect(body, request);
+        Platform requestPlatform = clientProfile.requestPlatform();
+        String requestFormat = clientProfile.requestFormat();
+        boolean isClaudeCode = clientProfile.claudeCode();
+        String metadataUserId = clientProfile.metadataUserId();
         log.info("[{}] 请求上下文: platform={}, format={}, group={}, api_key_id={}, user_id={}",
                 requestId, requestPlatform, requestFormat, group.getName(), apiKeyId, userId);
-
-        boolean isClaudeCode = false;
-        String metadataUserId = null;
-
-        // 仅 Anthropic 端点检测 Claude Code
         if (requestPlatform == Platform.ANTHROPIC) {
-            metadataUserId = extractMetadataUserIdFromBody(body);
-            // /v1/messages 端点: 完整校验（UA + system prompt 相似度 + 必要 header）
-            // 非 messages 端点: UA 匹配 claude-cli/* 即视为 true（与 Sub2API gateway_helper.go:42-44 一致）
-            if ("messages".equals(requestFormat)) {
-                String systemPrompt = ClaudeCodeDetector.extractSystemPrompt(body);
-                isClaudeCode = claudeCodeDetector.validateForMessages(
-                        request.getHeader("User-Agent"), metadataUserId,
-                        systemPrompt,
-                        extractMaxTokens(body), extractModel(body),
-                        extractHeadersMap(request));
-            } else {
-                isClaudeCode = claudeCodeDetector.validateForNonMessages(
-                        request.getHeader("User-Agent"));
-            }
             log.info("[{}] Claude Code 检测: is_claude_code={}, metadata_user_id={}, format={}",
                     requestId, isClaudeCode, metadataUserId, requestFormat);
         }
@@ -456,7 +440,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fp =
                             fingerprintService.getOrCreateFingerprint(
                                     account.getId(),
-                                    extractHeadersMap(request));
+                                    clientProfile.headers());
                     upstreamBody = oAuthMimicryService.buildAndInjectMetadataUserID(
                             upstreamBody, account, fp);
                     upstreamBody = oAuthMimicryService.normalizeClaudeOAuthRequestBody(
@@ -484,7 +468,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             model,
                             upstreamStream,
                             shouldMimicClaudeCode,
-                            extractHeadersMap(request)));
+                            clientProfile.headers()));
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
                     concurrencyService.release(slot);
@@ -1080,42 +1064,4 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
     }
 
-    // ========================
-    // 辅助方法
-    // ========================
-
-    /** 从请求 body 中提取 metadata.user_id */
-    private static String extractMetadataUserIdFromBody(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("metadata") && root.get("metadata").has("user_id")) {
-                return root.get("metadata").get("user_id").asText();
-            }
-        } catch (Exception e) {
-            // ignore
-        }
-        return null;
-    }
-
-    /** 从请求 body 中提取 max_tokens */
-    private static int extractMaxTokens(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("max_tokens")) return root.get("max_tokens").asInt();
-        } catch (Exception e) {
-            // ignore
-        }
-        return 0;
-    }
-
-    /** 将 HttpServletRequest 的 header 提取为 Map */
-    private static java.util.Map<String, String> extractHeadersMap(HttpServletRequest request) {
-        java.util.Map<String, String> headers = new java.util.HashMap<>();
-        var headerNames = request.getHeaderNames();
-        while (headerNames.hasMoreElements()) {
-            String name = headerNames.nextElement();
-            headers.put(name, request.getHeader(name));
-        }
-        return headers;
-    }
 }
