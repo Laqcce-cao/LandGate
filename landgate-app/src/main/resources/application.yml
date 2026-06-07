@@ -25,6 +25,11 @@ mybatis:
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
 landgate:
+  admin:
+    email: ${LANDGATE_ADMIN_EMAIL:}
+    password: ${LANDGATE_ADMIN_PASSWORD:}
+    username: ${LANDGATE_ADMIN_USERNAME:Administrator}
+    reset-password: ${LANDGATE_ADMIN_RESET_PASSWORD:false}
   jwt:
     access-token-expire-seconds: 3600
     refresh-token-expire-seconds: 604800
