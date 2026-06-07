@@ -121,7 +121,24 @@ public class GatewayController {
         }
         log.info("[{}] 认证通过: group_id={}", requestId, groupId);
 
+        request.setAttribute(ATTR_GATEWAY_UPSTREAM_PATH, canonicalResponsesPath(request.getServletPath()));
         dispatcher.dispatch(request, response, body);
+    }
+
+    private static String canonicalResponsesPath(String servletPath) {
+        if (servletPath == null || servletPath.isBlank()) {
+            return "/v1/responses";
+        }
+        if (servletPath.startsWith("/v1/responses")) {
+            return servletPath;
+        }
+        if (servletPath.startsWith("/responses")) {
+            return "/v1" + servletPath;
+        }
+        if (servletPath.startsWith("/backend-api/codex/responses")) {
+            return servletPath;
+        }
+        return "/v1/responses";
     }
 
     // ---- Gemini API ----

@@ -16,7 +16,9 @@ import org.springframework.stereotype.Component;
 public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
 
     private static final String OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions";
-    private static final String OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
+    private static final String OPENAI_BASE_URL = "https://api.openai.com";
+    private static final String RESPONSES_PATH = "/v1/responses";
+    private static final String CODEX_RESPONSES_PATH = "/backend-api/codex/responses";
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final UpstreamCapabilityService upstreamCapabilityService;
@@ -41,8 +43,8 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
         EndpointKind endpointKind = useResponses
                 ? EndpointKind.OPENAI_RESPONSES
                 : EndpointKind.OPENAI_CHAT_COMPLETIONS;
-        String defaultUrl = useResponses ? OPENAI_RESPONSES_URL : OPENAI_CHAT_URL;
-        String pathSuffix = useResponses ? "/v1/responses" : "/v1/chat/completions";
+        String pathSuffix = useResponses ? resolveResponsesPathSuffix(request) : "/v1/chat/completions";
+        String defaultUrl = useResponses ? OPENAI_BASE_URL + pathSuffix : OPENAI_CHAT_URL;
 
         return new UpstreamRoute(
                 Platform.OPENAI,
@@ -56,6 +58,23 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
                 upstreamFormat,
                 useResponses ? "openai_api_key_responses" : "openai_api_key_chat_completions"
         );
+    }
+
+    private static String resolveResponsesPathSuffix(UpstreamRouteRequest request) {
+        String path = request.upstreamPath();
+        if (path == null || path.isBlank()) {
+            return RESPONSES_PATH;
+        }
+        if (path.startsWith(RESPONSES_PATH)) {
+            return path;
+        }
+        if (path.startsWith("/responses")) {
+            return "/v1" + path;
+        }
+        if (path.startsWith(CODEX_RESPONSES_PATH)) {
+            return RESPONSES_PATH + path.substring(CODEX_RESPONSES_PATH.length());
+        }
+        return RESPONSES_PATH;
     }
 
     /** 根据账号 base_url 覆盖最终目标地址。 */
