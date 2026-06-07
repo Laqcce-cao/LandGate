@@ -220,7 +220,7 @@ class AbstractGatewayHandlerTest {
 
         TestGatewayHandler(ConverterRegistry converterRegistry) {
             super(null, null, null, null, null, null, null, null, null, null,
-                    null, converterRegistry, null, null, null, null, null, null, null, null);
+                    null, converterRegistry, null, null, null, null, null, null, null, null, null);
         }
 
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {

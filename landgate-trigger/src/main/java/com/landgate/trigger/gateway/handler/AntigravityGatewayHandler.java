@@ -12,6 +12,7 @@ import com.landgate.trigger.gateway.client.ClientProfileService;
 import com.landgate.trigger.gateway.error.AnthropicErrorWriter;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
 import com.landgate.trigger.gateway.request.GatewayRequestParser;
+import com.landgate.trigger.gateway.response.GatewayResponseService;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import org.springframework.stereotype.Component;
 
@@ -52,6 +53,7 @@ public class AntigravityGatewayHandler extends AbstractGatewayHandler {
             GatewayGroupResolver gatewayGroupResolver,
             ClientProfileService clientProfileService,
             GatewayRequestParser gatewayRequestParser,
+            GatewayResponseService gatewayResponseService,
             AnthropicErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 gatewayAccessService, concurrencyService, sessionHashService, oauthTokenRefreshService,
@@ -59,7 +61,7 @@ public class AntigravityGatewayHandler extends AbstractGatewayHandler {
                 translationService, converterRegistry,
                 oAuthMimicryService, fingerprintService,
                 upstreamCapabilityService, upstreamRouteResolver, billingSettlementService,
-                gatewayGroupResolver, clientProfileService, gatewayRequestParser);
+                gatewayGroupResolver, clientProfileService, gatewayRequestParser, gatewayResponseService);
         this.errorWriter = errorWriter;
     }
 
