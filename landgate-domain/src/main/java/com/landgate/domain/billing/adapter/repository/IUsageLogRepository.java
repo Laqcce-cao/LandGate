@@ -48,6 +48,18 @@ public interface IUsageLogRepository {
     long countByUserIdWithDate(Long userId, LocalDate start, LocalDate end);
 
     /**
+     * 分页查询用量日志，支持管理员侧组合筛选。
+     */
+    List<UsageLogEntity> findByFilters(Long userId, Long apiKeyId, Long accountId,
+                                       LocalDate start, LocalDate end,
+                                       int page, int size);
+
+    /**
+     * 统计管理员侧组合筛选后的用量日志总数。
+     */
+    long countByFilters(Long userId, Long apiKeyId, Long accountId, LocalDate start, LocalDate end);
+
+    /**
      * 分页查询指定API密钥的用量日志
      *
      * @param apiKeyId API密钥ID

@@ -92,6 +92,25 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
     }
 
     @Override
+    public List<UsageLogEntity> findByFilters(Long userId, Long apiKeyId, Long accountId,
+                                              LocalDate start, LocalDate end,
+                                              int page, int size) {
+        int offset = page * size;
+        String startStr = start != null ? start.toString() : null;
+        String endStr = end != null ? end.toString() : null;
+        return usageLogDao.selectByFilters(userId, apiKeyId, accountId, startStr, endStr, offset, size).stream()
+                .map(usageLogMapper::toEntity)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public long countByFilters(Long userId, Long apiKeyId, Long accountId, LocalDate start, LocalDate end) {
+        String startStr = start != null ? start.toString() : null;
+        String endStr = end != null ? end.toString() : null;
+        return usageLogDao.countByFilters(userId, apiKeyId, accountId, startStr, endStr);
+    }
+
+    @Override
     public UsageLogEntity save(UsageLogEntity entity) {
         UsageLogPO po = usageLogMapper.toPO(entity);
         if (po.getId() == null) {

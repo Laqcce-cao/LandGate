@@ -48,7 +48,8 @@ public class GatewayBillingSettlementService {
                     stream, durationMs,
                     request.getHeader("User-Agent"),
                     request.getRemoteAddr(),
-                    clientDisconnected);
+                    clientDisconnected,
+                    requestId);
         } catch (Exception e) {
             log.error("[{}] 用量日志保存失败，无法扣费: user_id={}, model={}, usage={}",
                     requestId, userId, model, usage, e);
@@ -83,6 +84,41 @@ public class GatewayBillingSettlementService {
             } else {
                 billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
             }
+        }
+    }
+
+    /**
+     * 记录成功请求但没有解析到上游用量的情况，不扣费、不累计额度。
+     */
+    public void recordNoUsageLog(String model,
+                                 String platform,
+                                 Long userId,
+                                 Long apiKeyId,
+                                 AccountEntity account,
+                                 GroupEntity group,
+                                 boolean stream,
+                                 boolean clientDisconnected,
+                                 long durationMs,
+                                 HttpServletRequest request,
+                                 String requestId,
+                                 String reason) {
+        try {
+            UsageLogEntity logEntry = billingDomainService.recordNoUsageLog(
+                    requestId, model, platform,
+                    userId, apiKeyId,
+                    account != null ? account.getId() : null,
+                    group != null ? group.getId() : null,
+                    group != null ? group.getRateMultiplier() : null,
+                    stream, durationMs,
+                    request != null ? request.getHeader("User-Agent") : null,
+                    request != null ? request.getRemoteAddr() : null,
+                    clientDisconnected,
+                    reason);
+            log.warn("[{}] 已记录 NO_USAGE 用量日志: log_id={}, account_id={}, model={}, reason={}",
+                    requestId, logEntry.getId(), account != null ? account.getId() : null, model, reason);
+        } catch (Exception e) {
+            log.error("[{}] NO_USAGE 用量日志保存失败: user_id={}, model={}, reason={}",
+                    requestId, userId, model, reason, e);
         }
     }
 }

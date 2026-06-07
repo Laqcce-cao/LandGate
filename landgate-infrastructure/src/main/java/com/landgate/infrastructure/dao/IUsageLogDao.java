@@ -38,6 +38,22 @@ public interface IUsageLogDao {
     /** 统计日志总数 */
     long countAll();
 
+    /** 按管理员筛选条件查询日志，按创建时间降序（分页），end 为排他边界 */
+    List<UsageLogPO> selectByFilters(@Param("userId") Long userId,
+                                     @Param("apiKeyId") Long apiKeyId,
+                                     @Param("accountId") Long accountId,
+                                     @Param("start") String start,
+                                     @Param("end") String end,
+                                     @Param("offset") int offset,
+                                     @Param("size") int size);
+
+    /** 统计管理员筛选条件下的日志数 */
+    long countByFilters(@Param("userId") Long userId,
+                        @Param("apiKeyId") Long apiKeyId,
+                        @Param("accountId") Long accountId,
+                        @Param("start") String start,
+                        @Param("end") String end);
+
     /** 根据用户 ID 查询日志，按创建时间降序（分页） */
     List<UsageLogPO> selectByUserId(@Param("userId") Long userId, @Param("offset") int offset, @Param("size") int size);
 

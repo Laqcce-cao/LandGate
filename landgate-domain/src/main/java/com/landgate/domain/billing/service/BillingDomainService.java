@@ -83,6 +83,21 @@ public class BillingDomainService {
                                                 boolean stream, long durationMs,
                                                 String userAgent, String ipAddress,
                                                 boolean clientDisconnected) {
+        return calculateAndBuildLog(usage, model, platform, userId, apiKeyId, accountId, groupId,
+                groupRateMultiplier, stream, durationMs, userAgent, ipAddress, clientDisconnected, null);
+    }
+
+    /**
+     * 计算费用并保存用量日志，使用外部请求 ID 便于和网关应用日志关联。
+     */
+    public UsageLogEntity calculateAndBuildLog(UsageTokens usage, String model,
+                                                String platform, Long userId, Long apiKeyId,
+                                                Long accountId, Long groupId,
+                                                BigDecimal groupRateMultiplier,
+                                                boolean stream, long durationMs,
+                                                String userAgent, String ipAddress,
+                                                boolean clientDisconnected,
+                                                String requestId) {
         BigDecimal inputPrice = pricingService.getInputPrice(model);
         BigDecimal outputPrice = pricingService.getOutputPrice(model);
         BigDecimal cacheWritePrice = pricingService.getCacheWritePrice(model);
@@ -130,7 +145,7 @@ public class BillingDomainService {
         BigDecimal actualCost = totalCost.multiply(groupMultiplier).setScale(10, RoundingMode.HALF_UP);
 
         UsageLogEntity logEntry = UsageLogEntity.builder()
-                .requestId(UUID.randomUUID().toString())
+                .requestId(requestId != null && !requestId.isBlank() ? requestId : UUID.randomUUID().toString())
                 .userId(userId).apiKeyId(apiKeyId).accountId(accountId).groupId(groupId)
                 .model(model).platform(platform).billingMode("token")
                 .inputTokens(usage.getInputTokens()).outputTokens(usage.getOutputTokens())
@@ -158,6 +173,55 @@ public class BillingDomainService {
                 usage.getCacheCreationTokens(), usage.getCacheReadTokens(),
                 usage.getCacheCreation5mTokens(), usage.getCacheCreation1hTokens(),
                 totalCost, actualCost);
+        return savedLog;
+    }
+
+    /**
+     * 记录一次成功请求，但上游响应中没有可解析 token 用量。
+     * <p>
+     * 这类日志不参与扣费和额度累计，只用于审计和排查“请求成功但无用量日志”的情况。
+     */
+    public UsageLogEntity recordNoUsageLog(String requestId,
+                                           String model,
+                                           String platform,
+                                           Long userId,
+                                           Long apiKeyId,
+                                           Long accountId,
+                                           Long groupId,
+                                           BigDecimal groupRateMultiplier,
+                                           boolean stream,
+                                           long durationMs,
+                                           String userAgent,
+                                           String ipAddress,
+                                           boolean clientDisconnected,
+                                           String reason) {
+        BigDecimal multiplier = groupRateMultiplier != null ? groupRateMultiplier : BigDecimal.ONE;
+        UsageLogEntity logEntry = UsageLogEntity.builder()
+                .requestId(requestId != null && !requestId.isBlank() ? requestId : UUID.randomUUID().toString())
+                .userId(userId).apiKeyId(apiKeyId).accountId(accountId).groupId(groupId)
+                .model(model).platform(platform).billingMode("token")
+                .inputTokens(0).outputTokens(0)
+                .cacheCreationTokens(0).cacheReadTokens(0)
+                .cacheCreation5mTokens(0).cacheCreation1hTokens(0)
+                .inputCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .outputCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .cacheCreationCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .cacheReadCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .cacheCreation5mCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .cacheCreation1hCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .totalCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .actualCost(BigDecimal.ZERO.setScale(10, RoundingMode.HALF_UP))
+                .rateMultiplier(multiplier.setScale(4, RoundingMode.HALF_UP))
+                .stream(stream).durationMs((int) durationMs)
+                .userAgent(userAgent).ipAddress(ipAddress)
+                .billingStatus("NO_USAGE")
+                .billingError(truncateBillingError(reason))
+                .clientDisconnected(clientDisconnected)
+                .build();
+
+        UsageLogEntity savedLog = usageLogRepository.save(logEntry);
+        log.warn("Billing no-usage: request_id={}, platform={}, model={}, account_id={}, reason={}",
+                savedLog.getRequestId(), platform, model, accountId, savedLog.getBillingError());
         return savedLog;
     }
 

@@ -462,6 +462,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 requestId, account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
                                 usageParser.getClass().getSimpleName(), clientStream, upstreamStream, handleAsStreaming,
                                 upstreamResp.headers().firstValue("Content-Type").orElse(""));
+                        String noUsageReason = "usage_not_parsed; endpoint=" + upstreamRoute.endpointKind()
+                                + "; parser=" + usageParser.getClass().getSimpleName()
+                                + "; client_stream=" + clientStream
+                                + "; upstream_stream=" + upstreamStream
+                                + "; handled_as_stream=" + handleAsStreaming
+                                + "; content_type=" + upstreamResp.headers().firstValue("Content-Type").orElse("");
+                        billingSettlementService.recordNoUsageLog(model, accountPlatform.name(), userId, apiKeyId,
+                                account, group, clientStream,
+                                streamingResult != null && streamingResult.clientDisconnected(),
+                                durationMs, request, requestId, noUsageReason);
                     }
 
                     // 捕获上游 Rate Limit 头（仅 OAUTH 账号）
