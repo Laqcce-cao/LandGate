@@ -1,5 +1,6 @@
 package com.landgate.trigger.http.gateway;
 
+import com.landgate.infrastructure.dao.IUserDao;
 import com.landgate.trigger.gateway.GatewayDispatcher;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -22,7 +23,8 @@ import static org.springframework.test.web.servlet.setup.MockMvcBuilders.standal
 class GatewayControllerTest {
 
     private final GatewayDispatcher dispatcher = mock(GatewayDispatcher.class);
-    private final MockMvc mockMvc = standaloneSetup(new GatewayController(dispatcher)).build();
+    private final IUserDao userDao = mock(IUserDao.class);
+    private final MockMvc mockMvc = standaloneSetup(new GatewayController(dispatcher, userDao)).build();
 
     @Test
     @DisplayName("Codex 直连 Responses 路径进入 dispatcher")

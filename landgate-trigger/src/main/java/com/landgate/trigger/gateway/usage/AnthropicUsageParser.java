@@ -1,4 +1,4 @@
-package com.landgate.trigger.gateway;
+package com.landgate.trigger.gateway.usage;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -19,7 +19,7 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-public class UsageParser implements IUsageParser {
+public class AnthropicUsageParser implements IUsageParser {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
@@ -94,6 +94,18 @@ public class UsageParser implements IUsageParser {
 
     @Override
     public boolean isStreamDone(String sseLine) {
-        return "event: message_stop".equals(sseLine) || "data: [DONE]".equals(sseLine);
+        if ("data: [DONE]".equals(sseLine)) {
+            return true;
+        }
+        if (sseLine == null || !sseLine.startsWith("data: ")) {
+            return false;
+        }
+        try {
+            JsonNode root = JSON.readTree(sseLine.substring(6));
+            return "message_stop".equals(root.path("type").asText());
+        } catch (Exception e) {
+            log.debug("Failed to parse Anthropic SSE done line", e);
+            return false;
+        }
     }
 }

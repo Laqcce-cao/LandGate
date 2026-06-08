@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.trigger.gateway.ConcurrencyService;
 import com.landgate.trigger.gateway.GatewayRequestContext;
-import com.landgate.trigger.gateway.IUsageParser;
+import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.trigger.gateway.ProtocolTranslationService;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ProtocolConverter;
@@ -124,7 +124,7 @@ public class GatewayResponseService {
                     // === 透传模式（无翻译或 Converter 不可用） ===
                     if (usageParser.isStreamDone(line)) {
                         writer.write(line);
-                        writer.write("\n");
+                        writer.write("\n\n");
                         writer.flush();
                         break;
                     }

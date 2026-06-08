@@ -166,6 +166,10 @@ public class AccountSelector {
      * @return 选中的账户，无可用时返回 null
      */
     public AccountEntity selectAccount(GroupEntity group, String model) {
+        return selectAccount(group, model, Collections.emptySet());
+    }
+
+    public AccountEntity selectAccount(GroupEntity group, String model, Set<Long> excludedIds) {
         if (group == null || group.getId() == null) {
             log.warn("Group is null or has no ID, cannot select account");
             return null;
@@ -198,6 +202,10 @@ public class AccountSelector {
         for (AccountGroupEntity link : links) {
             AccountEntity account = accountMap.get(link.getAccountId());
             if (account == null) continue;   // 账号已被删除或不存在
+            if (excludedIds != null && excludedIds.contains(account.getId())) {
+                log.info("账户被本次请求 failover 排除: account_id={}, name={}", account.getId(), account.getName());
+                continue;
+            }
 
             // 跑过滤器链
             boolean passed = true;
