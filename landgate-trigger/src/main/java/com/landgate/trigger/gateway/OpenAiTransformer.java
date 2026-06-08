@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.AccountType;
 import lombok.extern.slf4j.Slf4j;
@@ -56,6 +57,8 @@ public class OpenAiTransformer implements IRequestTransformer {
             targetUrl = route.targetUrl();
             if (route.normalizeCodexOAuthBody()) {
                 body = normalizeCodexOAuthRequestBody(body, account);
+            } else if (route.endpointKind() == EndpointKind.OPENAI_CHAT_COMPLETIONS) {
+                body = ensureChatCompletionsStreamUsage(body);
             }
         } else if (isOAuth) {
             // 兼容无 GatewayRequestContext 的单元调用；正常网关路径由 UpstreamRoute 决定端点。
@@ -77,6 +80,28 @@ public class OpenAiTransformer implements IRequestTransformer {
                 .headers(headers.toArray(new String[0]))
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build();
+    }
+
+    /**
+     * OpenAI Chat Completions 流式响应默认不返回 usage，必须显式要求上游返回最终用量 chunk。
+     */
+    private String ensureChatCompletionsStreamUsage(String body) {
+        try {
+            JsonNode parsed = JSON.readTree(body);
+            if (!(parsed instanceof ObjectNode root)) return body;
+            if (!root.path("stream").asBoolean(false)) return body;
+
+            JsonNode streamOptionsNode = root.get("stream_options");
+            ObjectNode streamOptions = streamOptionsNode instanceof ObjectNode objectNode
+                    ? objectNode
+                    : JSON.createObjectNode();
+            streamOptions.put("include_usage", true);
+            root.set("stream_options", streamOptions);
+            return JSON.writeValueAsString(root);
+        } catch (Exception e) {
+            log.warn("Failed to ensure Chat Completions stream usage option", e);
+            return body;
+        }
     }
 
     /**

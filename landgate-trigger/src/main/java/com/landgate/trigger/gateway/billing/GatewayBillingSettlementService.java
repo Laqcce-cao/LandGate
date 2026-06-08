@@ -102,23 +102,7 @@ public class GatewayBillingSettlementService {
                                  HttpServletRequest request,
                                  String requestId,
                                  String reason) {
-        try {
-            UsageLogEntity logEntry = billingDomainService.recordNoUsageLog(
-                    requestId, model, platform,
-                    userId, apiKeyId,
-                    account != null ? account.getId() : null,
-                    group != null ? group.getId() : null,
-                    group != null ? group.getRateMultiplier() : null,
-                    stream, durationMs,
-                    request != null ? request.getHeader("User-Agent") : null,
-                    request != null ? request.getRemoteAddr() : null,
-                    clientDisconnected,
-                    reason);
-            log.warn("[{}] 已记录 NO_USAGE 用量日志: log_id={}, account_id={}, model={}, reason={}",
-                    requestId, logEntry.getId(), account != null ? account.getId() : null, model, reason);
-        } catch (Exception e) {
-            log.error("[{}] NO_USAGE 用量日志保存失败: user_id={}, model={}, reason={}",
-                    requestId, userId, model, reason, e);
-        }
+        log.warn("[{}] 请求成功但未解析到用量，跳过 0 token 使用日志: user_id={}, account_id={}, model={}, reason={}",
+                requestId, userId, account != null ? account.getId() : null, model, reason);
     }
 }

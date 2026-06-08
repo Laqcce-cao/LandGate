@@ -10,8 +10,16 @@ import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
+import java.net.http.HttpRequest;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Flow;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -55,6 +63,50 @@ class OpenAiTransformerTest {
                 Map.of()));
 
         assertEquals("https://proxy.example.com/v1/chat/completions", request.uri().toString());
+    }
+
+    @Test
+    @DisplayName("API Key Chat Completions 流式请求强制携带 include_usage")
+    void apiKeyChatCompletionsStreamingRequestForcesIncludeUsage() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "stream":true,
+                  "stream_options":{"include_usage":false},
+                  "messages":[{"role":"user","content":"Hi"}]
+                }""";
+
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                body,
+                account,
+                "token-1",
+                new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "chat_completions",
+                        EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "https://proxy.example.com/v1/chat/completions",
+                        false,
+                        false,
+                        false,
+                        "chat_completions",
+                        "test_route"),
+                null,
+                null,
+                null,
+                false,
+                false,
+                Map.of()));
+
+        JsonNode root = JSON.readTree(readBody(request));
+
+        assertTrue(root.get("stream_options").get("include_usage").asBoolean());
     }
 
     @Test
@@ -119,6 +171,39 @@ class OpenAiTransformerTest {
         assertTrue(JSON.readTree(streamTrue).get("stream").asBoolean());
         assertTrue(JSON.readTree(streamFalse).get("stream").asBoolean());
         assertTrue(JSON.readTree(streamMissing).get("stream").asBoolean());
+    }
+
+    private static String readBody(HttpRequest request) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        request.bodyPublisher().orElseThrow().subscribe(new Flow.Subscriber<>() {
+            @Override
+            public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(ByteBuffer item) {
+                byte[] bytes = new byte[item.remaining()];
+                item.get(bytes);
+                output.writeBytes(bytes);
+            }
+
+            @Override
+            public void onError(Throwable throwable) {
+                error.set(throwable);
+                done.countDown();
+            }
+
+            @Override
+            public void onComplete() {
+                done.countDown();
+            }
+        });
+        assertTrue(done.await(1, TimeUnit.SECONDS));
+        if (error.get() != null) throw new AssertionError(error.get());
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     @Test
