@@ -1,5 +1,6 @@
 package com.landgate.domain.billing.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.*;
 
 import java.math.BigDecimal;
@@ -95,7 +96,7 @@ public class UsageLogEntity {
     private Integer imageCount = 0;
     private String imageSize;
 
-    /** 计费状态：PENDING / SETTLING / DEDUCTED / FAILED */
+    /** 计费状态：PENDING / SETTLING / DEDUCTED / FAILED / NO_USAGE */
     @Builder.Default
     private String billingStatus = "PENDING";
 
@@ -106,5 +107,6 @@ public class UsageLogEntity {
     @Builder.Default
     private Boolean clientDisconnected = false;
 
+    @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ssXXX", timezone = "Asia/Shanghai")
     private Instant createdAt;
 }

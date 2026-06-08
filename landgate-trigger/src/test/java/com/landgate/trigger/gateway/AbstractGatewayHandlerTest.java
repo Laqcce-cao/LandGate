@@ -5,6 +5,7 @@ import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.trigger.gateway.converter.AnthropicConverter;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ResponsesConverter;
+import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.Platform;
@@ -50,7 +51,7 @@ class AbstractGatewayHandlerTest {
                   "messages":[{"role":"user","content":"Hi"}]
                 }""";
 
-        assertFalse(AbstractGatewayHandler.shouldClientRequestStreaming("chat_completions", body));
+        assertFalse(GatewayRequestParser.shouldClientRequestStreaming("chat_completions", body));
     }
 
     @Test
@@ -63,7 +64,7 @@ class AbstractGatewayHandlerTest {
                   "messages":[{"role":"user","content":"Hi"}]
                 }""";
 
-        assertTrue(AbstractGatewayHandler.shouldClientRequestStreaming("chat_completions", body));
+        assertTrue(GatewayRequestParser.shouldClientRequestStreaming("chat_completions", body));
     }
 
     @Test
@@ -75,7 +76,7 @@ class AbstractGatewayHandlerTest {
                   "input":"Hi"
                 }""";
 
-        assertTrue(AbstractGatewayHandler.shouldClientRequestStreaming("responses", body));
+        assertTrue(GatewayRequestParser.shouldClientRequestStreaming("responses", body));
     }
 
     @Test
@@ -218,9 +219,8 @@ class AbstractGatewayHandlerTest {
     private static class TestGatewayHandler extends AbstractGatewayHandler {
 
         TestGatewayHandler(ConverterRegistry converterRegistry) {
-            super(null, null, null, null, null, null, null, null, null,
-                    null, null, null, null, null, converterRegistry,
-                    null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null, null,
+                    null, converterRegistry, null, null, null, null, null, null, null, null, null);
         }
 
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {

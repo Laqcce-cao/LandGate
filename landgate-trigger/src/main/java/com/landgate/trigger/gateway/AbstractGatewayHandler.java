@@ -1,23 +1,25 @@
 package com.landgate.trigger.gateway;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
-import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
-import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
-import com.landgate.domain.billing.service.BillingDomainService;
-import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.trigger.gateway.access.GatewayAccessResult;
+import com.landgate.trigger.gateway.access.GatewayAccessService;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
-import com.landgate.trigger.gateway.converter.ProtocolConverter;
-import com.landgate.trigger.gateway.converter.StreamTranslator;
-import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
 import com.landgate.trigger.gateway.oauth.ClaudeCodeOnlyException;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
+import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
+import com.landgate.trigger.gateway.client.ClientProfile;
+import com.landgate.trigger.gateway.client.ClientProfileService;
+import com.landgate.trigger.gateway.group.GatewayGroupResolver;
+import com.landgate.trigger.gateway.request.GatewayRequestInfo;
+import com.landgate.trigger.gateway.request.GatewayRequestParser;
+import com.landgate.trigger.gateway.response.GatewayResponseResult;
+import com.landgate.trigger.gateway.response.GatewayResponseService;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
@@ -53,10 +55,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final AccountSelector accountSelector;
     protected final GetAccessTokenService getAccessTokenService;
     protected final HttpUpstreamClient httpUpstreamClient;
-    protected final IGroupRepository groupRepository;
-    protected final IUserRepository userRepository;
-    protected final BillingDomainService billingDomainService;
-    protected final BalanceDomainService balanceDomainService;
+    protected final GatewayAccessService gatewayAccessService;
     protected final ConcurrencyService concurrencyService;
     protected final SessionHashService sessionHashService;
     protected final OAuthTokenRefreshService oauthTokenRefreshService;
@@ -67,25 +66,24 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final ProtocolTranslationService translationService;
     protected final ConverterRegistry converterRegistry;
 
-    protected final ClaudeCodeDetector claudeCodeDetector;
     protected final OAuthMimicryService oAuthMimicryService;
     protected final FingerprintService fingerprintService;
     protected final UpstreamCapabilityService upstreamCapabilityService;
     protected final UpstreamRouteResolver upstreamRouteResolver;
+    protected final GatewayBillingSettlementService billingSettlementService;
+    protected final GatewayGroupResolver gatewayGroupResolver;
+    protected final ClientProfileService clientProfileService;
+    protected final GatewayRequestParser gatewayRequestParser;
+    protected final GatewayResponseService gatewayResponseService;
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
-    private static final String ATTR_GATEWAY_MODEL = "gateway_model";
-    private static final String ATTR_GATEWAY_UPSTREAM_PATH = "gateway_upstream_path";
 
     protected AbstractGatewayHandler(
             AccountSelector accountSelector,
             GetAccessTokenService getAccessTokenService,
             HttpUpstreamClient httpUpstreamClient,
-            IGroupRepository groupRepository,
-            IUserRepository userRepository,
-            BillingDomainService billingDomainService,
-            BalanceDomainService balanceDomainService,
+            GatewayAccessService gatewayAccessService,
             ConcurrencyService concurrencyService,
             SessionHashService sessionHashService,
             OAuthTokenRefreshService oauthTokenRefreshService,
@@ -94,18 +92,19 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             PlatformRouter platformRouter,
             ProtocolTranslationService translationService,
             ConverterRegistry converterRegistry,
-            ClaudeCodeDetector claudeCodeDetector,
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
             UpstreamCapabilityService upstreamCapabilityService,
-            UpstreamRouteResolver upstreamRouteResolver) {
+            UpstreamRouteResolver upstreamRouteResolver,
+            GatewayBillingSettlementService billingSettlementService,
+            GatewayGroupResolver gatewayGroupResolver,
+            ClientProfileService clientProfileService,
+            GatewayRequestParser gatewayRequestParser,
+            GatewayResponseService gatewayResponseService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
-        this.groupRepository = groupRepository;
-        this.userRepository = userRepository;
-        this.billingDomainService = billingDomainService;
-        this.balanceDomainService = balanceDomainService;
+        this.gatewayAccessService = gatewayAccessService;
         this.concurrencyService = concurrencyService;
         this.sessionHashService = sessionHashService;
         this.oauthTokenRefreshService = oauthTokenRefreshService;
@@ -114,11 +113,17 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.platformRouter = platformRouter;
         this.translationService = translationService;
         this.converterRegistry = converterRegistry;
-        this.claudeCodeDetector = claudeCodeDetector;
         this.oAuthMimicryService = oAuthMimicryService;
         this.fingerprintService = fingerprintService;
         this.upstreamCapabilityService = upstreamCapabilityService;
         this.upstreamRouteResolver = upstreamRouteResolver;
+        this.billingSettlementService = billingSettlementService;
+        this.gatewayGroupResolver = gatewayGroupResolver;
+        this.clientProfileService = clientProfileService;
+        this.gatewayRequestParser = gatewayRequestParser;
+        this.gatewayResponseService = gatewayResponseService != null
+                ? gatewayResponseService
+                : new GatewayResponseService(concurrencyService, translationService, converterRegistry);
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -145,38 +150,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return platformRouter.getUsageParser(account.getPlatform(), format);
     }
 
-    // --- 通用请求解析（账户选择前调用，与平台无关）---
-
-    /** 从请求 body JSON 中提取 model 字段 */
-    protected static String extractModel(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("model")) return root.get("model").asText();
-        } catch (Exception e) {
-            // ignore
-        }
-        return "unknown";
-    }
-
-    /** 从请求 body JSON 中提取 stream 字段 */
-    protected static boolean isStreamRequest(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("stream")) return root.get("stream").asBoolean();
-        } catch (Exception e) {
-            // ignore
-        }
-        return false;
-    }
-
-    /** 判断客户端请求本身是否表达了流式响应意图。 */
-    protected static boolean shouldClientRequestStreaming(String requestFormat, String body) {
-        // Responses API 入口当前默认按 SSE 响应处理。
-        if ("responses".equals(requestFormat)) return true;
-
-        return isStreamRequest(body);
-    }
-
     /** 根据客户端/路由意图和上游实际 Content-Type 决定响应处理方式。 */
     protected static boolean shouldHandleResponseAsStreaming(boolean stream,
                                                             HttpResponse<InputStream> upstreamResp) {
@@ -197,70 +170,29 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         long startTime = System.currentTimeMillis();
 
         // Step 1: 提取请求上下文
-        Long apiKeyId = (Long) request.getAttribute("api_key_id");
-        Long userId = (Long) request.getAttribute("user_id");
-        Long groupId = (Long) request.getAttribute("group_id");
         String requestId = (String) request.getAttribute("gateway_request_id");
         if (requestId == null) {
             requestId = UUID.randomUUID().toString();
         }
 
-        if (apiKeyId == null) {
-            log.warn("[{}] 认证失败: 缺少 API Key (api_key_id=null)", requestId);
-            getErrorWriter().writeError(response, 401, "authentication_error", "Missing API key");
+        GatewayAccessResult access = gatewayAccessService.check(requestId, request, response, getErrorWriter());
+        if (access.shouldStop()) {
             return;
         }
+        Long apiKeyId = access.apiKeyId();
+        Long userId = access.userId();
+        GroupEntity group = access.group();
+        UserEntity user = access.user();
 
-        // Step 2: 加载并校验 Group
-        GroupEntity group = loadGroup(groupId);
-        if (group == null) {
-            log.warn("[{}] 权限拒绝: group_id={} 不存在或已删除 | api_key_id={}", requestId, groupId, apiKeyId);
-            getErrorWriter().writeError(response, 403, "permission_error",
-                    "API key has no group assigned. Contact admin to assign a group.");
-            return;
-        }
-        if (!group.isActive()) {
-            log.warn("[{}] 权限拒绝: group '{}' 已禁用 | api_key_id={}", requestId, group.getName(), apiKeyId);
-            getErrorWriter().writeError(response, 403, "permission_error",
-                    "Group '" + group.getName() + "' is disabled.");
-            return;
-        }
-
-        // Step 2.5: API Key 配额校验
-        try {
-            billingDomainService.checkQuota(apiKeyId);
-        } catch (com.landgate.types.exception.AuthenticationException e) {
-            log.warn("[{}] 配额超限: api_key_id={} | {}", requestId, apiKeyId, e.getMessage());
-            getErrorWriter().writeError(response, 429, "quota_exceeded", e.getMessage());
-            return;
-        }
-
-        // Step 2.6: Claude Code 检测 + claude_code_only 分组降级
-        // 先提取 platform/format（loadGroup 之后就需要，用于判断端点类型）
-        Platform requestPlatform = (Platform) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_PLATFORM);
-        String requestFormat = (String) request.getAttribute(GatewayDispatcher.ATTR_REQUEST_FORMAT);
+        // Step 2.6: 客户端识别 + claude_code_only 分组降级
+        ClientProfile clientProfile = clientProfileService.detect(body, request);
+        Platform requestPlatform = clientProfile.requestPlatform();
+        String requestFormat = clientProfile.requestFormat();
+        boolean isClaudeCode = clientProfile.claudeCode();
+        String metadataUserId = clientProfile.metadataUserId();
         log.info("[{}] 请求上下文: platform={}, format={}, group={}, api_key_id={}, user_id={}",
                 requestId, requestPlatform, requestFormat, group.getName(), apiKeyId, userId);
-
-        boolean isClaudeCode = false;
-        String metadataUserId = null;
-
-        // 仅 Anthropic 端点检测 Claude Code
         if (requestPlatform == Platform.ANTHROPIC) {
-            metadataUserId = extractMetadataUserIdFromBody(body);
-            // /v1/messages 端点: 完整校验（UA + system prompt 相似度 + 必要 header）
-            // 非 messages 端点: UA 匹配 claude-cli/* 即视为 true（与 Sub2API gateway_helper.go:42-44 一致）
-            if ("messages".equals(requestFormat)) {
-                String systemPrompt = ClaudeCodeDetector.extractSystemPrompt(body);
-                isClaudeCode = claudeCodeDetector.validateForMessages(
-                        request.getHeader("User-Agent"), metadataUserId,
-                        systemPrompt,
-                        extractMaxTokens(body), extractModel(body),
-                        extractHeadersMap(request));
-            } else {
-                isClaudeCode = claudeCodeDetector.validateForNonMessages(
-                        request.getHeader("User-Agent"));
-            }
             log.info("[{}] Claude Code 检测: is_claude_code={}, metadata_user_id={}, format={}",
                     requestId, isClaudeCode, metadataUserId, requestFormat);
         }
@@ -276,7 +208,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         // /v1/messages 端点走降级链路
         try {
-            GroupEntity resolvedGroup = resolveGatewayGroup(group, isClaudeCode);
+            GroupEntity resolvedGroup = gatewayGroupResolver.resolveGatewayGroup(group, isClaudeCode);
             if (resolvedGroup != group) {
                 log.info("[{}] Claude Code 分组降级: {} -> {} (is_claude_code={})",
                         requestId, group.getName(), resolvedGroup.getName(), isClaudeCode);
@@ -290,13 +222,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
 
         // Step 3: 流式检测 + 模型名提取（通用解析，与平台无关）
-        String model = (String) request.getAttribute(ATTR_GATEWAY_MODEL);
-        if (model == null) {
-            model = extractModel(body);
-        }
-        String upstreamPath = (String) request.getAttribute(ATTR_GATEWAY_UPSTREAM_PATH);
-        // 账户选择前只能判断客户端显式流式意图；OpenAI OAuth Codex 强制流式需在选中账号后再计算。
-        boolean clientStream = shouldClientRequestStreaming(requestFormat, body);
+        GatewayRequestInfo requestInfo = gatewayRequestParser.parse(body, request, requestFormat);
+        String model = requestInfo.model();
+        String upstreamPath = requestInfo.upstreamPath();
+        boolean clientStream = requestInfo.clientStream();
 
         log.info("[{}] 请求解析: model={}, stream={}, request_format={}",
                 requestId, model, clientStream, requestFormat);
@@ -306,20 +235,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
         if (stickyAccountId != null) {
             log.info("[{}] 粘滞会话命中: account_id={}", requestId, stickyAccountId);
-        }
-
-        // Step 5: 余额预检查
-        UserEntity user = userRepository.findById(userId).orElse(null);
-        if (user == null) {
-            log.warn("[{}] 用户不存在: user_id={}", requestId, userId);
-            getErrorWriter().writeError(response, 401, "authentication_error", "User not found");
-            return;
-        }
-        if (!user.isPrivileged() && !balanceDomainService.hasBalance(userId)) {
-            log.warn("[{}] 余额不足: user_id={}, is_privileged={}", requestId, userId, user.isPrivileged());
-            getErrorWriter().writeError(response, 402, "insufficient_balance",
-                    "Insufficient balance. Please recharge your account.");
-            return;
         }
 
         // Step 6: Failover 循环
@@ -453,7 +368,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fp =
                             fingerprintService.getOrCreateFingerprint(
                                     account.getId(),
-                                    extractHeadersMap(request));
+                                    clientProfile.headers());
                     upstreamBody = oAuthMimicryService.buildAndInjectMetadataUserID(
                             upstreamBody, account, fp);
                     upstreamBody = oAuthMimicryService.normalizeClaudeOAuthRequestBody(
@@ -471,7 +386,17 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 IRequestTransformer transformer = getTransformerFor(account);
                 HttpRequest upstreamReq;
                 try {
-                    upstreamReq = transformer.buildUpstreamRequest(upstreamBody, account, accessToken);
+                    upstreamReq = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                            upstreamBody,
+                            account,
+                            accessToken,
+                            upstreamRoute,
+                            metadataUserId,
+                            upstreamPath,
+                            model,
+                            upstreamStream,
+                            shouldMimicClaudeCode,
+                            clientProfile.headers()));
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
                     concurrencyService.release(slot);
@@ -512,7 +437,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     IUsageParser usageParser = getUsageParserFor(account);
                     UsageTokens usage;
                     boolean handleAsStreaming = shouldHandleResponseAsStreaming(upstreamStream, upstreamResp);
-                    StreamingResult streamingResult = null;
+                    GatewayResponseResult streamingResult = null;
                     if (handleAsStreaming && clientStream) {
                         log.info("[{}] 开始流式响应处理", requestId);
                         streamingResult = handleStreaming(upstreamResp, response, ctx, usageParser);
@@ -529,7 +454,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         log.info("[{}] 用量统计: input={}, output={}, cache_write={}, cache_read={}",
                                 requestId, usage.getInputTokens(), usage.getOutputTokens(),
                                 usage.getCacheCreationTokens(), usage.getCacheReadTokens());
-                        settleUsageLog(usage, model, accountPlatform.name(), userId, apiKeyId, account, group, user,
+                        billingSettlementService.settleUsageLog(usage, model, accountPlatform.name(), userId, apiKeyId, account, group, user,
                                 clientStream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
                                 request, requestId);
                     } else {
@@ -537,6 +462,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 requestId, account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
                                 usageParser.getClass().getSimpleName(), clientStream, upstreamStream, handleAsStreaming,
                                 upstreamResp.headers().firstValue("Content-Type").orElse(""));
+                        String noUsageReason = "usage_not_parsed; endpoint=" + upstreamRoute.endpointKind()
+                                + "; parser=" + usageParser.getClass().getSimpleName()
+                                + "; client_stream=" + clientStream
+                                + "; upstream_stream=" + upstreamStream
+                                + "; handled_as_stream=" + handleAsStreaming
+                                + "; content_type=" + upstreamResp.headers().firstValue("Content-Type").orElse("");
+                        billingSettlementService.recordNoUsageLog(model, accountPlatform.name(), userId, apiKeyId,
+                                account, group, clientStream,
+                                streamingResult != null && streamingResult.clientDisconnected(),
+                                durationMs, request, requestId, noUsageReason);
                     }
 
                     // 捕获上游 Rate Limit 头（仅 OAUTH 账号）
@@ -655,156 +590,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     // 受保护辅助方法
     // ========================
 
-    protected GroupEntity loadGroup(Long groupId) {
-        if (groupId == null) return null;
-        return groupRepository.findById(groupId)
-                .filter(g -> g.getDeletedAt() == null)
-                .orElse(null);
-    }
-
-    protected StreamingResult handleStreaming(HttpResponse<InputStream> upstreamResp,
-                                           HttpServletResponse response,
-                                           GatewayRequestContext ctx,
-                                           IUsageParser usageParser) throws IOException {
-        response.setStatus(200);
-        response.setContentType("text/event-stream");
-        response.setCharacterEncoding("UTF-8");
-        response.setHeader("Cache-Control", "no-cache");
-        response.setHeader("Connection", "keep-alive");
-        response.setHeader("X-Accel-Buffering", "no");
-
-        UsageTokens totalUsage = UsageTokens.builder().build();
-
-        // 判断翻译方向，通过 ConverterRegistry 获取流式翻译器。
-        // 优先使用 UpstreamRoute 中的格式，保证请求和响应翻译走同一份路由决策。
-        Platform requestPlatform = ctx.getRequestPlatform();
-        UpstreamRoute route = ctx.getUpstreamRoute();
-        String clientFormat = route != null && route.clientFormat() != null
-                ? route.clientFormat()
-                : (ctx.getRequestFormat() != null
-                        ? ctx.getRequestFormat()
-                        : ProtocolTranslationService.platformToFormatId(requestPlatform));
-        String upstreamFormat = route != null
-                ? route.upstreamFormat()
-                : ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform());
-        boolean needTranslation = clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat);
-
-        // Hub-and-Spoke 流式翻译器：上游 SSE → IR SSE，IR SSE → 客户端 SSE
-        StreamTranslator upstreamToIR = null;
-        StreamTranslator irToClient = null;
-
-        if (needTranslation) {
-            log.info("[{}] 流式翻译: {} -> IR -> {} | account={}",
-                    ctx.getRequestId(), upstreamFormat, clientFormat, ctx.getSelectedAccount().getName());
-            if (clientFormat != null && upstreamFormat != null) {
-                ProtocolConverter clientConv = converterRegistry.get(clientFormat);
-                ProtocolConverter upstreamConv = converterRegistry.get(upstreamFormat);
-                if (clientConv != null && upstreamConv != null) {
-                    upstreamToIR = upstreamConv.createStreamToIR(ctx.getRequestedModel());
-                    irToClient = clientConv.createStreamFromIR(ctx.getRequestedModel());
-                } else {
-                    log.warn("[{}] 流式翻译器不可用: client_conv={}, upstream_conv={}, 回退为透传",
-                            ctx.getRequestId(), clientConv != null, upstreamConv != null);
-                }
-            }
-            // 若任一 Converter 不可用，upstreamToIR/irToClient 为 null，fallback 到透传
-        } else {
-            log.info("[{}] 流式透传模式: platform={}", ctx.getRequestId(), requestPlatform);
-        }
-
-        boolean clientDisconnected = false;
-        int sseDataLines = 0;
-        int usageEventLines = 0;
-        boolean doneSignalSeen = false;
-        try (var upstreamInput = upstreamResp.body();
-             var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8));
-             var writer = response.getWriter()) {
-
-            String line;
-            long lastRenewal = System.currentTimeMillis();
-            while ((line = reader.readLine()) != null) {
-
-                // 每 60 秒续约一次并发槽位租约，防止流式长连接期间 permit 过期
-                if (System.currentTimeMillis() - lastRenewal > 60_000) {
-                    if (ctx.getConcurrencySlot() != null) {
-                        concurrencyService.renewLease(ctx.getConcurrencySlot());
-                    }
-                    lastRenewal = System.currentTimeMillis();
-                }
-
-                // 记录 SSE 结构化摘要，不输出完整响应内容，避免泄露用户数据。
-                if (line.startsWith("data: ")) {
-                    sseDataLines++;
-                }
-                if (usageParser.isStreamDone(line)) {
-                    doneSignalSeen = true;
-                }
-
-                // 统一从上游原始 SSE 行解析用量，确保透传和协议翻译路径使用同一套计费来源
-                if (mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line)) {
-                    usageEventLines++;
-                }
-
-                if (upstreamToIR == null || irToClient == null) {
-                    // === 透传模式（无翻译或 Converter 不可用） ===
-                    if (usageParser.isStreamDone(line)) {
-                        writer.write(line);
-                        writer.write("\n");
-                        writer.flush();
-                        break;
-                    }
-                    writer.write(line);
-                    writer.write("\n");
-                    writer.flush();
-                } else {
-                    // === Hub-and-Spoke 流式翻译：上游 SSE → IR SSE → 客户端 SSE ===
-                    for (String irLine : upstreamToIR.feed(line)) {
-                        for (String clientLine : irToClient.feed(irLine)) {
-                            writer.write(clientLine);
-                            writer.write("\n");
-                        }
-                    }
-                    writer.flush();
-                    if (upstreamToIR.isDone()) break;
-                }
-            }
-        } catch (IOException e) {
-            if (response.isCommitted()) {
-                clientDisconnected = true;
-                log.warn("[{}] 客户端在流式响应期间断开: input={}, output={}, cache_w={}, cache_r={}",
-                        ctx.getRequestId(), totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
-                        totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
-            } else {
-                log.warn("SSE stream error", e);
-                throw e;
-            }
-        }
-
-        // Hub-and-Spoke 翻译模式下从翻译器回填用量
-        if (upstreamToIR != null && irToClient != null) {
-            if (totalUsage.getInputTokens() == 0 && upstreamToIR.getInputTokens() > 0) {
-                totalUsage.setInputTokens(upstreamToIR.getInputTokens());
-            }
-            if (totalUsage.getOutputTokens() == 0 && upstreamToIR.getOutputTokens() > 0) {
-                totalUsage.setOutputTokens(upstreamToIR.getOutputTokens());
-            }
-            // IR→Client 翻译器也可能有 token 信息
-            if (totalUsage.getInputTokens() == 0 && irToClient.getInputTokens() > 0) {
-                totalUsage.setInputTokens(irToClient.getInputTokens());
-            }
-            if (totalUsage.getOutputTokens() == 0 && irToClient.getOutputTokens() > 0) {
-                totalUsage.setOutputTokens(irToClient.getOutputTokens());
-            }
-        }
-
-        log.info("[{}] 流式完成: parser={}, content_type={}, data_lines={}, usage_events={}, done_seen={}, client_disconnected={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
-                ctx.getRequestId(), usageParser.getClass().getSimpleName(),
-                upstreamResp.headers().firstValue("Content-Type").orElse(""),
-                sseDataLines, usageEventLines, doneSignalSeen, clientDisconnected, totalUsage.hasUsage(),
-                totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
-                totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
-        return new StreamingResult(totalUsage, clientDisconnected);
+    protected GatewayResponseResult handleStreaming(HttpResponse<InputStream> upstreamResp,
+                                                    HttpServletResponse response,
+                                                    GatewayRequestContext ctx,
+                                                    IUsageParser usageParser) throws IOException {
+        return gatewayResponseService.handleStreaming(upstreamResp, response, ctx, usageParser);
     }
 
     /** 将上游 SSE 聚合为客户端非流式响应，适配 OpenAI OAuth Codex 仅支持上游流式的场景。 */
@@ -812,164 +602,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                                         HttpServletResponse response,
                                                         GatewayRequestContext ctx,
                                                         IUsageParser usageParser) throws IOException {
-        response.setStatus(200);
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
-
-        UsageTokens totalUsage = UsageTokens.builder().build();
-        StringBuilder responseText = new StringBuilder();
-        String responseId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
-        String responseModel = ctx != null && ctx.getRequestedModel() != null ? ctx.getRequestedModel() : "unknown";
-        String stopReason = "end_turn";
-
-        try (var upstreamInput = upstreamResp.body();
-             var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line);
-                if (!line.startsWith("data: ")) continue;
-
-                JsonNode event;
-                try {
-                    event = JSON_MAPPER.readTree(line.substring(6));
-                } catch (Exception e) {
-                    continue;
-                }
-                String type = event.path("type").asText("");
-                if ("response.created".equals(type) && event.has("response")) {
-                    JsonNode resp = event.get("response");
-                    if (resp.has("id")) responseId = resp.get("id").asText(responseId);
-                    if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
-                } else if ("response.output_text.delta".equals(type)) {
-                    responseText.append(event.path("delta").asText(""));
-                } else if ("response.completed".equals(type) || "response.done".equals(type)) {
-                    if (event.has("response")) {
-                        JsonNode resp = event.get("response");
-                        if (resp.has("id")) responseId = resp.get("id").asText(responseId);
-                        if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
-                        if ("incomplete".equals(resp.path("status").asText(""))) {
-                            String reason = resp.path("incomplete_details").path("reason").asText("");
-                            stopReason = "max_output_tokens".equals(reason) ? "max_tokens" : "end_turn";
-                        }
-                    }
-                    break;
-                } else if ("response.incomplete".equals(type)) {
-                    stopReason = "max_tokens";
-                    break;
-                } else if ("response.failed".equals(type)) {
-                    stopReason = "end_turn";
-                    break;
-                }
-            }
-        }
-
-        String clientBody = buildAnthropicMessageJson(responseId, responseModel, responseText.toString(), stopReason, totalUsage);
-        try (var output = response.getOutputStream()) {
-            output.write(clientBody.getBytes(StandardCharsets.UTF_8));
-            output.flush();
-        }
-
-        log.info("[{}] 流式聚合完成: has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
-                ctx != null ? ctx.getRequestId() : "?", totalUsage.hasUsage(),
-                totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
-                totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
-        return totalUsage;
-    }
-
-    /** 构造 Anthropic Messages 非流式响应 JSON。 */
-    private String buildAnthropicMessageJson(String id, String model, String text, String stopReason, UsageTokens usage)
-            throws IOException {
-        var root = JSON_MAPPER.createObjectNode();
-        root.put("id", id);
-        root.put("type", "message");
-        root.put("role", "assistant");
-        root.put("model", model);
-        var content = JSON_MAPPER.createArrayNode();
-        var textBlock = JSON_MAPPER.createObjectNode();
-        textBlock.put("type", "text");
-        textBlock.put("text", text);
-        content.add(textBlock);
-        root.set("content", content);
-        root.put("stop_reason", stopReason);
-        root.putNull("stop_sequence");
-        var usageNode = JSON_MAPPER.createObjectNode();
-        usageNode.put("input_tokens", usage != null ? usage.getInputTokens() : 0);
-        usageNode.put("output_tokens", usage != null ? usage.getOutputTokens() : 0);
-        if (usage != null && usage.getCacheCreationTokens() > 0) {
-            usageNode.put("cache_creation_input_tokens", usage.getCacheCreationTokens());
-        }
-        if (usage != null && usage.getCacheReadTokens() > 0) {
-            usageNode.put("cache_read_input_tokens", usage.getCacheReadTokens());
-        }
-        root.set("usage", usageNode);
-        return JSON_MAPPER.writeValueAsString(root);
-    }
-
-    /** 流式响应处理结果，包含用量和客户端断开审计标记。 */
-    protected record StreamingResult(UsageTokens usage, boolean clientDisconnected) {
-    }
-
-    /**
-     * 保存用量日志并完成余额扣减，失败时保留可对账状态，避免资损静默发生。
-     */
-    private void settleUsageLog(UsageTokens usage,
-                                String model,
-                                String platform,
-                                Long userId,
-                                Long apiKeyId,
-                                AccountEntity account,
-                                GroupEntity group,
-                                UserEntity user,
-                                boolean stream,
-                                boolean clientDisconnected,
-                                long durationMs,
-                                HttpServletRequest request,
-                                String requestId) {
-        UsageLogEntity logEntry;
-        try {
-            logEntry = billingDomainService.calculateAndBuildLog(
-                    usage, model, platform,
-                    userId, apiKeyId, account.getId(), group.getId(),
-                    group.getRateMultiplier(),
-                    stream, durationMs,
-                    request.getHeader("User-Agent"),
-                    request.getRemoteAddr(),
-                    clientDisconnected);
-        } catch (Exception e) {
-            log.error("[{}] 用量日志保存失败，无法扣费: user_id={}, model={}, usage={}",
-                    requestId, userId, model, usage, e);
-            return;
-        }
-
-        boolean deducted = false;
-        try {
-            if (!user.isPrivileged()) {
-                try {
-                    billingDomainService.markLogSettling(logEntry.getId());
-                    balanceDomainService.deduct(userId, logEntry.getActualCost());
-                    deducted = true;
-                    log.info("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
-                } catch (Exception e) {
-                    log.error("[{}] 扣费失败，日志已保留待对账: log_id={}, user_id={}, cost={}",
-                            requestId, logEntry.getId(), userId, logEntry.getActualCost(), e);
-                    billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
-                    return;
-                }
-            } else {
-                log.info("[{}] 特权用户跳过扣费: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
-            }
-
-            billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());
-            billingDomainService.markLogDeducted(logEntry.getId());
-        } catch (Exception e) {
-            log.error("[{}] 扣费后处理失败，日志保持 SETTLING 待人工对账: log_id={}, user_id={}, cost={}, deducted={}",
-                    requestId, logEntry.getId(), userId, logEntry.getActualCost(), deducted, e);
-            if (deducted) {
-                billingDomainService.markLogSettlingFailed(logEntry.getId(), e.getMessage());
-            } else {
-                billingDomainService.markLogFailed(logEntry.getId(), e.getMessage());
-            }
-        }
+        return gatewayResponseService.handleStreamingAsNonStreaming(upstreamResp, response, ctx, usageParser);
     }
 
     /** 打印 OpenAI OAuth 上游限额相关响应头，用于确认 5h/7d 窗口的真实 header 名称。 */
@@ -987,75 +620,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         });
     }
 
-    /** 从上游原始 SSE 行解析用量，避免协议翻译路径丢失缓存 Token。 */
-    private boolean mergeStreamingUsageFromUpstreamLine(UsageTokens totalUsage,
-                                                        IUsageParser usageParser,
-                                                        String line) {
-        if (totalUsage == null || usageParser == null || line == null) return false;
-        if (!line.startsWith("data: ")) return false;
-
-        UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
-        if (eventUsage != null) {
-            totalUsage.merge(eventUsage);
-            return eventUsage.hasUsage();
-        }
-        return false;
-    }
-
     protected UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,
                                               HttpServletResponse response,
                                               IUsageParser usageParser) throws IOException {
-        response.setStatus(upstreamResp.statusCode());
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
-
-        String responseBody;
-        try (var input = upstreamResp.body()) {
-            responseBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
-        }
-
-        // 先解析用量（用上游格式），再做响应协议翻译
-        UsageTokens usage = usageParser.parseNonStreaming(responseBody);
-
-        // 协议翻译：上游格式 → 客户端格式。
-        // 优先使用 UpstreamRoute 中的格式，保证与请求翻译、usage parser 的路由决策一致。
-        GatewayRequestContext ctx = GatewayRequestContext.get();
-        log.info("[{}] 非流式用量解析: parser={}, body_bytes={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
-                ctx != null ? ctx.getRequestId() : "?",
-                usageParser.getClass().getSimpleName(),
-                responseBody.getBytes(StandardCharsets.UTF_8).length,
-                usage != null && usage.hasUsage(),
-                usage != null ? usage.getInputTokens() : 0,
-                usage != null ? usage.getOutputTokens() : 0,
-                usage != null ? usage.getCacheCreationTokens() : 0,
-                usage != null ? usage.getCacheReadTokens() : 0);
-        Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
-        UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
-        String clientFormat = route != null && route.clientFormat() != null
-                ? route.clientFormat()
-                : (ctx != null && ctx.getRequestFormat() != null
-                        ? ctx.getRequestFormat()
-                        : ProtocolTranslationService.platformToFormatId(requestPlatform));
-        String upstreamFormat = route != null
-                ? route.upstreamFormat()
-                : (ctx != null && ctx.getSelectedAccount() != null
-                        ? ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform())
-                        : null);
-        boolean needRespTranslation = clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat);
-        String clientBody = responseBody;
-        if (needRespTranslation) {
-            log.info("[{}] 响应协议翻译: {} -> {}",
-                    ctx != null ? ctx.getRequestId() : "?", upstreamFormat, clientFormat);
-            clientBody = translationService.translateResponse(responseBody, upstreamFormat, clientFormat);
-        }
-
-        try (var output = response.getOutputStream()) {
-            output.write(clientBody.getBytes(StandardCharsets.UTF_8));
-            output.flush();
-        }
-
-        return usage;
+        return gatewayResponseService.handleNonStreaming(upstreamResp, response, usageParser);
     }
 
     /**
@@ -1137,100 +705,4 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         }
     }
 
-    // ========================
-    // Claude Code 分组降级
-    // ========================
-
-    /**
-     * 解析 claude_code_only 分组链路。
-     * <p>
-     * 如果 Group 是 claude_code_only 但客户端不是 Claude Code，
-     * 沿 fallback_group_id 链路查找可用分组。链路末端无 fallback 时抛出异常。
-     * 支持环形检测。
-     *
-     * @param group        原始分组
-     * @param isClaudeCode 客户端是否是 Claude Code
-     * @return 解析后的分组（可能是 fallback 链路上的其他分组）
-     * @throws ClaudeCodeOnlyException 链路末端无可用 fallback
-     */
-    private GroupEntity resolveGatewayGroup(GroupEntity group, boolean isClaudeCode) {
-        Long currentId = group.getId();
-        java.util.Set<Long> visited = new java.util.HashSet<>();
-
-        while (true) {
-            if (!visited.add(currentId)) {
-                log.error("Claude Code 分组降级环形引用: current={}, visited={}", currentId, visited);
-                throw new ClaudeCodeOnlyException(
-                        "Fallback group cycle detected for group " + currentId);
-            }
-
-            // 重新加载当前 group（链路中每一步都是不同的 group）
-            GroupEntity currentGroup = currentId.equals(group.getId())
-                    ? group
-                    : groupRepository.findById(currentId).orElse(null);
-
-            if (currentGroup == null || currentGroup.getDeletedAt() != null) {
-                log.error("Claude Code 降级分组不存在或已删除: group_id={}", currentId);
-                throw new ClaudeCodeOnlyException(
-                        "Fallback group " + currentId + " not found or deleted");
-            }
-
-            // 终止条件：非 claude_code_only 或客户端是 Claude Code
-            if (!Boolean.TRUE.equals(currentGroup.getClaudeCodeOnly()) || isClaudeCode) {
-                log.debug("Claude Code 分组解析终止: group={}, claude_code_only={}, is_claude_code={}",
-                        currentGroup.getName(), currentGroup.getClaudeCodeOnly(), isClaudeCode);
-                return currentGroup;
-            }
-
-            log.info("Claude Code 分组降级: {} (claude_code_only=true) -> fallback_group_id={}",
-                    currentGroup.getName(), currentGroup.getFallbackGroupId());
-
-            // claude_code_only 且非 CC 客户端：尝试降级
-            if (currentGroup.getFallbackGroupId() == null) {
-                log.warn("Claude Code 分组降级链路末端: group={}, 无 fallback", currentGroup.getName());
-                throw new ClaudeCodeOnlyException(
-                        "Group '" + currentGroup.getName() + "' requires Claude Code client.");
-            }
-            currentId = currentGroup.getFallbackGroupId();
-        }
-    }
-
-    // ========================
-    // 辅助方法
-    // ========================
-
-    /** 从请求 body 中提取 metadata.user_id */
-    private static String extractMetadataUserIdFromBody(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("metadata") && root.get("metadata").has("user_id")) {
-                return root.get("metadata").get("user_id").asText();
-            }
-        } catch (Exception e) {
-            // ignore
-        }
-        return null;
-    }
-
-    /** 从请求 body 中提取 max_tokens */
-    private static int extractMaxTokens(String body) {
-        try {
-            JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("max_tokens")) return root.get("max_tokens").asInt();
-        } catch (Exception e) {
-            // ignore
-        }
-        return 0;
-    }
-
-    /** 将 HttpServletRequest 的 header 提取为 Map */
-    private static java.util.Map<String, String> extractHeadersMap(HttpServletRequest request) {
-        java.util.Map<String, String> headers = new java.util.HashMap<>();
-        var headerNames = request.getHeaderNames();
-        while (headerNames.hasMoreElements()) {
-            String name = headerNames.nextElement();
-            headers.put(name, request.getHeader(name));
-        }
-        return headers;
-    }
 }

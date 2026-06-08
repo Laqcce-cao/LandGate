@@ -61,6 +61,41 @@ class UpstreamRouteResolverTest {
     }
 
     @Test
+    @DisplayName("OpenAI API Key 保留 Responses 子路径")
+    void openAiApiKeyPreservesResponsesSubpath() {
+        AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"base_url\":\"https://proxy.example.com\",\"openai_responses_supported\":true}");
+
+        UpstreamRoute route = resolver.resolve(UpstreamRouteRequest.builder()
+                .account(account)
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("responses")
+                .upstreamPath("/v1/responses/compact")
+                .requestedModel("test-model")
+                .build());
+
+        assertEquals(EndpointKind.OPENAI_RESPONSES, route.endpointKind());
+        assertEquals("https://proxy.example.com/v1/responses/compact", route.targetUrl());
+    }
+
+    @Test
+    @DisplayName("OpenAI OAuth Codex 保留 Responses 子路径并映射到内部端点")
+    void openAiOAuthPreservesResponsesSubpath() {
+        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH, null);
+
+        UpstreamRoute route = resolver.resolve(UpstreamRouteRequest.builder()
+                .account(account)
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("responses")
+                .upstreamPath("/v1/responses/compact")
+                .requestedModel("test-model")
+                .build());
+
+        assertEquals(EndpointKind.OPENAI_CODEX_RESPONSES, route.endpointKind());
+        assertEquals("https://chatgpt.com/backend-api/codex/responses/compact", route.targetUrl());
+    }
+
+    @Test
     @DisplayName("OpenAI API Key 且 Responses 不可用时路由到 Chat Completions")
     void openAiApiKeyFallsBackToChatCompletionsWhenResponsesUnsupported() {
         AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,

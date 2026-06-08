@@ -51,6 +51,45 @@ class BillingDomainServiceTest {
     }
 
     @Test
+    @DisplayName("Token 用量日志保留网关 requestId")
+    void tokenUsageLogKeepsGatewayRequestId() {
+        ModelPricingDomainService pricingService = mock(ModelPricingDomainService.class);
+        IUsageLogRepository usageLogRepository = new CapturingUsageLogRepository();
+        BillingDomainService service = new BillingDomainService(pricingService, usageLogRepository, mock(IApiKeyRepository.class));
+        when(pricingService.getInputPrice("gpt-5.5")).thenReturn(BigDecimal.ZERO);
+        when(pricingService.getOutputPrice("gpt-5.5")).thenReturn(BigDecimal.ZERO);
+        when(pricingService.getCacheWritePrice("gpt-5.5")).thenReturn(BigDecimal.ZERO);
+        when(pricingService.getCacheReadPrice("gpt-5.5")).thenReturn(BigDecimal.ZERO);
+        when(pricingService.supportsCacheBreakdown("gpt-5.5")).thenReturn(false);
+        when(pricingService.getCacheWrite5mPrice("gpt-5.5")).thenReturn(BigDecimal.ZERO);
+        when(pricingService.getCacheWrite1hPrice("gpt-5.5")).thenReturn(BigDecimal.ZERO);
+
+        UsageLogEntity log = service.calculateAndBuildLog(UsageTokens.builder()
+                        .inputTokens(1)
+                        .build(),
+                "gpt-5.5", "OPENAI", 3L, 6L, 16L, 1L,
+                BigDecimal.ONE, false, 300, "ua", "127.0.0.1", false, "gateway-req-1");
+
+        assertEquals("gateway-req-1", log.getRequestId());
+    }
+
+    @Test
+    @DisplayName("成功但无用量时记录 NO_USAGE 日志")
+    void noUsageLogIsRecordedWithoutBilling() {
+        IUsageLogRepository usageLogRepository = new CapturingUsageLogRepository();
+        BillingDomainService service = new BillingDomainService(mock(ModelPricingDomainService.class), usageLogRepository, mock(IApiKeyRepository.class));
+
+        UsageLogEntity log = service.recordNoUsageLog("req-no-usage", "gpt-5.5", "OPENAI",
+                3L, 6L, 16L, 1L, BigDecimal.ONE, true, 1200, "ua", "127.0.0.1",
+                false, "usage_not_parsed");
+
+        assertEquals("req-no-usage", log.getRequestId());
+        assertEquals("NO_USAGE", log.getBillingStatus());
+        assertEquals("usage_not_parsed", log.getBillingError());
+        assertEquals(BigDecimal.ZERO.setScale(10), log.getActualCost());
+    }
+
+    @Test
     @DisplayName("图片用量日志保存倍率和 PENDING 状态")
     void imageUsageLogKeepsRateMultiplierAndStartsPending() {
         IUsageLogRepository usageLogRepository = new CapturingUsageLogRepository();
@@ -90,6 +129,8 @@ class BillingDomainServiceTest {
         @Override public List<UsageLogEntity> findByUserId(Long userId, int page, int size) { return List.of(); }
         @Override public List<UsageLogEntity> findByUserIdWithDate(Long userId, int page, int size, LocalDate start, LocalDate end) { return List.of(); }
         @Override public long countByUserIdWithDate(Long userId, LocalDate start, LocalDate end) { return 0; }
+        @Override public List<UsageLogEntity> findByFilters(Long userId, Long apiKeyId, Long accountId, LocalDate start, LocalDate end, int page, int size) { return List.of(); }
+        @Override public long countByFilters(Long userId, Long apiKeyId, Long accountId, LocalDate start, LocalDate end) { return 0; }
         @Override public List<UsageLogEntity> findByApiKeyId(Long apiKeyId, int page, int size) { return List.of(); }
         @Override public List<UsageLogEntity> findByAccountId(Long accountId, int page, int size) { return List.of(); }
         @Override public long countByUserId(Long userId) { return 0; }

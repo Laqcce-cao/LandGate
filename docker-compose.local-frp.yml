@@ -1,0 +1,51 @@
+# ============================================================
+# docker-compose.local-frp.yml
+# 本地 Docker + frp 暴露到云服务器
+#
+# 使用方式：
+#   docker compose -f docker-compose.yml -f docker-compose.local-frp.yml up -d
+# ============================================================
+
+services:
+  mysql:
+    ports: !reset []
+    # 替换基础 compose 里的 init.sql 挂载，避免旧初始化 SQL 覆盖当前 Flyway 表结构。
+    volumes: !override
+      - mysql_data:/var/lib/mysql
+
+  phpmyadmin:
+    profiles:
+      - disabled
+
+  redis:
+    ports: !reset []
+
+  app:
+    ports: !reset []
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: sub2api
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      CAPTCHA_ENABLED: ${CAPTCHA_ENABLED:-false}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI}
+      http_proxy: http://host.docker.internal:10801
+      https_proxy: http://host.docker.internal:10801
+      JAVA_TOOL_OPTIONS: "-Duser.timezone=Asia/Shanghai -Djava.net.preferIPv4Stack=true -Dhttp.proxyHost=host.docker.internal -Dhttp.proxyPort=10801 -Dhttps.proxyHost=host.docker.internal -Dhttps.proxyPort=10801 -Dhttp.nonProxyHosts=localhost|127.0.0.1|mysql|redis|landgate-web|landgate-app"
+      TZ: Asia/Shanghai
+
+  web:
+    ports: !override
+      - "127.0.0.1:18080:80"

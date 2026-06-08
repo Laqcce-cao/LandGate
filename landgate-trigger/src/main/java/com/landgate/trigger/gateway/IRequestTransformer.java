@@ -9,7 +9,15 @@ import java.net.http.HttpRequest;
  */
 public interface IRequestTransformer {
 
-    HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken);
+    HttpRequest buildUpstreamRequest(UpstreamRequestContext context);
+
+    /**
+     * Compatibility entry point for older direct callers.
+     * Normal gateway traffic should pass an explicit {@link UpstreamRequestContext}.
+     */
+    default HttpRequest buildUpstreamRequest(String body, AccountEntity account, String accessToken) {
+        return buildUpstreamRequest(UpstreamRequestContext.fromLegacy(body, account, accessToken));
+    }
 
     String extractModel(String body);
 

@@ -96,6 +96,48 @@
         SELECT COUNT(*) FROM usage_logs
     </select>
 
+    <select id="selectByFilters" resultMap="UsageLogResultMap">
+        SELECT * FROM usage_logs
+        WHERE 1 = 1
+        <if test="userId != null">
+            AND user_id = #{userId}
+        </if>
+        <if test="apiKeyId != null">
+            AND api_key_id = #{apiKeyId}
+        </if>
+        <if test="accountId != null">
+            AND account_id = #{accountId}
+        </if>
+        <if test="start != null and start != ''">
+            AND created_at &gt;= #{start}
+        </if>
+        <if test="end != null and end != ''">
+            AND created_at &lt; #{end}
+        </if>
+        ORDER BY created_at DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countByFilters" resultType="long">
+        SELECT COUNT(*) FROM usage_logs
+        WHERE 1 = 1
+        <if test="userId != null">
+            AND user_id = #{userId}
+        </if>
+        <if test="apiKeyId != null">
+            AND api_key_id = #{apiKeyId}
+        </if>
+        <if test="accountId != null">
+            AND account_id = #{accountId}
+        </if>
+        <if test="start != null and start != ''">
+            AND created_at &gt;= #{start}
+        </if>
+        <if test="end != null and end != ''">
+            AND created_at &lt; #{end}
+        </if>
+    </select>
+
     <!-- ==================== 业务查询（分页 + 降序） ==================== -->
 
     <select id="selectByUserId" resultMap="UsageLogResultMap">

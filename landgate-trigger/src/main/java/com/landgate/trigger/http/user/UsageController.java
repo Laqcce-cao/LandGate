@@ -28,7 +28,7 @@ public class UsageController {
      * 分页查询当前用户的用量日志列表，支持可选日期范围过滤。
      *
      * @param start 起始日期（可选，格式 yyyy-MM-dd，包含）
-     * @param end   结束日期（可选，格式 yyyy-MM-dd，不包含）
+     * @param end   结束日期（可选，格式 yyyy-MM-dd，包含当天）
      */
     @GetMapping("/my")
     public ResponseEntity<?> myUsage(
@@ -45,7 +45,7 @@ public class UsageController {
             ));
         }
         LocalDate startDate = (start != null && !start.isBlank()) ? LocalDate.parse(start) : null;
-        LocalDate endDate = (end != null && !end.isBlank()) ? LocalDate.parse(end) : null;
+        LocalDate endDate = (end != null && !end.isBlank()) ? LocalDate.parse(end).plusDays(1) : null;
 
         boolean hasDateFilter = startDate != null || endDate != null;
         var logs = hasDateFilter

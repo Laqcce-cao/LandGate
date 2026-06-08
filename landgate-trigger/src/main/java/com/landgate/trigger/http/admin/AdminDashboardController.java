@@ -151,7 +151,7 @@ public class AdminDashboardController {
     public ResponseEntity<?> getModelDistribution(
             @RequestParam(defaultValue = "7") int days) {
         ZoneId zone = ZoneId.of("Asia/Shanghai");
-        Instant start = LocalDate.now(zone).minusDays(days).atStartOfDay(zone).toInstant();
+        Instant start = startOfInclusiveRecentDays(zone, days).toInstant();
         Instant end = Instant.now();
         List<ModelStats> result = usageLogRepository.aggregateByModel(start, end);
         return ResponseEntity.ok(result);
@@ -164,7 +164,7 @@ public class AdminDashboardController {
     public ResponseEntity<?> getTokenTrend(
             @RequestParam(defaultValue = "30") int days) {
         ZoneId zone = ZoneId.of("Asia/Shanghai");
-        Instant start = LocalDate.now(zone).minusDays(days).atStartOfDay(zone).toInstant();
+        Instant start = startOfInclusiveRecentDays(zone, days).toInstant();
         Instant end = Instant.now();
         List<PlatformDailyStats> result = usageLogRepository.aggregatePlatformByDate(start, end);
         return ResponseEntity.ok(result);
@@ -178,9 +178,14 @@ public class AdminDashboardController {
             @RequestParam(defaultValue = "30") int days,
             @RequestParam(defaultValue = "12") int topN) {
         ZoneId zone = ZoneId.of("Asia/Shanghai");
-        Instant start = LocalDate.now(zone).minusDays(days).atStartOfDay(zone).toInstant();
+        Instant start = startOfInclusiveRecentDays(zone, days).toInstant();
         Instant end = Instant.now();
         List<UserDailyStats> result = usageLogRepository.aggregateTopUsersByDate(start, end, topN);
         return ResponseEntity.ok(result);
+    }
+
+    private static ZonedDateTime startOfInclusiveRecentDays(ZoneId zone, int days) {
+        int safeDays = Math.max(days, 1);
+        return LocalDate.now(zone).minusDays(safeDays - 1L).atStartOfDay(zone);
     }
 }

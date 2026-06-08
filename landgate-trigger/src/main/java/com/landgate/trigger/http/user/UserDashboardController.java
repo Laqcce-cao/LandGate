@@ -104,7 +104,7 @@ public class UserDashboardController {
             endInstant = LocalDate.parse(end).plusDays(1).atStartOfDay(zone).toInstant();
         } else {
             int d = (days != null) ? days : 7;
-            startInstant = LocalDate.now(zone).minusDays(d).atStartOfDay(zone).toInstant();
+            startInstant = startDateOfInclusiveRecentDays(zone, d).atStartOfDay(zone).toInstant();
         }
 
         List<ModelStats> result = usageLogRepository.aggregateByUserIdAndModel(userId, startInstant, endInstant);
@@ -138,11 +138,16 @@ public class UserDashboardController {
             endDate = LocalDate.parse(end).plusDays(1);
         } else {
             int d = (days != null) ? days : 30;
-            startDate = LocalDate.now(zone).minusDays(d);
+            startDate = startDateOfInclusiveRecentDays(zone, d);
             endDate = LocalDate.now(zone).plusDays(1);
         }
 
         List<DailyUsageStats> result = usageLogRepository.aggregateByUserAndDate(userId, startDate, endDate);
         return ResponseEntity.ok(result);
+    }
+
+    private static LocalDate startDateOfInclusiveRecentDays(ZoneId zone, int days) {
+        int safeDays = Math.max(days, 1);
+        return LocalDate.now(zone).minusDays(safeDays - 1L);
     }
 }

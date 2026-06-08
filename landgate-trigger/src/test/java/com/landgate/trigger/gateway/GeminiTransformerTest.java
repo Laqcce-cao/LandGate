@@ -8,6 +8,8 @@ import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -26,8 +28,11 @@ class GeminiTransformerTest {
                 .type(AccountType.API_KEY)
                 .extra("{\"base_url\":\"https://extra.example.com\"}")
                 .build();
-        GatewayRequestContext.set(GatewayRequestContext.builder()
-                .upstreamRoute(new UpstreamRoute(
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                "{}",
+                account,
+                "gemini-key",
+                new UpstreamRoute(
                         Platform.GEMINI,
                         "gemini",
                         "gemini",
@@ -37,17 +42,15 @@ class GeminiTransformerTest {
                         false,
                         false,
                         "gemini",
-                        "test_route"))
-                .upstreamPath("/v1beta/models/ignored:generateContent")
-                .build());
+                        "test_route"),
+                null,
+                "/v1beta/models/ignored:generateContent",
+                null,
+                false,
+                false,
+                Map.of()));
 
-        try {
-            var request = transformer.buildUpstreamRequest("{}", account, "gemini-key");
-
-            assertEquals("https://route.example.com/v1beta/models/gemini-pro:generateContent?key=gemini-key",
-                    request.uri().toString());
-        } finally {
-            GatewayRequestContext.clear();
-        }
+        assertEquals("https://route.example.com/v1beta/models/gemini-pro:generateContent?key=gemini-key",
+                request.uri().toString());
     }
 }

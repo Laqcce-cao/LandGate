@@ -13,6 +13,8 @@ import org.springframework.stereotype.Component;
 public class OpenAiOAuthCodexRouteStrategy implements UpstreamRouteStrategy {
 
     static final String CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+    private static final String CODEX_RESPONSES_PATH = "/backend-api/codex/responses";
+    private static final String RESPONSES_PATH = "/v1/responses";
 
     @Override
     public boolean supports(UpstreamRouteRequest request) {
@@ -29,12 +31,29 @@ public class OpenAiOAuthCodexRouteStrategy implements UpstreamRouteStrategy {
                 request.requestFormat(),
                 "responses",
                 EndpointKind.OPENAI_CODEX_RESPONSES,
-                CODEX_RESPONSES_URL,
+                resolveCodexTargetUrl(request),
                 false,
                 true,
                 true,
                 "responses",
                 "openai_oauth_codex"
         );
+    }
+
+    private static String resolveCodexTargetUrl(UpstreamRouteRequest request) {
+        String path = request.upstreamPath();
+        if (path == null || path.isBlank()) {
+            return CODEX_RESPONSES_URL;
+        }
+        if (path.startsWith(CODEX_RESPONSES_PATH)) {
+            return CODEX_RESPONSES_URL + path.substring(CODEX_RESPONSES_PATH.length());
+        }
+        if (path.startsWith(RESPONSES_PATH)) {
+            return CODEX_RESPONSES_URL + path.substring(RESPONSES_PATH.length());
+        }
+        if (path.startsWith("/responses")) {
+            return CODEX_RESPONSES_URL + path.substring("/responses".length());
+        }
+        return CODEX_RESPONSES_URL;
     }
 }
