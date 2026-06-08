@@ -8,7 +8,7 @@ import com.landgate.trigger.gateway.usage.GeminiUsageParser;
 import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.trigger.gateway.usage.OpenAiUsageParser;
 import com.landgate.trigger.gateway.usage.ResponsesUsageParser;
-import com.landgate.trigger.gateway.usage.UsageParser;
+import com.landgate.trigger.gateway.usage.AnthropicUsageParser;
 import com.landgate.types.enums.Platform;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -34,7 +34,7 @@ public class PlatformRouter {
     private final OpenAiTransformer openAiTransformer;
     private final GeminiTransformer geminiTransformer;
 
-    private final UsageParser usageParser;
+    private final AnthropicUsageParser anthropicUsageParser;
     private final OpenAiUsageParser openAiUsageParser;
     private final ResponsesUsageParser responsesUsageParser;
     private final GeminiUsageParser geminiUsageParser;
@@ -56,8 +56,8 @@ public class PlatformRouter {
 
         // OpenAI 平台同时承载 chat_completions 和 responses 两种 usage schema；
         // 平台粗粒度默认使用 Chat Completions，正常网关路径优先通过 UpstreamRoute.usageFormat 精确选择。
-        usageParserMap.put(Platform.ANTHROPIC, usageParser);
-        usageParserMap.put(Platform.ANTIGRAVITY, usageParser);
+        usageParserMap.put(Platform.ANTHROPIC, anthropicUsageParser);
+        usageParserMap.put(Platform.ANTIGRAVITY, anthropicUsageParser);
         usageParserMap.put(Platform.OPENAI, openAiUsageParser);
         usageParserMap.put(Platform.GEMINI, geminiUsageParser);
 

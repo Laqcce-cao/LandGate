@@ -19,7 +19,7 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-public class UsageParser implements IUsageParser {
+public class AnthropicUsageParser implements IUsageParser {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 

@@ -81,8 +81,25 @@ public class ResponsesUsageParser implements IUsageParser {
 
     @Override
     public boolean isStreamDone(String sseLine) {
-        // Responses API SSE 没有 [DONE] 标记，流结束由 response.completed 事件决定
-        // 此处返回 false，由调用方通过 response.completed 判断流结束
-        return false;
+        if (sseLine == null || sseLine.isBlank()) {
+            return false;
+        }
+        if ("data: [DONE]".equals(sseLine)) {
+            return true;
+        }
+        if (!sseLine.startsWith("data: ")) {
+            return false;
+        }
+        try {
+            JsonNode root = JSON.readTree(sseLine.substring(6));
+            String type = root.path("type").asText();
+            return "response.completed".equals(type)
+                    || "response.done".equals(type)
+                    || "response.failed".equals(type)
+                    || "response.incomplete".equals(type);
+        } catch (Exception e) {
+            log.debug("Failed to parse Responses SSE done line", e);
+            return false;
+        }
     }
 }

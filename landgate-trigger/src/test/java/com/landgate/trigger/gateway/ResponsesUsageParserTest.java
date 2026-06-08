@@ -6,7 +6,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * ResponsesUsageParser 单元测试 —— 验证 OpenAI Responses 用量字段映射。
@@ -67,5 +69,17 @@ class ResponsesUsageParserTest {
                 }""";
 
         assertNull(parser.parseSSELine(sseData));
+    }
+
+    @Test
+    @DisplayName("流式终止事件识别 response 结束状态")
+    void isStreamDoneRecognizesResponsesTerminalEvents() {
+        assertTrue(parser.isStreamDone("data: {\"type\":\"response.completed\"}"));
+        assertTrue(parser.isStreamDone("data: {\"type\":\"response.done\"}"));
+        assertTrue(parser.isStreamDone("data: {\"type\":\"response.failed\"}"));
+        assertTrue(parser.isStreamDone("data: {\"type\":\"response.incomplete\"}"));
+        assertTrue(parser.isStreamDone("data: [DONE]"));
+        assertFalse(parser.isStreamDone("data: {\"type\":\"response.output_text.delta\"}"));
+        assertFalse(parser.isStreamDone("event: response.completed"));
     }
 }
