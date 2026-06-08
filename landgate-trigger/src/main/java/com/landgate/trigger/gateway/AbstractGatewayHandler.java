@@ -34,6 +34,8 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -241,6 +243,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         int failoverCount = 0;
         AccountEntity account = null;
         Long tokenRefreshed = null;  // 记录本轮已刷新过的 account，避免死循环
+        Set<Long> excludedAccountIds = new HashSet<>();
 
         while (failoverCount < MAX_FAILOVER_SWITCHES) {
             log.info("[{}] Failover 尝试 #{}/{}: sticky_account={}",
@@ -254,6 +257,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     log.info("[{}] 粘滞账户不支持模型，清除粘滞: account_id={}, model={}",
                             requestId, account.getId(), model);
                     sessionHashService.clearSession(sessionHash);
+                    excludeForFailover(excludedAccountIds, account, requestId, "sticky_model_unsupported");
                     account = null;
                 }
             } else {
@@ -261,7 +265,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
 
             if (account == null) {
-                account = accountSelector.selectAccount(group, model);
+                account = accountSelector.selectAccount(group, model, excludedAccountIds);
                 if (account != null) {
                     log.info("[{}] 账户选择结果: account_id={}, name={}, platform={}",
                             requestId, account.getId(), account.getName(), account.getPlatform());
@@ -281,6 +285,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             if (slot == null) {
                 log.warn("[{}] 并发槽位不可用: account_id={}, max_concurrency={}, failover={}",
                         requestId, account.getId(), account.getConcurrency(), failoverCount);
+                excludeForFailover(excludedAccountIds, account, requestId, "concurrency_unavailable");
                 failoverCount++;
                 continue;
             }
@@ -291,6 +296,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 log.warn("[{}] 获取 AccessToken 失败: account_id={}, type={}, failover={}",
                         requestId, account.getId(), account.getType(), failoverCount);
                 concurrencyService.release(slot);
+                excludeForFailover(excludedAccountIds, account, requestId, "access_token_unavailable");
                 failoverCount++;
                 continue;
             }
@@ -400,6 +406,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
                     concurrencyService.release(slot);
+                    excludeForFailover(excludedAccountIds, account, requestId, "build_upstream_request_failed");
                     failoverCount++;
                     continue;
                 }
@@ -419,6 +426,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 } catch (IOException e) {
                     log.error("Upstream IO error: account_id={}, failover={}", account.getId(), failoverCount, e);
                     concurrencyService.release(slot);
+                    excludeForFailover(excludedAccountIds, account, requestId, "upstream_io_error");
                     failoverCount++;
                     continue;
                 }
@@ -498,6 +506,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 requestId, account.getId(), account.getType());
                         accountSelector.markError(account.getId(),
                                 "Upstream returned 401 for " + account.getType() + " account");
+                        excludeForFailover(excludedAccountIds, account, requestId, "upstream_401_non_oauth");
                         failoverCount++;
                         continue;
                     }
@@ -507,6 +516,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         log.warn("[{}] Token 刷新后仍 401，标记 ERROR: account_id={}", requestId, account.getId());
                         accountSelector.markError(account.getId(),
                                 "OAuth token refreshed but upstream still returned 401");
+                        excludeForFailover(excludedAccountIds, account, requestId, "oauth_401_after_refresh");
                         tokenRefreshed = null;
                         failoverCount++;
                         continue;
@@ -535,6 +545,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 java.time.Instant.now().plusSeconds(600),
                                 "OAuth token refresh temporarily failed");
                     }
+                    excludeForFailover(excludedAccountIds, account, requestId, "oauth_token_refresh_failed");
                     failoverCount++;
                 }
 
@@ -544,6 +555,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             requestId, statusCode, account.getId(), failoverCount + 1, MAX_FAILOVER_SWITCHES);
                     markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
                     concurrencyService.release(slot);
+                    excludeForFailover(excludedAccountIds, account, requestId, "retryable_upstream_" + statusCode);
                     failoverCount++;
                 }
 
@@ -563,6 +575,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 requestId, statusCode, account.getId(), failoverCount + 1, MAX_FAILOVER_SWITCHES);
                         markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
                         concurrencyService.release(slot);
+                        excludeForFailover(excludedAccountIds, account, requestId, "passthrough_retry_" + statusCode);
                         failoverCount++;
                         // 回到 failover 循环
                     } else {
@@ -589,6 +602,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     // ========================
     // 受保护辅助方法
     // ========================
+
+    private void excludeForFailover(Set<Long> excludedAccountIds, AccountEntity account, String requestId, String reason) {
+        if (account == null || account.getId() == null) return;
+        excludedAccountIds.add(account.getId());
+        log.info("[{}] 本次请求排除账户: account_id={}, reason={}", requestId, account.getId(), reason);
+    }
 
     protected GatewayResponseResult handleStreaming(HttpResponse<InputStream> upstreamResp,
                                                     HttpServletResponse response,
