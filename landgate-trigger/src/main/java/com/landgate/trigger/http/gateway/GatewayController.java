@@ -1,13 +1,21 @@
 package com.landgate.trigger.http.gateway;
 
+import com.landgate.infrastructure.dao.IUserDao;
+import com.landgate.infrastructure.dao.po.ApiKeyPO;
+import com.landgate.infrastructure.dao.po.UserPO;
 import com.landgate.trigger.gateway.GatewayDispatcher;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -22,6 +30,7 @@ import java.util.UUID;
 public class GatewayController {
 
     private final GatewayDispatcher dispatcher;
+    private final IUserDao userDao;
 
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
     private static final String ATTR_GATEWAY_UPSTREAM_PATH = "gateway_upstream_path";
@@ -56,6 +65,57 @@ public class GatewayController {
         log.info("GET /v1/models");
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"data\":[],\"has_more\":false,\"first_id\":null,\"last_id\":null}");
+    }
+
+    /**
+     * cc switch 用量查询入口。
+     * <p>
+     * API Key 鉴权由 {@code ApiKeyAuthFilter} 完成，这里只负责返回 cc switch
+     * usageScript 能识别的余额字段：remaining / quota.remaining / balance / unit。
+     */
+    @GetMapping("/v1/usage")
+    public ResponseEntity<?> usage(HttpServletRequest request) {
+        ApiKeyPO apiKey = (ApiKeyPO) request.getAttribute("api_key");
+        Long userId = (Long) request.getAttribute("user_id");
+        if (apiKey == null || userId == null) {
+            return ResponseEntity.status(401).body(Map.of(
+                    "error", Map.of("message", "Missing API key")
+            ));
+        }
+
+        boolean active = apiKey.isActive();
+        BigDecimal quota = valueOrZero(apiKey.getQuota());
+        BigDecimal quotaUsed = valueOrZero(apiKey.getQuotaUsed());
+        if (quota.signum() > 0) {
+            BigDecimal remaining = quota.subtract(quotaUsed).max(BigDecimal.ZERO);
+            Map<String, Object> resp = baseUsageResponse("quota_limited", active, apiKey.getStatus() != null ? apiKey.getStatus().getKey() : null);
+            resp.put("remaining", remaining);
+            resp.put("unit", "USD");
+            resp.put("quota", Map.of(
+                    "limit", quota,
+                    "used", quotaUsed,
+                    "remaining", remaining,
+                    "unit", "USD"
+            ));
+            putExpiresAt(resp, apiKey.getExpiresAt());
+            return ResponseEntity.ok(resp);
+        }
+
+        UserPO user = userDao.selectById(userId);
+        if (user == null) {
+            return ResponseEntity.status(404).body(Map.of(
+                    "error", Map.of("message", "User not found")
+            ));
+        }
+
+        BigDecimal balance = valueOrZero(user.getBalance());
+        Map<String, Object> resp = baseUsageResponse("unrestricted", active, apiKey.getStatus() != null ? apiKey.getStatus().getKey() : null);
+        resp.put("planName", "钱包余额");
+        resp.put("remaining", balance);
+        resp.put("balance", balance);
+        resp.put("unit", "USD");
+        putExpiresAt(resp, apiKey.getExpiresAt());
+        return ResponseEntity.ok(resp);
     }
 
     // ---- OpenAI Chat Completions API ----
@@ -123,6 +183,27 @@ public class GatewayController {
 
         request.setAttribute(ATTR_GATEWAY_UPSTREAM_PATH, canonicalResponsesPath(request.getServletPath()));
         dispatcher.dispatch(request, response, body);
+    }
+
+    private static Map<String, Object> baseUsageResponse(String mode, boolean active, String status) {
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("mode", mode);
+        resp.put("isValid", active);
+        resp.put("is_active", active);
+        if (status != null) {
+            resp.put("status", status);
+        }
+        return resp;
+    }
+
+    private static BigDecimal valueOrZero(BigDecimal value) {
+        return value != null ? value : BigDecimal.ZERO;
+    }
+
+    private static void putExpiresAt(Map<String, Object> resp, Instant expiresAt) {
+        if (expiresAt != null) {
+            resp.put("expires_at", expiresAt);
+        }
     }
 
     private static String canonicalResponsesPath(String servletPath) {
