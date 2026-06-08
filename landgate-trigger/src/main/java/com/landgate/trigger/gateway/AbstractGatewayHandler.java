@@ -141,16 +141,18 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return platformRouter.getTransformer(account.getPlatform());
     }
 
-    /** 根据账户平台获取对应的用量解析器 */
+    /** 根据上游实际响应格式获取对应的用量解析器 */
     protected IUsageParser getUsageParserFor(AccountEntity account) {
-        // 优先使用 ctx.requestFormat（URL 路径决定）进行细化路由，
-        // 用于区分 OpenAI 平台 chat/responses 两种端点的 usage schema 差异。
+        // usage 来自上游响应，必须优先由 UpstreamRoute 的 upstreamPlatform/usageFormat 决定。
         GatewayRequestContext ctx = GatewayRequestContext.get();
         if (ctx != null && ctx.getUpstreamRoute() != null) {
             return platformRouter.getUsageParser(ctx.getUpstreamRoute());
         }
-        String format = ctx != null ? ctx.getRequestFormat() : null;
-        return platformRouter.getUsageParser(account.getPlatform(), format);
+        log.warn("Missing UpstreamRoute while selecting usage parser; fallback to account platform only. "
+                        + "This may choose an ambiguous parser for multi-format platforms such as OpenAI. account_id={}, platform={}",
+                account != null ? account.getId() : null,
+                account != null ? account.getPlatform() : null);
+        return platformRouter.getUsageParser(account.getPlatform());
     }
 
     /** 根据客户端/路由意图和上游实际 Content-Type 决定响应处理方式。 */
