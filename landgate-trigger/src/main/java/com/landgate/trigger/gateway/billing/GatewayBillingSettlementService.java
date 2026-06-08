@@ -58,9 +58,14 @@ public class GatewayBillingSettlementService {
 
         boolean deducted = false;
         try {
+            if (!billingDomainService.tryMarkLogSettling(logEntry.getId())) {
+                log.warn("[{}] 用量日志扣费抢占失败，跳过扣费: log_id={}, user_id={}",
+                        requestId, logEntry.getId(), userId);
+                return;
+            }
+
             if (!user.isPrivileged()) {
                 try {
-                    billingDomainService.markLogSettling(logEntry.getId());
                     balanceDomainService.deduct(userId, logEntry.getActualCost());
                     deducted = true;
                     log.info("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());

@@ -305,8 +305,13 @@ public class ImagesController {
                         if (imageCount > 0) {
                             boolean deducted = false;
                             try {
+                                if (!billingDomainService.tryMarkLogSettling(logEntry.getId())) {
+                                    log.warn("Image billing claim failed, skip deduction: log_id={}, user_id={}",
+                                            logEntry.getId(), userId);
+                                    return;
+                                }
+
                                 try {
-                                    billingDomainService.markLogSettling(logEntry.getId());
                                     balanceDomainService.deduct(userId, logEntry.getActualCost());
                                     deducted = true;
                                 } catch (Exception e) {

@@ -121,6 +121,16 @@ public interface IUsageLogRepository {
     void updateBillingStatus(Long id, String billingStatus, String billingError);
 
     /**
+     * 仅当日志仍处于可自动扣费状态时更新计费状态。
+     *
+     * @param id            用量日志 ID
+     * @param billingStatus 目标计费状态
+     * @param billingError  失败原因，成功时为 null
+     * @return true 表示抢占成功，false 表示已被其他实例处理或状态不可重试
+     */
+    boolean updateBillingStatusFromPendingOrFailed(Long id, String billingStatus, String billingError);
+
+    /**
      * 查询指定状态且早于 cutoff 的用量日志，用于扣费对账。
      *
      * @param billingStatus 计费状态
