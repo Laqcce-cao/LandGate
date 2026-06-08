@@ -94,6 +94,18 @@ public class AnthropicUsageParser implements IUsageParser {
 
     @Override
     public boolean isStreamDone(String sseLine) {
-        return "event: message_stop".equals(sseLine) || "data: [DONE]".equals(sseLine);
+        if ("data: [DONE]".equals(sseLine)) {
+            return true;
+        }
+        if (sseLine == null || !sseLine.startsWith("data: ")) {
+            return false;
+        }
+        try {
+            JsonNode root = JSON.readTree(sseLine.substring(6));
+            return "message_stop".equals(root.path("type").asText());
+        } catch (Exception e) {
+            log.debug("Failed to parse Anthropic SSE done line", e);
+            return false;
+        }
     }
 }
