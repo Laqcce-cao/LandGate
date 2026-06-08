@@ -1,4 +1,4 @@
-package com.landgate.trigger.gateway;
+package com.landgate.trigger.gateway.usage;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;

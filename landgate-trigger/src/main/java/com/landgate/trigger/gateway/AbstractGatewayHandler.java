@@ -23,6 +23,7 @@ import com.landgate.trigger.gateway.response.GatewayResponseService;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
+import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import jakarta.servlet.http.HttpServletRequest;

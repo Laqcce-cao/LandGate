@@ -8,6 +8,8 @@ import com.landgate.trigger.gateway.converter.ResponsesConverter;
 import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
+import com.landgate.trigger.gateway.usage.IUsageParser;
+import com.landgate.trigger.gateway.usage.ResponsesUsageParser;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;

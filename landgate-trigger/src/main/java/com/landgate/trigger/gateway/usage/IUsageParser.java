@@ -1,4 +1,4 @@
-package com.landgate.trigger.gateway;
+package com.landgate.trigger.gateway.usage;
 
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 

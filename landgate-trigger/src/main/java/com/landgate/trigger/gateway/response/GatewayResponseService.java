@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.trigger.gateway.ConcurrencyService;
 import com.landgate.trigger.gateway.GatewayRequestContext;
-import com.landgate.trigger.gateway.IUsageParser;
+import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.trigger.gateway.ProtocolTranslationService;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ProtocolConverter;

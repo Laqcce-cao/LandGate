@@ -1,6 +1,7 @@
 package com.landgate.trigger.gateway;
 
 import com.landgate.domain.billing.model.valobj.UsageTokens;
+import com.landgate.trigger.gateway.usage.ResponsesUsageParser;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
