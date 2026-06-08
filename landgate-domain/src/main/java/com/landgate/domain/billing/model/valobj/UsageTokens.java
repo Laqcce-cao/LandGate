@@ -51,8 +51,12 @@ public class UsageTokens {
      * 合并另一个 UsageTokens 的非零值到当前对象。
      * 用于流式 SSE 响应中逐事件行累积用量。
      * <p>
-     * Anthropic SSE 协议中，{@code message_start} 和 {@code message_delta}
-     * 均上报累计全量 usage，因此使用<b>覆盖</b>（非累加）语义。
+     * 这里采用的是<b>累计快照覆盖</b>语义，而不是增量累加语义：后续事件中出现的非零字段会覆盖当前值。
+     * Anthropic SSE 的 {@code message_start} / {@code message_delta}、OpenAI 最终 chunk、Responses 的
+     * {@code response.completed} 通常上报的是截至当前事件的累计 usage，因此适合这种覆盖策略。
+     * <p>
+     * 如果后续接入的平台返回的是“每个 chunk 的增量 usage”，解析器必须先转换为累计值，或者改用单独的累加策略，
+     * 不能直接调用本方法累加增量事件。
      */
     public void merge(UsageTokens other) {
         if (other.inputTokens > 0) this.inputTokens = other.inputTokens;
