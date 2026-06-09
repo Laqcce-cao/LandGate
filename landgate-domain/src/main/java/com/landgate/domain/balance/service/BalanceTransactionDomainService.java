@@ -12,9 +12,12 @@ import com.landgate.types.exception.BusinessException;
 import com.landgate.types.exception.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 /**
  * 余额流水领域服务 —— 统一处理低频余额变动、幂等、Redis 运行态调整和流水状态流转。
@@ -23,6 +26,9 @@ import java.time.Instant;
 @Service
 @RequiredArgsConstructor
 public class BalanceTransactionDomainService {
+
+    private static final int MONEY_SCALE = 8;
+    private static final BigDecimal MAX_ABS_AMOUNT = new BigDecimal("999999999999.99999999");
 
     private final IBalanceTransactionRepository transactionRepository;
     private final IBalanceRuntime balanceRuntime;
@@ -40,16 +46,7 @@ public class BalanceTransactionDomainService {
                 .findBySource(command.sourceType(), command.sourceId(), command.transactionType())
                 .orElse(null);
         if (existing != null) {
-            if (existing.getStatus() == BalanceTransactionStatus.COMPLETED) {
-                return existing;
-            }
-            if (existing.getStatus() == BalanceTransactionStatus.PENDING) {
-                throw new BusinessException("BALANCE_TRANSACTION_PENDING", "余额变动正在处理中，请稍后重试");
-            }
-            transactionRepository.markPending(existing.getId());
-            existing.setStatus(BalanceTransactionStatus.PENDING);
-            existing.setFailureReason(null);
-            return executeAdjustment(existing, command);
+            return applyExisting(existing, command);
         }
 
         BalanceTransactionEntity tx = BalanceTransactionEntity.builder()
@@ -66,8 +63,28 @@ public class BalanceTransactionDomainService {
                 .metadata(command.metadata())
                 .status(BalanceTransactionStatus.PENDING)
                 .build();
-        tx = transactionRepository.save(tx);
+        try {
+            tx = transactionRepository.save(tx);
+        } catch (DuplicateKeyException e) {
+            BalanceTransactionEntity concurrent = transactionRepository
+                    .findBySource(command.sourceType(), command.sourceId(), command.transactionType())
+                    .orElseThrow(() -> e);
+            return applyExisting(concurrent, command);
+        }
         return executeAdjustment(tx, command);
+    }
+
+    private BalanceTransactionEntity applyExisting(BalanceTransactionEntity existing, BalanceTransactionCommand command) {
+        if (existing.getStatus() == BalanceTransactionStatus.COMPLETED) {
+            return existing;
+        }
+        if (existing.getStatus() == BalanceTransactionStatus.PENDING) {
+            throw new BusinessException("BALANCE_TRANSACTION_PENDING", "余额变动正在处理中，请稍后重试");
+        }
+        transactionRepository.markPending(existing.getId());
+        existing.setStatus(BalanceTransactionStatus.PENDING);
+        existing.setFailureReason(null);
+        return executeAdjustment(existing, command);
     }
 
     private BalanceTransactionEntity executeAdjustment(BalanceTransactionEntity tx, BalanceTransactionCommand command) {
@@ -102,7 +119,7 @@ public class BalanceTransactionDomainService {
     /**
      * 分页查询用户自己的余额明细。
      */
-    public java.util.List<BalanceTransactionEntity> listUserTransactions(Long userId, int page, int size) {
+    public List<BalanceTransactionEntity> listUserTransactions(Long userId, int page, int size) {
         int normalizedPage = Math.max(page, 0);
         int normalizedSize = Math.min(Math.max(size, 1), 100);
         return transactionRepository.listByUserId(userId, normalizedPage * normalizedSize, normalizedSize);
@@ -139,6 +156,10 @@ public class BalanceTransactionDomainService {
         if (command.amount() == null || command.amount().compareTo(BigDecimal.ZERO) == 0) {
             throw new BusinessException("INVALID_AMOUNT", "余额变动金额不能为 0");
         }
+        validateMoney("余额变动金额", command.amount());
+        if (command.cashIncomeAmount() != null) {
+            validateMoney("真实收款金额", command.cashIncomeAmount());
+        }
         if (command.sourceType() == null || command.sourceType().isBlank()) {
             throw new BusinessException("INVALID_SOURCE", "来源类型不能为空");
         }
@@ -147,6 +168,15 @@ public class BalanceTransactionDomainService {
         }
         if (command.operatorType() == null || command.operatorType().isBlank()) {
             throw new BusinessException("INVALID_OPERATOR", "操作人类型不能为空");
+        }
+    }
+
+    private void validateMoney(String label, BigDecimal value) {
+        if (value.scale() > MONEY_SCALE) {
+            throw new BusinessException("INVALID_MONEY_SCALE", label + "最多支持 8 位小数");
+        }
+        if (value.abs().compareTo(MAX_ABS_AMOUNT) > 0) {
+            throw new BusinessException("INVALID_MONEY_AMOUNT", label + "超出允许范围");
         }
     }
 }

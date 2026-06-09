@@ -6,10 +6,10 @@ CREATE TABLE IF NOT EXISTS balance_transactions (
     transaction_type VARCHAR(50) NOT NULL COMMENT '余额变动业务类型：RECHARGE 用户在线充值、ADMIN_RECHARGE 管理员线下充值、ADMIN_GRANT 管理员赠送、CHECKIN_REWARD 签到奖励、REFUND 退款返还、ADMIN_DEDUCT 管理员扣减、ADJUSTMENT 系统修正',
     funding_type VARCHAR(50) NOT NULL COMMENT '资金性质：PAID 付费、GIFT 赠送、REFUND 退款、DEDUCT 扣减、ADJUSTMENT 调整',
 
-    amount DECIMAL(20,4) NOT NULL COMMENT '用户余额变动金额，正数增加，负数扣减',
-    cash_income_amount DECIMAL(20,4) NOT NULL DEFAULT 0 COMMENT '真实现金收入金额，收款为正，退款为负，不涉及现金为 0',
-    balance_before DECIMAL(20,4) NULL COMMENT '余额变动前金额，由 Redis 原子调整返回',
-    balance_after DECIMAL(20,4) NULL COMMENT '余额变动后金额，由 Redis 原子调整返回',
+    amount DECIMAL(20,8) NOT NULL COMMENT '用户余额变动金额，正数增加，负数扣减',
+    cash_income_amount DECIMAL(20,8) NOT NULL DEFAULT 0 COMMENT '真实现金收入金额，收款为正，退款为负，不涉及现金为 0',
+    balance_before DECIMAL(20,8) NULL COMMENT '余额变动前金额，由 Redis 原子调整返回',
+    balance_after DECIMAL(20,8) NULL COMMENT '余额变动后金额，由 Redis 原子调整返回',
 
     source_type VARCHAR(50) NOT NULL COMMENT '来源业务类型，如 PAYMENT_ORDER、CHECKIN、ADMIN_OPERATION、SYSTEM',
     source_id VARCHAR(128) NOT NULL COMMENT '来源业务 ID，字符串格式，配合 source_type 用于幂等和追溯',

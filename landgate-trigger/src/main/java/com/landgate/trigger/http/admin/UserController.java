@@ -106,6 +106,7 @@ public class UserController {
         if (req.amount() == null || req.amount().compareTo(BigDecimal.ZERO) <= 0) {
             throw new BusinessException("INVALID_BALANCE_AMOUNT", "余额调整金额必须大于 0");
         }
+        validateAdminMoney("余额调整金额", req.amount());
         if (req.remark() == null || req.remark().isBlank()) {
             throw new BusinessException("INVALID_BALANCE_REMARK", "余额调整备注不能为空");
         }
@@ -125,6 +126,7 @@ public class UserController {
                 if (cashIncomeAmount.compareTo(BigDecimal.ZERO) < 0) {
                     throw new BusinessException("INVALID_CASH_INCOME", "真实收款金额不能小于 0");
                 }
+                validateAdminMoney("真实收款金额", cashIncomeAmount);
             }
             case "GIFT" -> {
                 transactionType = BalanceTransactionType.ADMIN_GRANT;
@@ -154,5 +156,14 @@ public class UserController {
                 null,
                 allowNegative
         );
+    }
+
+    private void validateAdminMoney(String label, BigDecimal value) {
+        if (value.scale() > 8) {
+            throw new BusinessException("INVALID_MONEY_SCALE", label + "最多支持 8 位小数");
+        }
+        if (value.abs().compareTo(new BigDecimal("999999999999.99999999")) > 0) {
+            throw new BusinessException("INVALID_MONEY_AMOUNT", label + "超出允许范围");
+        }
     }
 }
