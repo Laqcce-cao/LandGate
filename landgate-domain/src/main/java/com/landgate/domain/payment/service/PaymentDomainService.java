@@ -7,6 +7,7 @@ import com.landgate.domain.payment.adapter.repository.IPaymentProviderInstanceRe
 import com.landgate.domain.payment.model.entity.PaymentOrderEntity;
 import com.landgate.domain.payment.model.entity.PaymentProviderInstanceEntity;
 import com.landgate.types.enums.OrderStatus;
+import com.landgate.types.enums.OrderType;
 import com.landgate.types.enums.PaymentType;
 import com.landgate.types.exception.BusinessException;
 import com.landgate.types.exception.NotFoundException;
@@ -102,6 +103,59 @@ public class PaymentDomainService {
                 .build();
         order = orderRepository.save(order);
         log.info("Subscription order created: id={}, user_id={}, plan_id={}", order.getId(), userId, planId);
+        return order;
+    }
+
+    /**
+     * 管理员手动充值 —— 增加余额并写入已完成的充值订单，供用户查询充值记录。
+     *
+     * @param userId   用户 ID
+     * @param amount   充值金额（正数，USD）
+     * @param operator 操作人标识
+     * @return 创建的充值订单
+     */
+    @Transactional
+    public PaymentOrderEntity adminRecharge(Long userId, BigDecimal amount, String operator) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("INVALID_RECHARGE_AMOUNT", "充值金额必须大于 0");
+        }
+        UserEntity user = userRepository.findById(userId)
+                .orElseThrow(() -> new NotFoundException("User not found: " + userId));
+
+        BigDecimal currentBalance = user.getBalance() != null ? user.getBalance() : BigDecimal.ZERO;
+        BigDecimal currentRecharged = user.getTotalRecharged() != null ? user.getTotalRecharged() : BigDecimal.ZERO;
+        BigDecimal normalizedAmount = amount.setScale(4, RoundingMode.HALF_UP);
+        Instant now = Instant.now();
+
+        user.setBalance(currentBalance.add(normalizedAmount).setScale(4, RoundingMode.HALF_UP));
+        user.setTotalRecharged(currentRecharged.add(normalizedAmount).setScale(4, RoundingMode.HALF_UP));
+        userRepository.save(user);
+
+        PaymentOrderEntity order = PaymentOrderEntity.builder()
+                .userId(user.getId())
+                .userEmail(user.getEmail())
+                .userName(user.getUsername() != null ? user.getUsername() : "")
+                .userNotes(user.getNotes())
+                .amount(normalizedAmount)
+                .payAmount(normalizedAmount)
+                .feeRate(BigDecimal.ZERO)
+                .outTradeNo(generateOutTradeNo())
+                .paymentType(PaymentType.MANUAL)
+                .paymentTradeNo(buildManualTradeNo(operator))
+                .orderType(OrderType.BALANCE)
+                .providerKey("manual")
+                .status(OrderStatus.COMPLETED)
+                .refundAmount(BigDecimal.ZERO)
+                .expiresAt(now)
+                .paidAt(now)
+                .completedAt(now)
+                .clientIp("")
+                .srcHost("")
+                .build();
+        order = orderRepository.save(order);
+
+        log.info("Admin recharged user: user_id={}, amount={}, new_balance={}, order_id={}",
+                user.getId(), normalizedAmount, user.getBalance(), order.getId());
         return order;
     }
 
@@ -241,6 +295,11 @@ public class PaymentDomainService {
 
     private String generateRechargeCode() {
         return "RC-" + randomAlphanumeric(16);
+    }
+
+    private String buildManualTradeNo(String operator) {
+        String suffix = (operator == null || operator.isBlank()) ? "admin" : operator.trim();
+        return "ADMIN-" + suffix + "-" + System.currentTimeMillis();
     }
 
     private String randomDigits(int len) {

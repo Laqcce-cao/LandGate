@@ -2,7 +2,9 @@ package com.landgate.trigger.http.admin;
 
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.auth.service.UserDomainService;
+import com.landgate.domain.payment.service.PaymentDomainService;
 import com.landgate.trigger.gateway.BalanceDomainService;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -24,6 +26,7 @@ import java.util.Map;
 public class UserController {
 
     private final UserDomainService userDomainService;
+    private final PaymentDomainService paymentDomainService;
     private final BalanceDomainService balanceDomainService;
 
     /**
@@ -79,10 +82,13 @@ public class UserController {
      * 管理员给用户充值。
      */
     @PostMapping("/{id}/recharge")
-    public ResponseEntity<?> recharge(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+    public ResponseEntity<?> recharge(@PathVariable Long id, @RequestBody Map<String, Object> body,
+                                      HttpServletRequest request) {
         BigDecimal amount = new BigDecimal(String.valueOf(body.get("amount")));
+        String operator = String.valueOf(request.getAttribute("user_id"));
         log.info("Recharge user: id={}, amount={}", id, amount);
-        UserEntity user = userDomainService.recharge(id, amount);
+        paymentDomainService.adminRecharge(id, amount, operator);
+        UserEntity user = userDomainService.getById(id);
         balanceDomainService.creditBalance(id, user.getBalance());
         return ResponseEntity.ok(user);
     }

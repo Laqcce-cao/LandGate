@@ -12,6 +12,8 @@ import lombok.Getter;
 @AllArgsConstructor
 public enum PaymentType {
 
+    /** 管理员手动充值 */
+    MANUAL("manual", 0, "管理员手动充值"),
     /** 支付宝 —— 支持扫码、H5、App 支付 */
     ALIPAY("alipay", 1, "支付宝"),
     /** 微信支付 —— 支持扫码、H5、JSAPI 支付 */
