@@ -105,16 +105,16 @@ public class BalanceRedisService {
         try {
             RScript script = redissonClient.getScript(StringCodec.INSTANCE);
             @SuppressWarnings("unchecked")
-            List<Long> result = script.eval(RScript.Mode.READ_WRITE,
+            List<Object> result = script.eval(RScript.Mode.READ_WRITE,
                     LUA_ADJUST, RScript.ReturnType.MULTI,
                     List.of(balanceKey, dirtyKey), amountScaled, allowNegative ? 1 : 0);
             if (result == null || result.isEmpty()) {
                 return BalanceAdjustResult.failure(userId, amount, "REDIS_ERROR", "Redis 未返回余额调整结果");
             }
-            Long code = result.get(0);
+            long code = asLong(result.get(0));
             if (code == 1 && result.size() >= 3) {
-                BigDecimal before = new BigDecimal(result.get(1)).divide(SCALE, 8, RoundingMode.HALF_UP);
-                BigDecimal after = new BigDecimal(result.get(2)).divide(SCALE, 8, RoundingMode.HALF_UP);
+                BigDecimal before = new BigDecimal(asLong(result.get(1))).divide(SCALE, 8, RoundingMode.HALF_UP);
+                BigDecimal after = new BigDecimal(asLong(result.get(2))).divide(SCALE, 8, RoundingMode.HALF_UP);
                 return BalanceAdjustResult.success(userId, amount, before, after);
             }
             if (code == -2) {
@@ -128,6 +128,13 @@ public class BalanceRedisService {
             log.error("Redis balance adjustment failed: user_id={}, amount={}", userId, amount, e);
             return BalanceAdjustResult.failure(userId, amount, "REDIS_ERROR", e.getMessage());
         }
+    }
+
+    private long asLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        return Long.parseLong(String.valueOf(value));
     }
 
     /**
