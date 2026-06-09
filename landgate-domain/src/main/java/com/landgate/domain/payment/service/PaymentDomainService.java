@@ -7,6 +7,7 @@ import com.landgate.domain.payment.adapter.repository.IPaymentProviderInstanceRe
 import com.landgate.domain.payment.model.entity.PaymentOrderEntity;
 import com.landgate.domain.payment.model.entity.PaymentProviderInstanceEntity;
 import com.landgate.types.enums.OrderStatus;
+import com.landgate.types.enums.OrderType;
 import com.landgate.types.enums.PaymentType;
 import com.landgate.types.exception.BusinessException;
 import com.landgate.types.exception.NotFoundException;
@@ -16,7 +17,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.List;

@@ -8,8 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 
 /**
@@ -61,7 +59,7 @@ public class UserDomainService {
         if (updates.getUsername() != null) existing.setUsername(updates.getUsername());
         if (updates.getRole() != null) existing.setRole(updates.getRole());
         if (updates.getStatus() != null) existing.setStatus(updates.getStatus());
-        if (updates.getBalance() != null) existing.setBalance(updates.getBalance());
+        // 余额必须通过 balance_transactions 统一调整，避免绕过 Redis 运行态余额和余额流水。
         if (updates.getConcurrency() != null) existing.setConcurrency(updates.getConcurrency());
         if (updates.getRpmLimit() != null) existing.setRpmLimit(updates.getRpmLimit());
         if (updates.getNotes() != null) existing.setNotes(updates.getNotes());
@@ -79,30 +77,5 @@ public class UserDomainService {
         user.setStatus(status);
         userRepository.save(user);
         log.info("User status changed: id={}, status={}", id, status);
-    }
-
-    /**
-     * 管理员充值 —— 增加用户余额并累计充值总额。
-     *
-     * @param id     用户 ID
-     * @param amount 充值金额（正数，USD）
-     * @return 充值后的用户实体
-     * @throws IllegalArgumentException 金额 <= 0
-     */
-    @Transactional
-    public UserEntity recharge(Long id, BigDecimal amount) {
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("充值金额必须大于 0");
-        }
-        UserEntity user = getById(id);
-        BigDecimal currentBalance = user.getBalance() != null ? user.getBalance() : BigDecimal.ZERO;
-        BigDecimal currentRecharged = user.getTotalRecharged() != null ? user.getTotalRecharged() : BigDecimal.ZERO;
-
-        user.setBalance(currentBalance.add(amount).setScale(4, RoundingMode.HALF_UP));
-        user.setTotalRecharged(currentRecharged.add(amount).setScale(4, RoundingMode.HALF_UP));
-        userRepository.save(user);
-
-        log.info("User recharged: id={}, amount={}, newBalance={}", id, amount, user.getBalance());
-        return user;
     }
 }

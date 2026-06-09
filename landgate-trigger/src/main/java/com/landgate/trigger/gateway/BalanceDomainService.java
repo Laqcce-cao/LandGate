@@ -38,7 +38,7 @@ public class BalanceDomainService {
             if (user == null) {
                 throw new IllegalStateException("User not found for deduction: user_id=" + userId);
             }
-            balanceRedisService.loadBalance(userId, user.getBalance());
+            balanceRedisService.loadBalanceIfAbsent(userId, user.getBalance());
             result = balanceRedisService.tryDeduct(userId, cost);
         }
 

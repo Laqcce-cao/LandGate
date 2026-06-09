@@ -1,8 +1,15 @@
 package com.landgate.trigger.http.admin;
 
+import com.landgate.api.admin.dto.AdminDTOs.AdminBalanceAdjustmentRequest;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.auth.service.UserDomainService;
-import com.landgate.trigger.gateway.BalanceDomainService;
+import com.landgate.domain.balance.model.entity.BalanceTransactionEntity;
+import com.landgate.domain.balance.model.valobj.BalanceTransactionCommand;
+import com.landgate.domain.balance.service.BalanceTransactionDomainService;
+import com.landgate.types.enums.BalanceFundingType;
+import com.landgate.types.enums.BalanceTransactionType;
+import com.landgate.types.exception.BusinessException;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -11,6 +18,7 @@ import org.springframework.web.bind.annotation.*;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 用户管理控制器 —— 管理员对用户的查询、编辑、状态变更接口。
@@ -24,7 +32,7 @@ import java.util.Map;
 public class UserController {
 
     private final UserDomainService userDomainService;
-    private final BalanceDomainService balanceDomainService;
+    private final BalanceTransactionDomainService balanceTransactionDomainService;
 
     /**
      * 分页搜索用户列表。
@@ -76,14 +84,86 @@ public class UserController {
     }
 
     /**
-     * 管理员给用户充值。
+     * 管理员调整用户余额，支持线下收款充值、赠送补偿和扣减余额。
      */
-    @PostMapping("/{id}/recharge")
-    public ResponseEntity<?> recharge(@PathVariable Long id, @RequestBody Map<String, Object> body) {
-        BigDecimal amount = new BigDecimal(String.valueOf(body.get("amount")));
-        log.info("Recharge user: id={}, amount={}", id, amount);
-        UserEntity user = userDomainService.recharge(id, amount);
-        balanceDomainService.creditBalance(id, user.getBalance());
-        return ResponseEntity.ok(user);
+    @PostMapping("/{id}/balance-adjustments")
+    public ResponseEntity<?> adjustBalance(@PathVariable Long id,
+                                           @RequestBody AdminBalanceAdjustmentRequest req,
+                                           HttpServletRequest request) {
+        BalanceTransactionCommand command = buildAdminBalanceCommand(id, req, request);
+        log.info("Admin adjust balance: user_id={}, kind={}, amount={}", id, req.kind(), req.amount());
+        BalanceTransactionEntity transaction = balanceTransactionDomainService.apply(command);
+        UserEntity user = userDomainService.getById(id);
+        return ResponseEntity.ok(Map.of("user", user, "transaction", transaction));
+    }
+
+    private BalanceTransactionCommand buildAdminBalanceCommand(Long userId,
+                                                               AdminBalanceAdjustmentRequest req,
+                                                               HttpServletRequest request) {
+        if (req.kind() == null || req.kind().isBlank()) {
+            throw new BusinessException("INVALID_BALANCE_ADJUSTMENT_KIND", "余额调整类型不能为空");
+        }
+        if (req.amount() == null || req.amount().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new BusinessException("INVALID_BALANCE_AMOUNT", "余额调整金额必须大于 0");
+        }
+        validateAdminMoney("余额调整金额", req.amount());
+        if (req.remark() == null || req.remark().isBlank()) {
+            throw new BusinessException("INVALID_BALANCE_REMARK", "余额调整备注不能为空");
+        }
+
+        String kind = req.kind().trim().toUpperCase();
+        BalanceTransactionType transactionType;
+        BalanceFundingType fundingType;
+        BigDecimal amount = req.amount();
+        BigDecimal cashIncomeAmount = BigDecimal.ZERO;
+        boolean allowNegative = false;
+
+        switch (kind) {
+            case "PAID" -> {
+                transactionType = BalanceTransactionType.ADMIN_RECHARGE;
+                fundingType = BalanceFundingType.PAID;
+                cashIncomeAmount = req.cashIncomeAmount() != null ? req.cashIncomeAmount() : req.amount();
+                if (cashIncomeAmount.compareTo(BigDecimal.ZERO) < 0) {
+                    throw new BusinessException("INVALID_CASH_INCOME", "真实收款金额不能小于 0");
+                }
+                validateAdminMoney("真实收款金额", cashIncomeAmount);
+            }
+            case "GIFT" -> {
+                transactionType = BalanceTransactionType.ADMIN_GRANT;
+                fundingType = BalanceFundingType.GIFT;
+            }
+            case "DEDUCT" -> {
+                transactionType = BalanceTransactionType.ADMIN_DEDUCT;
+                fundingType = BalanceFundingType.DEDUCT;
+                amount = amount.negate();
+            }
+            default -> throw new BusinessException("INVALID_BALANCE_ADJUSTMENT_KIND", "余额调整类型无效");
+        }
+
+        String operatorId = String.valueOf(request.getAttribute("user_id"));
+        String sourceId = "admin_balance_" + System.currentTimeMillis() + "_" + userId + "_" + UUID.randomUUID();
+        return new BalanceTransactionCommand(
+                userId,
+                transactionType,
+                fundingType,
+                amount,
+                cashIncomeAmount,
+                "ADMIN_OPERATION",
+                sourceId,
+                "ADMIN",
+                operatorId,
+                req.remark().trim(),
+                null,
+                allowNegative
+        );
+    }
+
+    private void validateAdminMoney(String label, BigDecimal value) {
+        if (value.scale() > 8) {
+            throw new BusinessException("INVALID_MONEY_SCALE", label + "最多支持 8 位小数");
+        }
+        if (value.abs().compareTo(new BigDecimal("999999999999.99999999")) > 0) {
+            throw new BusinessException("INVALID_MONEY_AMOUNT", label + "超出允许范围");
+        }
     }
 }
