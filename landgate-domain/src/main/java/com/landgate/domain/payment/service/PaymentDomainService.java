@@ -17,7 +17,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.List;
@@ -103,59 +102,6 @@ public class PaymentDomainService {
                 .build();
         order = orderRepository.save(order);
         log.info("Subscription order created: id={}, user_id={}, plan_id={}", order.getId(), userId, planId);
-        return order;
-    }
-
-    /**
-     * 管理员手动充值 —— 增加余额并写入已完成的充值订单，供用户查询充值记录。
-     *
-     * @param userId   用户 ID
-     * @param amount   充值金额（正数，USD）
-     * @param operator 操作人标识
-     * @return 创建的充值订单
-     */
-    @Transactional
-    public PaymentOrderEntity adminRecharge(Long userId, BigDecimal amount, String operator) {
-        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessException("INVALID_RECHARGE_AMOUNT", "充值金额必须大于 0");
-        }
-        UserEntity user = userRepository.findById(userId)
-                .orElseThrow(() -> new NotFoundException("User not found: " + userId));
-
-        BigDecimal currentBalance = user.getBalance() != null ? user.getBalance() : BigDecimal.ZERO;
-        BigDecimal currentRecharged = user.getTotalRecharged() != null ? user.getTotalRecharged() : BigDecimal.ZERO;
-        BigDecimal normalizedAmount = amount.setScale(4, RoundingMode.HALF_UP);
-        Instant now = Instant.now();
-
-        user.setBalance(currentBalance.add(normalizedAmount).setScale(4, RoundingMode.HALF_UP));
-        user.setTotalRecharged(currentRecharged.add(normalizedAmount).setScale(4, RoundingMode.HALF_UP));
-        userRepository.save(user);
-
-        PaymentOrderEntity order = PaymentOrderEntity.builder()
-                .userId(user.getId())
-                .userEmail(user.getEmail())
-                .userName(user.getUsername() != null ? user.getUsername() : "")
-                .userNotes(user.getNotes())
-                .amount(normalizedAmount)
-                .payAmount(normalizedAmount)
-                .feeRate(BigDecimal.ZERO)
-                .outTradeNo(generateOutTradeNo())
-                .paymentType(PaymentType.MANUAL)
-                .paymentTradeNo(buildManualTradeNo(operator))
-                .orderType(OrderType.BALANCE)
-                .providerKey("manual")
-                .status(OrderStatus.COMPLETED)
-                .refundAmount(BigDecimal.ZERO)
-                .expiresAt(now)
-                .paidAt(now)
-                .completedAt(now)
-                .clientIp("")
-                .srcHost("")
-                .build();
-        order = orderRepository.save(order);
-
-        log.info("Admin recharged user: user_id={}, amount={}, new_balance={}, order_id={}",
-                user.getId(), normalizedAmount, user.getBalance(), order.getId());
         return order;
     }
 
@@ -281,31 +227,6 @@ public class PaymentDomainService {
     }
 
     /**
-     * 分页查询用户自己的余额充值记录。
-     *
-     * @param userId 用户 ID
-     * @param page 页码（0-based）
-     * @param size 每页数量
-     * @return 充值订单列表
-     */
-    public List<PaymentOrderEntity> listUserRechargeRecords(Long userId, int page, int size) {
-        int normalizedPage = Math.max(page, 0);
-        int normalizedSize = Math.min(Math.max(size, 1), 100);
-        int offset = normalizedPage * normalizedSize;
-        return orderRepository.findRechargeRecordsByUserId(userId, offset, normalizedSize);
-    }
-
-    /**
-     * 统计用户自己的余额充值记录数量。
-     *
-     * @param userId 用户 ID
-     * @return 充值订单总数
-     */
-    public long countUserRechargeRecords(Long userId) {
-        return orderRepository.countRechargeRecordsByUserId(userId);
-    }
-
-    /**
      * 获取所有启用的支付服务商实例。
      *
      * @return 启用的支付服务商列表
@@ -320,11 +241,6 @@ public class PaymentDomainService {
 
     private String generateRechargeCode() {
         return "RC-" + randomAlphanumeric(16);
-    }
-
-    private String buildManualTradeNo(String operator) {
-        String suffix = (operator == null || operator.isBlank()) ? "admin" : operator.trim();
-        return "ADMIN-" + suffix + "-" + System.currentTimeMillis();
     }
 
     private String randomDigits(int len) {

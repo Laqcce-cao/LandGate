@@ -136,38 +136,6 @@
         SELECT * FROM payment_orders WHERE user_id = #{userId}
     </select>
 
-    <!-- 用户侧充值记录列表：仅查询余额订单，并按创建时间倒序分页 -->
-    <select id="selectRechargeRecordsByUserId" resultMap="PaymentOrderResultMap">
-        SELECT
-            id,
-            user_id,
-            amount,
-            pay_amount,
-            payment_type,
-            payment_trade_no,
-            out_trade_no,
-            provider_key,
-            order_type,
-            status,
-            paid_at,
-            completed_at,
-            created_at,
-            updated_at
-        FROM payment_orders
-        WHERE user_id = #{userId}
-          AND order_type IN ('BALANCE', 'balance')
-        ORDER BY created_at DESC, id DESC
-        LIMIT #{size} OFFSET #{offset}
-    </select>
-
-    <!-- 用户侧充值记录总数：用于前端分页 -->
-    <select id="countRechargeRecordsByUserId" resultType="long">
-        SELECT COUNT(*)
-        FROM payment_orders
-        WHERE user_id = #{userId}
-          AND order_type IN ('BALANCE', 'balance')
-    </select>
-
     <select id="selectByStatus" resultMap="PaymentOrderResultMap">
         SELECT * FROM payment_orders WHERE status = #{status}
     </select>

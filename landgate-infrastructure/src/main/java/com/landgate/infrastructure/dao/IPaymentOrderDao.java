@@ -43,14 +43,6 @@ public interface IPaymentOrderDao {
     /** 根据用户 ID 查询订单列表 */
     List<PaymentOrderPO> selectByUserId(@Param("userId") Long userId);
 
-    /** 分页查询指定用户的余额充值订单 */
-    List<PaymentOrderPO> selectRechargeRecordsByUserId(@Param("userId") Long userId,
-                                                       @Param("offset") int offset,
-                                                       @Param("size") int size);
-
-    /** 统计指定用户的余额充值订单数量 */
-    long countRechargeRecordsByUserId(@Param("userId") Long userId);
-
     /** 根据状态查询订单列表 */
     List<PaymentOrderPO> selectByStatus(@Param("status") String status);
 

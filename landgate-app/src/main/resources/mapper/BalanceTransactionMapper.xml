@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IBalanceTransactionDao">
+
+    <resultMap id="BalanceTransactionResultMap" type="com.landgate.infrastructure.dao.po.BalanceTransactionPO">
+        <id     column="id"                 property="id"/>
+        <result column="user_id"            property="userId"/>
+        <result column="transaction_type"   property="transactionType"/>
+        <result column="funding_type"       property="fundingType"/>
+        <result column="amount"             property="amount"/>
+        <result column="cash_income_amount" property="cashIncomeAmount"/>
+        <result column="balance_before"     property="balanceBefore"/>
+        <result column="balance_after"      property="balanceAfter"/>
+        <result column="source_type"        property="sourceType"/>
+        <result column="source_id"          property="sourceId"/>
+        <result column="operator_type"      property="operatorType"/>
+        <result column="operator_id"        property="operatorId"/>
+        <result column="remark"             property="remark"/>
+        <result column="metadata"           property="metadata"/>
+        <result column="status"             property="status"/>
+        <result column="failure_reason"     property="failureReason"/>
+        <result column="completed_at"       property="completedAt"/>
+        <result column="created_at"         property="createdAt"/>
+        <result column="updated_at"         property="updatedAt"/>
+    </resultMap>
+
+    <select id="selectById" resultMap="BalanceTransactionResultMap">
+        SELECT * FROM balance_transactions WHERE id = #{id}
+    </select>
+
+    <select id="selectBySource" resultMap="BalanceTransactionResultMap">
+        SELECT *
+        FROM balance_transactions
+        WHERE source_type = #{sourceType}
+          AND source_id = #{sourceId}
+          AND transaction_type = #{transactionType}
+        LIMIT 1
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO balance_transactions (
+            user_id, transaction_type, funding_type,
+            amount, cash_income_amount, balance_before, balance_after,
+            source_type, source_id, operator_type, operator_id,
+            remark, metadata, status, failure_reason, completed_at,
+            created_at, updated_at
+        ) VALUES (
+            #{userId}, #{transactionType}, #{fundingType},
+            #{amount}, #{cashIncomeAmount}, #{balanceBefore}, #{balanceAfter},
+            #{sourceType}, #{sourceId}, #{operatorType}, #{operatorId},
+            #{remark}, #{metadata}, #{status}, #{failureReason}, #{completedAt},
+            NOW(), NOW()
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE balance_transactions SET
+            user_id = #{userId},
+            transaction_type = #{transactionType},
+            funding_type = #{fundingType},
+            amount = #{amount},
+            cash_income_amount = #{cashIncomeAmount},
+            balance_before = #{balanceBefore},
+            balance_after = #{balanceAfter},
+            source_type = #{sourceType},
+            source_id = #{sourceId},
+            operator_type = #{operatorType},
+            operator_id = #{operatorId},
+            remark = #{remark},
+            metadata = #{metadata},
+            status = #{status},
+            failure_reason = #{failureReason},
+            completed_at = #{completedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="markPending">
+        UPDATE balance_transactions SET
+            status = 'PENDING',
+            failure_reason = NULL,
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="markCompleted">
+        UPDATE balance_transactions SET
+            status = 'COMPLETED',
+            balance_before = #{balanceBefore},
+            balance_after = #{balanceAfter},
+            failure_reason = NULL,
+            completed_at = #{completedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="markFailed">
+        UPDATE balance_transactions SET
+            status = 'FAILED',
+            failure_reason = #{failureReason},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectByUserId" resultMap="BalanceTransactionResultMap">
+        SELECT *
+        FROM balance_transactions
+        WHERE user_id = #{userId}
+        ORDER BY created_at DESC, id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countByUserId" resultType="long">
+        SELECT COUNT(*) FROM balance_transactions WHERE user_id = #{userId}
+    </select>
+
+</mapper>

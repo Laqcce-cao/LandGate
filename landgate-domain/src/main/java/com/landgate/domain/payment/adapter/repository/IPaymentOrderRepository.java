@@ -64,24 +64,6 @@ public interface IPaymentOrderRepository {
     List<PaymentOrderEntity> findByStatus(String status);
 
     /**
-     * 分页查询指定用户的余额充值订单。
-     *
-     * @param userId 用户 ID
-     * @param offset 起始偏移量
-     * @param size 每页数量
-     * @return 充值订单列表
-     */
-    List<PaymentOrderEntity> findRechargeRecordsByUserId(Long userId, int offset, int size);
-
-    /**
-     * 统计指定用户的余额充值订单数量。
-     *
-     * @param userId 用户 ID
-     * @return 充值订单总数
-     */
-    long countRechargeRecordsByUserId(Long userId);
-
-    /**
      * 根据用户ID和状态联合查询支付订单
      *
      * @param userId 用户ID

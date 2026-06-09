@@ -12,4 +12,5 @@ public final class AdminDTOs {
     public record AllowUserRequest(Long userId) {}
     public record ConfirmRequest(String tradeNo, BigDecimal payAmount) {}
     public record AdminRefundRequest(String reason, Boolean forceRefund) {}
+    public record AdminBalanceAdjustmentRequest(String kind, BigDecimal amount, BigDecimal cashIncomeAmount, String remark) {}
 }

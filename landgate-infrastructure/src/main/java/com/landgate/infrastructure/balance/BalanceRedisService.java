@@ -1,5 +1,6 @@
 package com.landgate.infrastructure.balance;
 
+import com.landgate.domain.balance.model.valobj.BalanceAdjustResult;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RScript;
 import org.redisson.api.RedissonClient;
@@ -43,6 +44,28 @@ public class BalanceRedisService {
             redis.call('SET', KEYS[2], '1')
             return 1""";
 
+    /**
+     * Lua 脚本：原子调整余额。
+     * KEYS[1] = 余额 key, KEYS[2] = 脏标记 key, ARGV[1] = 调整金额, ARGV[2] = 是否允许负数。
+     *
+     * 返回值：{1, before, after} = 成功, {-2} = 余额未加载, {-3} = 余额不足。
+     */
+    private static final String LUA_ADJUST = """
+            local balance = redis.call('GET', KEYS[1])
+            if not balance then
+                return {-2}
+            end
+            local before = tonumber(balance)
+            local delta = tonumber(ARGV[1])
+            local after = before + delta
+            local allow_negative = tonumber(ARGV[2])
+            if allow_negative == 0 and after < 0 then
+                return {-3}
+            end
+            redis.call('SET', KEYS[1], tostring(after))
+            redis.call('SET', KEYS[2], '1')
+            return {1, before, after}""";
+
     public BalanceRedisService(@Qualifier("redissonClient") RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
     }
@@ -69,7 +92,46 @@ public class BalanceRedisService {
     }
 
     /**
-     * 将余额从数据库加载到 Redis（首次请求或充值后调用）。
+     * 原子调整 Redis 运行态余额，支持加款和扣款。
+     */
+    public BalanceAdjustResult adjustBalance(Long userId, BigDecimal amount, boolean allowNegative) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) == 0) {
+            return BalanceAdjustResult.failure(userId, amount, "INVALID_AMOUNT", "余额调整金额不能为 0");
+        }
+        String balanceKey = BALANCE_PREFIX + userId;
+        String dirtyKey = DIRTY_PREFIX + userId;
+        long amountScaled = amount.multiply(SCALE).setScale(0, RoundingMode.HALF_UP).longValue();
+
+        try {
+            RScript script = redissonClient.getScript(StringCodec.INSTANCE);
+            @SuppressWarnings("unchecked")
+            List<Long> result = script.eval(RScript.Mode.READ_WRITE,
+                    LUA_ADJUST, RScript.ReturnType.MULTI,
+                    List.of(balanceKey, dirtyKey), amountScaled, allowNegative ? 1 : 0);
+            if (result == null || result.isEmpty()) {
+                return BalanceAdjustResult.failure(userId, amount, "REDIS_ERROR", "Redis 未返回余额调整结果");
+            }
+            Long code = result.get(0);
+            if (code == 1 && result.size() >= 3) {
+                BigDecimal before = new BigDecimal(result.get(1)).divide(SCALE, 8, RoundingMode.HALF_UP);
+                BigDecimal after = new BigDecimal(result.get(2)).divide(SCALE, 8, RoundingMode.HALF_UP);
+                return BalanceAdjustResult.success(userId, amount, before, after);
+            }
+            if (code == -2) {
+                return BalanceAdjustResult.failure(userId, amount, "BALANCE_NOT_LOADED", "余额未加载到 Redis");
+            }
+            if (code == -3) {
+                return BalanceAdjustResult.failure(userId, amount, "INSUFFICIENT_BALANCE", "余额不足，调整后余额不能小于 0");
+            }
+            return BalanceAdjustResult.failure(userId, amount, "REDIS_ERROR", "未知 Redis 返回码: " + code);
+        } catch (Exception e) {
+            log.error("Redis balance adjustment failed: user_id={}, amount={}", userId, amount, e);
+            return BalanceAdjustResult.failure(userId, amount, "REDIS_ERROR", e.getMessage());
+        }
+    }
+
+    /**
+     * 将余额从数据库加载到 Redis（首次请求或明确强制刷新时调用）。
      */
     public void loadBalance(Long userId, BigDecimal balance) {
         String balanceKey = BALANCE_PREFIX + userId;
@@ -79,6 +141,22 @@ public class BalanceRedisService {
             log.debug("Balance loaded to Redis: user_id={}, balance={}", userId, balance);
         } catch (Exception e) {
             log.error("Failed to load balance to Redis: user_id={}", userId, e);
+        }
+    }
+
+    /**
+     * 仅当 Redis 未加载余额时，使用数据库余额初始化，避免覆盖并发扣费或入账。
+     */
+    public boolean loadBalanceIfAbsent(Long userId, BigDecimal balance) {
+        String balanceKey = BALANCE_PREFIX + userId;
+        long scaled = balance.multiply(SCALE).setScale(0, RoundingMode.HALF_UP).longValue();
+        try {
+            Boolean loaded = redissonClient.getBucket(balanceKey, StringCodec.INSTANCE).trySet(String.valueOf(scaled));
+            log.debug("Balance load-if-absent: user_id={}, balance={}, loaded={}", userId, balance, loaded);
+            return Boolean.TRUE.equals(loaded);
+        } catch (Exception e) {
+            log.error("Failed to load balance if absent: user_id={}", userId, e);
+            return false;
         }
     }
 

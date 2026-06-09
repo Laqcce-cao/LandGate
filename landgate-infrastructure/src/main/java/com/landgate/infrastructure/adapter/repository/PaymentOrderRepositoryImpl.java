@@ -67,18 +67,6 @@ public class PaymentOrderRepositoryImpl implements IPaymentOrderRepository {
     }
 
     @Override
-    public List<PaymentOrderEntity> findRechargeRecordsByUserId(Long userId, int offset, int size) {
-        return paymentOrderDao.selectRechargeRecordsByUserId(userId, offset, size).stream()
-                .map(paymentOrderMapper::toEntity)
-                .collect(Collectors.toList());
-    }
-
-    @Override
-    public long countRechargeRecordsByUserId(Long userId) {
-        return paymentOrderDao.countRechargeRecordsByUserId(userId);
-    }
-
-    @Override
     public List<PaymentOrderEntity> findByUserIdAndStatus(Long userId, String status) {
         OrderStatus s = OrderStatus.valueOf(status.toUpperCase());
         return paymentOrderDao.selectByUserIdAndStatus(userId, s.name()).stream()
