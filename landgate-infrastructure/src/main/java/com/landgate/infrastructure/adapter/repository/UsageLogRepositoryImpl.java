@@ -128,6 +128,11 @@ public class UsageLogRepositoryImpl implements IUsageLogRepository {
     }
 
     @Override
+    public boolean updateBillingStatusFromPendingOrFailed(Long id, String billingStatus, String billingError) {
+        return usageLogDao.updateBillingStatusFromPendingOrFailed(id, billingStatus, billingError) == 1;
+    }
+
+    @Override
     public List<UsageLogEntity> findByBillingStatusBefore(String billingStatus, Instant cutoff, int limit) {
         return usageLogDao.selectByBillingStatusBefore(billingStatus, cutoff, limit).stream()
                 .map(usageLogMapper::toEntity)

@@ -46,12 +46,17 @@ public class BillingReconciliationScheduler {
         for (UsageLogEntity logEntry : logs) {
             boolean deducted = false;
             try {
+                if (!billingDomainService.tryMarkLogSettling(logEntry.getId())) {
+                    log.info("Billing reconciliation skipped claimed log: log_id={}, status={}",
+                            logEntry.getId(), logEntry.getBillingStatus());
+                    continue;
+                }
+
                 boolean privileged = userRepository.findById(logEntry.getUserId())
                         .map(user -> user.isPrivileged())
                         .orElse(false);
                 try {
                     if (!privileged) {
-                        billingDomainService.markLogSettling(logEntry.getId());
                         balanceDomainService.deduct(logEntry.getUserId(), logEntry.getActualCost());
                         deducted = true;
                     }

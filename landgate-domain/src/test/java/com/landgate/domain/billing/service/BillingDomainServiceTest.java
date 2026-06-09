@@ -118,6 +118,19 @@ class BillingDomainServiceTest {
         verify(usageLogRepository).updateBillingStatus(9L, "DEDUCTED", null);
     }
 
+    @Test
+    @DisplayName("tryMarkLogSettling 仅通过条件更新抢占可扣费日志")
+    void tryMarkLogSettlingUsesConditionalUpdate() {
+        IUsageLogRepository usageLogRepository = mock(IUsageLogRepository.class);
+        BillingDomainService service = new BillingDomainService(mock(ModelPricingDomainService.class), usageLogRepository, mock(IApiKeyRepository.class));
+        when(usageLogRepository.updateBillingStatusFromPendingOrFailed(9L, "SETTLING", null)).thenReturn(true);
+
+        boolean claimed = service.tryMarkLogSettling(9L);
+
+        assertEquals(true, claimed);
+        verify(usageLogRepository).updateBillingStatusFromPendingOrFailed(9L, "SETTLING", null);
+    }
+
     private static class CapturingUsageLogRepository implements IUsageLogRepository {
         @Override
         public UsageLogEntity save(UsageLogEntity entity) {
@@ -137,6 +150,7 @@ class BillingDomainServiceTest {
         @Override public long countByApiKeyId(Long apiKeyId) { return 0; }
         @Override public long countByAccountId(Long accountId) { return 0; }
         @Override public void updateBillingStatus(Long id, String billingStatus, String billingError) {}
+        @Override public boolean updateBillingStatusFromPendingOrFailed(Long id, String billingStatus, String billingError) { return true; }
         @Override public List<UsageLogEntity> findByBillingStatusBefore(String billingStatus, Instant cutoff, int limit) { return List.of(); }
         @Override public List<UsageLogEntity> findAll(int page, int size) { return List.of(); }
         @Override public long count() { return 0; }

@@ -45,15 +45,45 @@ class BillingReconciliationSchedulerTest {
                 .thenReturn(List.of());
         when(billingDomainService.findBillingLogsByStatusBefore(eq("FAILED"), any(), eq(100)))
                 .thenReturn(List.of(logEntry));
+        when(billingDomainService.tryMarkLogSettling(7L)).thenReturn(true);
         when(userRepository.findById(3L)).thenReturn(Optional.of(UserEntity.builder().id(3L).build()));
         doThrow(new IllegalStateException("quota db down"))
                 .when(billingDomainService).accumulateQuota(9L, new BigDecimal("0.10"));
 
         scheduler.reconcile();
 
-        verify(billingDomainService).markLogSettling(7L);
+        verify(billingDomainService).tryMarkLogSettling(7L);
         verify(balanceDomainService).deduct(3L, new BigDecimal("0.10"));
         verify(billingDomainService, never()).markLogFailed(eq(7L), any());
         verify(billingDomainService, never()).markLogDeducted(7L);
+    }
+
+    @Test
+    @DisplayName("日志已被其他实例抢占时跳过扣费")
+    void claimedByAnotherInstanceSkipsDeduction() {
+        BillingDomainService billingDomainService = mock(BillingDomainService.class);
+        BalanceDomainService balanceDomainService = mock(BalanceDomainService.class);
+        IUserRepository userRepository = mock(IUserRepository.class);
+        BillingReconciliationScheduler scheduler = new BillingReconciliationScheduler(
+                billingDomainService, balanceDomainService, userRepository);
+        UsageLogEntity logEntry = UsageLogEntity.builder()
+                .id(8L)
+                .userId(3L)
+                .apiKeyId(9L)
+                .actualCost(new BigDecimal("0.10"))
+                .billingStatus("PENDING")
+                .build();
+        when(billingDomainService.findBillingLogsByStatusBefore(eq("PENDING"), any(), eq(100)))
+                .thenReturn(List.of(logEntry));
+        when(billingDomainService.findBillingLogsByStatusBefore(eq("FAILED"), any(), eq(100)))
+                .thenReturn(List.of());
+        when(billingDomainService.tryMarkLogSettling(8L)).thenReturn(false);
+
+        scheduler.reconcile();
+
+        verify(balanceDomainService, never()).deduct(any(), any());
+        verify(userRepository, never()).findById(any());
+        verify(billingDomainService, never()).markLogDeducted(8L);
+        verify(billingDomainService, never()).markLogFailed(eq(8L), any());
     }
 }

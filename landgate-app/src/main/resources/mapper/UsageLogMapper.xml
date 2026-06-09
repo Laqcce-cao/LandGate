@@ -80,6 +80,14 @@
         WHERE id = #{id}
     </update>
 
+    <update id="updateBillingStatusFromPendingOrFailed">
+        UPDATE usage_logs
+        SET billing_status = #{billingStatus},
+            billing_error = #{billingError}
+        WHERE id = #{id}
+          AND billing_status IN ('PENDING', 'FAILED')
+    </update>
+
     <select id="selectByBillingStatusBefore" resultMap="UsageLogResultMap">
         SELECT * FROM usage_logs
         WHERE billing_status = #{billingStatus}

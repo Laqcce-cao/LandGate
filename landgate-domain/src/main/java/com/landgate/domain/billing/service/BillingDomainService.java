@@ -365,11 +365,11 @@ public class BillingDomainService {
     }
 
     /**
-     * 标记用量日志正在扣费，避免对账任务重复处理同一条日志。
+     * 尝试抢占可自动扣费日志，只有从 PENDING/FAILED 成功切到 SETTLING 的调用方才能继续扣费。
      */
-    public void markLogSettling(Long logId) {
-        if (logId == null) return;
-        usageLogRepository.updateBillingStatus(logId, "SETTLING", null);
+    public boolean tryMarkLogSettling(Long logId) {
+        if (logId == null) return false;
+        return usageLogRepository.updateBillingStatusFromPendingOrFailed(logId, "SETTLING", null);
     }
 
     /**

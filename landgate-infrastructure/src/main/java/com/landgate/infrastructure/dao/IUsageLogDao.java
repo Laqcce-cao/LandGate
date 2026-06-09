@@ -27,6 +27,11 @@ public interface IUsageLogDao {
                             @Param("billingStatus") String billingStatus,
                             @Param("billingError") String billingError);
 
+    /** 从可重试状态抢占日志进入扣费中，返回更新行数 */
+    int updateBillingStatusFromPendingOrFailed(@Param("id") Long id,
+                                               @Param("billingStatus") String billingStatus,
+                                               @Param("billingError") String billingError);
+
     /** 查询指定计费状态且早于 cutoff 的日志 */
     List<UsageLogPO> selectByBillingStatusBefore(@Param("billingStatus") String billingStatus,
                                                  @Param("cutoff") Instant cutoff,
