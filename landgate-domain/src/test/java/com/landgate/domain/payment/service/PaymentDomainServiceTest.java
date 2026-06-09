@@ -137,6 +137,12 @@ class PaymentDomainServiceTest {
         public List<PaymentOrderEntity> findByStatus(String status) { return List.of(); }
 
         @Override
+        public List<PaymentOrderEntity> findRechargeRecordsByUserId(Long userId, int offset, int size) { return List.of(); }
+
+        @Override
+        public long countRechargeRecordsByUserId(Long userId) { return 0; }
+
+        @Override
         public List<PaymentOrderEntity> findByUserIdAndStatus(Long userId, String status) { return List.of(); }
 
         @Override

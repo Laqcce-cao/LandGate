@@ -281,6 +281,31 @@ public class PaymentDomainService {
     }
 
     /**
+     * 分页查询用户自己的余额充值记录。
+     *
+     * @param userId 用户 ID
+     * @param page 页码（0-based）
+     * @param size 每页数量
+     * @return 充值订单列表
+     */
+    public List<PaymentOrderEntity> listUserRechargeRecords(Long userId, int page, int size) {
+        int normalizedPage = Math.max(page, 0);
+        int normalizedSize = Math.min(Math.max(size, 1), 100);
+        int offset = normalizedPage * normalizedSize;
+        return orderRepository.findRechargeRecordsByUserId(userId, offset, normalizedSize);
+    }
+
+    /**
+     * 统计用户自己的余额充值记录数量。
+     *
+     * @param userId 用户 ID
+     * @return 充值订单总数
+     */
+    public long countUserRechargeRecords(Long userId) {
+        return orderRepository.countRechargeRecordsByUserId(userId);
+    }
+
+    /**
      * 获取所有启用的支付服务商实例。
      *
      * @return 启用的支付服务商列表

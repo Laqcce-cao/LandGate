@@ -3,6 +3,8 @@ package com.landgate.trigger.http.payment;
 import com.landgate.api.payment.dto.PaymentDTOs.CreateBalanceOrderRequest;
 import com.landgate.api.payment.dto.PaymentDTOs.CreateSubscriptionOrderRequest;
 import com.landgate.api.payment.dto.PaymentDTOs.RefundRequest;
+import com.landgate.api.payment.dto.RechargeRecordDTO;
+import com.landgate.types.response.PageResponse;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.payment.model.entity.PaymentOrderEntity;
@@ -99,6 +101,32 @@ public class PaymentController {
         return ResponseEntity.ok(Map.of("orders", orders, "total", orders.size()));
     }
 
+    /**
+     * 查询当前登录用户的充值记录。
+     * <p>
+     * 仅返回 payment_orders 中属于当前用户的余额订单，避免用户看到其他用户订单或支付内部字段。
+     */
+    @GetMapping("/recharge-records")
+    public ResponseEntity<?> listRechargeRecords(@RequestParam(defaultValue = "0") int page,
+                                                  @RequestParam(defaultValue = "20") int size,
+                                                  HttpServletRequest request) {
+        Long userId = getUserIdFromRequest(request);
+        if (userId == null || userId == 0L) {
+            return ResponseEntity.status(401).body(Map.of("error", "Authentication required"));
+        }
+
+        int normalizedPage = Math.max(page, 0);
+        int normalizedSize = Math.min(Math.max(size, 1), 100);
+        List<RechargeRecordDTO> records = paymentDomainService
+                .listUserRechargeRecords(userId, normalizedPage, normalizedSize)
+                .stream()
+                .map(this::toRechargeRecordDTO)
+                .toList();
+        long total = paymentDomainService.countUserRechargeRecords(userId);
+
+        return ResponseEntity.ok(PageResponse.of(records, normalizedPage, normalizedSize, total));
+    }
+
     @PostMapping("/order/{orderId}/cancel")
     public ResponseEntity<?> cancelOrder(@PathVariable Long orderId,
                                           HttpServletRequest request) {
@@ -134,6 +162,25 @@ public class PaymentController {
         }
 
         return ResponseEntity.ok(Map.of("logs", List.of()));
+    }
+
+    /**
+     * 将支付订单实体转换为用户侧充值记录 DTO。
+     */
+    private RechargeRecordDTO toRechargeRecordDTO(PaymentOrderEntity order) {
+        return new RechargeRecordDTO(
+                order.getId(),
+                order.getAmount(),
+                order.getPayAmount(),
+                order.getPaymentType() != null ? order.getPaymentType().name() : null,
+                order.getStatus() != null ? order.getStatus().name() : null,
+                order.getOutTradeNo(),
+                order.getPaymentTradeNo(),
+                order.getProviderKey(),
+                order.getPaidAt(),
+                order.getCompletedAt(),
+                order.getCreatedAt()
+        );
     }
 
     private Long getUserIdFromRequest(HttpServletRequest request) {
