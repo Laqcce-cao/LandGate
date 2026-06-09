@@ -97,19 +97,6 @@ public class UserController {
         return ResponseEntity.ok(Map.of("user", user, "transaction", transaction));
     }
 
-    /**
-     * 兼容旧充值接口：按线下收款充值处理，不再写 payment_orders。
-     */
-    @PostMapping("/{id}/recharge")
-    public ResponseEntity<?> recharge(@PathVariable Long id, @RequestBody Map<String, Object> body,
-                                      HttpServletRequest request) {
-        BigDecimal amount = new BigDecimal(String.valueOf(body.get("amount")));
-        AdminBalanceAdjustmentRequest req = new AdminBalanceAdjustmentRequest(
-                "PAID", amount, amount, "管理员充值"
-        );
-        return adjustBalance(id, req, request);
-    }
-
     private BalanceTransactionCommand buildAdminBalanceCommand(Long userId,
                                                                AdminBalanceAdjustmentRequest req,
                                                                HttpServletRequest request) {
