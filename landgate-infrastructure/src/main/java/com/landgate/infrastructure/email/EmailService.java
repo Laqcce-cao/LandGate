@@ -21,19 +21,36 @@ public class EmailService implements IEmailPort {
     private String from;
 
     public void sendVerificationCode(String to, String username, String code) {
+        sendCodeEmail(
+                to,
+                "邮箱验证码 - LandGate",
+                buildVerificationCodeHtml(username, code),
+                "verification code"
+        );
+    }
+
+    public void sendPasswordResetCode(String to, String username, String code) {
+        sendCodeEmail(
+                to,
+                "重置密码验证码 - LandGate",
+                buildPasswordResetCodeHtml(username, code),
+                "password reset code"
+        );
+    }
+
+    private void sendCodeEmail(String to, String subject, String html, String logName) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
             helper.setTo(to);
             helper.setFrom(from);
-            helper.setSubject("邮箱验证码 - LandGate");
-            String html = buildVerificationCodeHtml(username, code);
+            helper.setSubject(subject);
             helper.setText(html, true);
             mailSender.send(message);
-            log.info("Verification code sent to: {}", to);
+            log.info("{} sent to: {}", logName, to);
         } catch (MessagingException e) {
-            log.error("Failed to send verification code to: {}", to, e);
-            throw new RuntimeException("Failed to send verification email", e);
+            log.error("Failed to send {} to: {}", logName, to, e);
+            throw new RuntimeException("Failed to send email", e);
         }
     }
 
@@ -47,6 +64,20 @@ public class EmailService implements IEmailPort {
                    background:#F3F4F6;border-radius:8px;">%s</p>
                 <p>验证码有效期为 <b>5分钟</b>，请尽快完成验证。</p>
                 <p>如非本人操作，请忽略此邮件。</p>
+            </div>
+            """.formatted(username, code);
+    }
+
+    private String buildPasswordResetCodeHtml(String username, String code) {
+        return """
+            <div style="max-width:600px;margin:0 auto;font-family:Arial,sans-serif;">
+                <h2>LandGate 密码重置，%s</h2>
+                <p>您的重置密码验证码为：</p>
+                <p style="font-size:32px;font-weight:bold;letter-spacing:8px;
+                   color:#4F46E5;text-align:center;padding:20px;
+                   background:#F3F4F6;border-radius:8px;">%s</p>
+                <p>验证码有效期为 <b>5分钟</b>，请尽快完成密码重置。</p>
+                <p>如非本人操作，请忽略此邮件，您的密码不会被修改。</p>
             </div>
             """.formatted(username, code);
     }

@@ -1,10 +1,13 @@
 package com.landgate.infrastructure.adapter.repository;
 
 import com.landgate.domain.balance.adapter.repository.IBalanceTransactionRepository;
+import com.landgate.domain.balance.model.entity.AdminBalanceTransactionEntity;
 import com.landgate.domain.balance.model.entity.BalanceTransactionEntity;
 import com.landgate.infrastructure.adapter.mapper.BalanceTransactionMapper;
 import com.landgate.infrastructure.dao.IBalanceTransactionDao;
 import com.landgate.infrastructure.dao.po.BalanceTransactionPO;
+import com.landgate.types.enums.BalanceFundingType;
+import com.landgate.types.enums.BalanceTransactionStatus;
 import com.landgate.types.enums.BalanceTransactionType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -74,5 +77,42 @@ public class BalanceTransactionRepositoryImpl implements IBalanceTransactionRepo
     @Override
     public long countByUserId(Long userId) {
         return balanceTransactionDao.countByUserId(userId);
+    }
+
+    @Override
+    public List<AdminBalanceTransactionEntity> listAdmin(String keyword,
+                                                         BalanceTransactionType transactionType,
+                                                         BalanceFundingType fundingType,
+                                                         BalanceTransactionStatus status,
+                                                         int offset,
+                                                         int size) {
+        return balanceTransactionDao.selectAdmin(
+                        normalizeKeyword(keyword),
+                        transactionType != null ? transactionType.name() : null,
+                        fundingType != null ? fundingType.name() : null,
+                        status != null ? status.name() : null,
+                        offset,
+                        size
+                ).stream()
+                .map(balanceTransactionMapper::toAdminEntity)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public long countAdmin(String keyword,
+                           BalanceTransactionType transactionType,
+                           BalanceFundingType fundingType,
+                           BalanceTransactionStatus status) {
+        return balanceTransactionDao.countAdmin(
+                normalizeKeyword(keyword),
+                transactionType != null ? transactionType.name() : null,
+                fundingType != null ? fundingType.name() : null,
+                status != null ? status.name() : null
+        );
+    }
+
+    private String normalizeKeyword(String keyword) {
+        if (keyword == null || keyword.isBlank()) return null;
+        return keyword.trim();
     }
 }

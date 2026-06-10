@@ -6,5 +6,9 @@ package com.landgate.domain.auth.adapter.port;
  */
 public interface IEmailPort {
 
+    /** 发送注册邮箱验证验证码。 */
     void sendVerificationCode(String to, String username, String code);
+
+    /** 发送忘记密码重置验证码。 */
+    void sendPasswordResetCode(String to, String username, String code);
 }

@@ -1,5 +1,6 @@
 package com.landgate.infrastructure.dao;
 
+import com.landgate.infrastructure.dao.po.AdminBalanceTransactionPO;
 import com.landgate.infrastructure.dao.po.BalanceTransactionPO;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -38,4 +39,18 @@ public interface IBalanceTransactionDao {
                                               @Param("size") int size);
 
     long countByUserId(@Param("userId") Long userId);
+
+    /** 后台分页查询全站余额流水 */
+    List<AdminBalanceTransactionPO> selectAdmin(@Param("keyword") String keyword,
+                                                @Param("transactionType") String transactionType,
+                                                @Param("fundingType") String fundingType,
+                                                @Param("status") String status,
+                                                @Param("offset") int offset,
+                                                @Param("size") int size);
+
+    /** 统计后台筛选条件下的余额流水数量 */
+    long countAdmin(@Param("keyword") String keyword,
+                    @Param("transactionType") String transactionType,
+                    @Param("fundingType") String fundingType,
+                    @Param("status") String status);
 }

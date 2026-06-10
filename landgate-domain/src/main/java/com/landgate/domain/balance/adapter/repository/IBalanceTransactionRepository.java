@@ -1,6 +1,9 @@
 package com.landgate.domain.balance.adapter.repository;
 
+import com.landgate.domain.balance.model.entity.AdminBalanceTransactionEntity;
 import com.landgate.domain.balance.model.entity.BalanceTransactionEntity;
+import com.landgate.types.enums.BalanceFundingType;
+import com.landgate.types.enums.BalanceTransactionStatus;
 import com.landgate.types.enums.BalanceTransactionType;
 
 import java.math.BigDecimal;
@@ -29,4 +32,22 @@ public interface IBalanceTransactionRepository {
     List<BalanceTransactionEntity> listByUserId(Long userId, int offset, int size);
 
     long countByUserId(Long userId);
+
+    /**
+     * 后台分页查询全站余额流水。
+     */
+    List<AdminBalanceTransactionEntity> listAdmin(String keyword,
+                                                  BalanceTransactionType transactionType,
+                                                  BalanceFundingType fundingType,
+                                                  BalanceTransactionStatus status,
+                                                  int offset,
+                                                  int size);
+
+    /**
+     * 统计后台筛选条件下的余额流水数量。
+     */
+    long countAdmin(String keyword,
+                    BalanceTransactionType transactionType,
+                    BalanceFundingType fundingType,
+                    BalanceTransactionStatus status);
 }

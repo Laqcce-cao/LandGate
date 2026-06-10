@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IUserCheckinDao">
+
+    <resultMap id="UserCheckinResultMap" type="com.landgate.infrastructure.dao.po.UserCheckinPO">
+        <id     column="id"                     property="id"/>
+        <result column="user_id"                property="userId"/>
+        <result column="sign_date"              property="signDate"/>
+        <result column="streak_days"            property="streakDays"/>
+        <result column="reward_amount"          property="rewardAmount"/>
+        <result column="balance_transaction_id" property="balanceTransactionId"/>
+        <result column="status"                 property="status"/>
+        <result column="failure_reason"         property="failureReason"/>
+        <result column="created_at"             property="createdAt"/>
+        <result column="updated_at"             property="updatedAt"/>
+    </resultMap>
+
+    <select id="selectById" resultMap="UserCheckinResultMap">
+        SELECT * FROM user_checkins WHERE id = #{id}
+    </select>
+
+    <select id="selectByUserIdAndSignDate" resultMap="UserCheckinResultMap">
+        SELECT * FROM user_checkins WHERE user_id = #{userId} AND sign_date = #{signDate} LIMIT 1
+    </select>
+
+    <select id="selectLatestByUserId" resultMap="UserCheckinResultMap">
+        SELECT * FROM user_checkins WHERE user_id = #{userId} ORDER BY sign_date DESC, id DESC LIMIT 1
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO user_checkins (
+            user_id, sign_date, streak_days, reward_amount,
+            balance_transaction_id, status, failure_reason,
+            created_at, updated_at
+        ) VALUES (
+            #{userId}, #{signDate}, #{streakDays}, #{rewardAmount},
+            #{balanceTransactionId}, #{status}, #{failureReason},
+            NOW(), NOW()
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE user_checkins SET
+            user_id = #{userId},
+            sign_date = #{signDate},
+            streak_days = #{streakDays},
+            reward_amount = #{rewardAmount},
+            balance_transaction_id = #{balanceTransactionId},
+            status = #{status},
+            failure_reason = #{failureReason},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="markPending">
+        UPDATE user_checkins SET
+            status = 'PENDING',
+            failure_reason = NULL,
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="markCompleted">
+        UPDATE user_checkins SET
+            status = 'COMPLETED',
+            balance_transaction_id = #{balanceTransactionId},
+            failure_reason = NULL,
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="markFailed">
+        UPDATE user_checkins SET
+            status = 'FAILED',
+            failure_reason = #{failureReason},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectByUserId" resultMap="UserCheckinResultMap">
+        SELECT *
+        FROM user_checkins
+        WHERE user_id = #{userId}
+        ORDER BY sign_date DESC, id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countByUserId" resultType="long">
+        SELECT COUNT(*) FROM user_checkins WHERE user_id = #{userId}
+    </select>
+
+</mapper>

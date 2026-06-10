@@ -24,6 +24,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 认证与授权领域服务 —— 用户注册、登录、API Key 管理。
@@ -53,12 +54,13 @@ public class AuthDomainService {
      */
     @Transactional
     public UserEntity register(String email, String password, String username) {
-        if (userRepository.existsByEmail(email)) {
+        String normalizedEmail = normalizeEmail(email);
+        if (userRepository.existsByEmail(normalizedEmail)) {
             throw new AuthenticationException("Email already registered");
         }
-        String displayName = (username != null && !username.isBlank()) ? username.trim() : email.split("@")[0];
+        String displayName = (username != null && !username.isBlank()) ? username.trim() : normalizedEmail.split("@")[0];
         UserEntity user = UserEntity.builder()
-                .email(email)
+                .email(normalizedEmail)
                 .passwordHash(passwordService.hashPassword(password))
                 .username(displayName)
                 .role(Role.USER.getKey())
@@ -72,7 +74,7 @@ public class AuthDomainService {
         user = userRepository.save(user);
 
         // 生成6位数字验证码存入Redis(5分钟TTL)，发送邮件
-        String code = verificationCodePort.generateCode(user.getEmail());
+        String code = verificationCodePort.generateCode(user.getEmail(), IVerificationCodePort.PURPOSE_VERIFY_EMAIL);
         emailPort.sendVerificationCode(user.getEmail(), user.getUsername(), code);
 
         log.info("User registered (pending verification): id={}, email={}", user.getId(), user.getEmail());
@@ -89,7 +91,8 @@ public class AuthDomainService {
      */
     @Transactional
     public UserEntity login(String email, String password) {
-        UserEntity user = userRepository.findByEmail(email)
+        String normalizedEmail = normalizeEmail(email);
+        UserEntity user = userRepository.findByEmail(normalizedEmail)
                 .orElseThrow(() -> new AuthenticationException("Invalid email or password"));
         if (!user.isActive()) throw new AuthenticationException("Account is disabled");
         if (!user.getEmailVerified()) throw new AuthenticationException(
@@ -112,10 +115,11 @@ public class AuthDomainService {
      */
     @Transactional
     public void verifyEmail(String email, String code) {
-        if (!verificationCodePort.validateCode(email, code)) {
+        String normalizedEmail = normalizeEmail(email);
+        if (!verificationCodePort.validateCode(normalizedEmail, code, IVerificationCodePort.PURPOSE_VERIFY_EMAIL)) {
             throw new AuthenticationException("Invalid or expired verification code");
         }
-        UserEntity user = userRepository.findByEmail(email)
+        UserEntity user = userRepository.findByEmail(normalizedEmail)
                 .orElseThrow(() -> new AuthenticationException("User not found"));
         if (user.getEmailVerified()) {
             return; // already verified, idempotent
@@ -132,10 +136,56 @@ public class AuthDomainService {
      * @throws AuthenticationException 冷却期内时抛出
      */
     public void resendVerificationCode(String email) {
-        String code = verificationCodePort.generateCode(email);
-        String username = email.split("@")[0];
-        emailPort.sendVerificationCode(email, username, code);
-        log.info("Verification code resent to: {}", email);
+        String normalizedEmail = normalizeEmail(email);
+        userRepository.findByEmail(normalizedEmail).ifPresent(user -> {
+            if (user.getEmailVerified()) {
+                return;
+            }
+            String code = verificationCodePort.generateCode(normalizedEmail, IVerificationCodePort.PURPOSE_VERIFY_EMAIL);
+            emailPort.sendVerificationCode(normalizedEmail, user.getUsername(), code);
+            log.info("Verification code resent to: {}", normalizedEmail);
+        });
+    }
+
+    /**
+     * 申请忘记密码验证码。
+     * <p>
+     * 为避免泄露邮箱是否已注册，邮箱不存在时直接返回成功，不发送邮件。
+     */
+    public void requestPasswordResetCode(String email) {
+        String normalizedEmail = normalizeEmail(email);
+        userRepository.findByEmail(normalizedEmail).ifPresent(user -> {
+            try {
+                String code = verificationCodePort.generateCode(user.getEmail(), IVerificationCodePort.PURPOSE_RESET_PASSWORD);
+                emailPort.sendPasswordResetCode(user.getEmail(), user.getUsername(), code);
+                log.info("Password reset code sent: user_id={}, email={}", user.getId(), user.getEmail());
+            } catch (AuthenticationException e) {
+                // 忘记密码申请接口必须保持统一成功响应，避免通过冷却期错误枚举已注册邮箱。
+                log.info("Password reset code suppressed: user_id={}, email={}, reason={}",
+                        user.getId(), user.getEmail(), e.getMessage());
+            } catch (Exception e) {
+                // 邮件服务异常也不能透出到接口层，否则可通过失败响应推断邮箱是否存在。
+                log.error("Password reset code send failed: user_id={}, email={}",
+                        user.getId(), user.getEmail(), e);
+            }
+        });
+    }
+
+    /**
+     * 通过邮箱验证码重置密码，并吊销旧登录态。
+     */
+    @Transactional
+    public void resetPassword(String email, String code, String newPassword) {
+        String normalizedEmail = normalizeEmail(email);
+        if (!verificationCodePort.validateCode(normalizedEmail, code, IVerificationCodePort.PURPOSE_RESET_PASSWORD)) {
+            throw new AuthenticationException("Invalid or expired verification code");
+        }
+        UserEntity user = userRepository.findByEmail(normalizedEmail)
+                .orElseThrow(() -> new AuthenticationException("Invalid or expired verification code"));
+        user.setPasswordHash(passwordService.hashPassword(newPassword));
+        user.setTokenVersion(user.getTokenVersion() + 1);
+        userRepository.save(user);
+        log.info("Password reset: user_id={}, email={}", user.getId(), user.getEmail());
     }
 
     /**
@@ -162,6 +212,10 @@ public class AuthDomainService {
     public UserEntity getCurrentUser(Long userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new AuthenticationException("User not found"));
+    }
+
+    private String normalizeEmail(String email) {
+        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
     }
 
     /**
