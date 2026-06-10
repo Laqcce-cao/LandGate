@@ -91,6 +91,46 @@ public class AuthController {
         return ResponseEntity.ok(Map.of("success", true));
     }
 
+    @PostMapping("/password-reset-code")
+    public ResponseEntity<?> requestPasswordResetCode(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Email is required"
+            ));
+        }
+        authDomainService.requestPasswordResetCode(email);
+        return ResponseEntity.ok(Map.of("message", "如果该邮箱已注册，重置密码验证码已发送"));
+    }
+
+    @PostMapping("/password-reset")
+    public ResponseEntity<?> resetPassword(@RequestBody Map<String, String> body) {
+        String email = body.get("email");
+        String code = body.get("code");
+        String newPassword = body.get("newPassword");
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Email is required"
+            ));
+        }
+        if (code == null || code.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "Verification code is required"
+            ));
+        }
+        if (newPassword == null || newPassword.length() < 8 || newPassword.length() > 128) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error_code", "VALIDATION_ERROR",
+                    "message", "New password must be between 8 and 128 characters"
+            ));
+        }
+        authDomainService.resetPassword(email, code, newPassword);
+        return ResponseEntity.ok(Map.of("message", "Password reset successfully"));
+    }
+
     @PutMapping("/password")
     public ResponseEntity<?> updatePassword(@RequestAttribute("user_id") Long userId,
                                             @RequestBody Map<String, String> body) {
@@ -102,10 +142,10 @@ public class AuthController {
                     "message", "Current password is required"
             ));
         }
-        if (newPassword == null || newPassword.length() < 8) {
+        if (newPassword == null || newPassword.length() < 8 || newPassword.length() > 128) {
             return ResponseEntity.badRequest().body(Map.of(
                     "error_code", "VALIDATION_ERROR",
-                    "message", "New password must be at least 8 characters"
+                    "message", "New password must be between 8 and 128 characters"
             ));
         }
         authDomainService.updatePassword(userId, oldPassword, newPassword);

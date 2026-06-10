@@ -13,6 +13,8 @@ public final class RedisKeys {
     public static final String EMAIL_CODE_PREFIX = "email_code:";
     /** 邮箱验证码重发冷却期 */
     public static final String EMAIL_CODE_COOLDOWN_PREFIX = "email_code_cooldown:";
+    /** 邮箱验证码失败次数 */
+    public static final String EMAIL_CODE_ATTEMPTS_PREFIX = "email_code_attempts:";
     /** 注册频率限制（按 IP） */
     public static final String REGISTER_RATE_PREFIX = "register_rate:";
     /** OAuth 授权状态（临时，TTL 5 分钟） */
@@ -30,8 +32,20 @@ public final class RedisKeys {
         return EMAIL_CODE_PREFIX + email;
     }
 
+    public static String emailCodeKey(String purpose, String email) {
+        return EMAIL_CODE_PREFIX + purpose + ":" + email;
+    }
+
     public static String emailCodeCooldownKey(String email) {
         return EMAIL_CODE_COOLDOWN_PREFIX + email;
+    }
+
+    public static String emailCodeCooldownKey(String purpose, String email) {
+        return EMAIL_CODE_COOLDOWN_PREFIX + purpose + ":" + email;
+    }
+
+    public static String emailCodeAttemptsKey(String purpose, String email) {
+        return EMAIL_CODE_ATTEMPTS_PREFIX + purpose + ":" + email;
     }
 
     public static String registerRateKey(String ip) {

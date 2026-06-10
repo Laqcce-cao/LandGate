@@ -72,7 +72,7 @@ public class AuthDomainService {
         user = userRepository.save(user);
 
         // 生成6位数字验证码存入Redis(5分钟TTL)，发送邮件
-        String code = verificationCodePort.generateCode(user.getEmail());
+        String code = verificationCodePort.generateCode(user.getEmail(), IVerificationCodePort.PURPOSE_VERIFY_EMAIL);
         emailPort.sendVerificationCode(user.getEmail(), user.getUsername(), code);
 
         log.info("User registered (pending verification): id={}, email={}", user.getId(), user.getEmail());
@@ -112,7 +112,7 @@ public class AuthDomainService {
      */
     @Transactional
     public void verifyEmail(String email, String code) {
-        if (!verificationCodePort.validateCode(email, code)) {
+        if (!verificationCodePort.validateCode(email, code, IVerificationCodePort.PURPOSE_VERIFY_EMAIL)) {
             throw new AuthenticationException("Invalid or expired verification code");
         }
         UserEntity user = userRepository.findByEmail(email)
@@ -132,10 +132,49 @@ public class AuthDomainService {
      * @throws AuthenticationException 冷却期内时抛出
      */
     public void resendVerificationCode(String email) {
-        String code = verificationCodePort.generateCode(email);
+        String code = verificationCodePort.generateCode(email, IVerificationCodePort.PURPOSE_VERIFY_EMAIL);
         String username = email.split("@")[0];
         emailPort.sendVerificationCode(email, username, code);
         log.info("Verification code resent to: {}", email);
+    }
+
+    /**
+     * 申请忘记密码验证码。
+     * <p>
+     * 为避免泄露邮箱是否已注册，邮箱不存在时直接返回成功，不发送邮件。
+     */
+    public void requestPasswordResetCode(String email) {
+        userRepository.findByEmail(email).ifPresent(user -> {
+            try {
+                String code = verificationCodePort.generateCode(user.getEmail(), IVerificationCodePort.PURPOSE_RESET_PASSWORD);
+                emailPort.sendPasswordResetCode(user.getEmail(), user.getUsername(), code);
+                log.info("Password reset code sent: user_id={}, email={}", user.getId(), user.getEmail());
+            } catch (AuthenticationException e) {
+                // 忘记密码申请接口必须保持统一成功响应，避免通过冷却期错误枚举已注册邮箱。
+                log.info("Password reset code suppressed: user_id={}, email={}, reason={}",
+                        user.getId(), user.getEmail(), e.getMessage());
+            } catch (Exception e) {
+                // 邮件服务异常也不能透出到接口层，否则可通过失败响应推断邮箱是否存在。
+                log.error("Password reset code send failed: user_id={}, email={}",
+                        user.getId(), user.getEmail(), e);
+            }
+        });
+    }
+
+    /**
+     * 通过邮箱验证码重置密码，并吊销旧登录态。
+     */
+    @Transactional
+    public void resetPassword(String email, String code, String newPassword) {
+        if (!verificationCodePort.validateCode(email, code, IVerificationCodePort.PURPOSE_RESET_PASSWORD)) {
+            throw new AuthenticationException("Invalid or expired verification code");
+        }
+        UserEntity user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new AuthenticationException("Invalid or expired verification code"));
+        user.setPasswordHash(passwordService.hashPassword(newPassword));
+        user.setTokenVersion(user.getTokenVersion() + 1);
+        userRepository.save(user);
+        log.info("Password reset: user_id={}, email={}", user.getId(), user.getEmail());
     }
 
     /**
