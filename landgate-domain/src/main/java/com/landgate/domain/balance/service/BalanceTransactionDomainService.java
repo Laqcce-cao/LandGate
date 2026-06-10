@@ -4,10 +4,13 @@ import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.balance.adapter.repository.IBalanceTransactionRepository;
 import com.landgate.domain.balance.adapter.runtime.IBalanceRuntime;
+import com.landgate.domain.balance.model.entity.AdminBalanceTransactionEntity;
 import com.landgate.domain.balance.model.entity.BalanceTransactionEntity;
 import com.landgate.domain.balance.model.valobj.BalanceAdjustResult;
 import com.landgate.domain.balance.model.valobj.BalanceTransactionCommand;
+import com.landgate.types.enums.BalanceFundingType;
 import com.landgate.types.enums.BalanceTransactionStatus;
+import com.landgate.types.enums.BalanceTransactionType;
 import com.landgate.types.exception.BusinessException;
 import com.landgate.types.exception.NotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -114,6 +117,32 @@ public class BalanceTransactionDomainService {
 
         flushCurrentRedisBalance(command.userId());
         return tx;
+    }
+
+    /**
+     * 后台分页查询全站余额流水。
+     */
+    public List<AdminBalanceTransactionEntity> listAdminTransactions(
+            String keyword,
+            BalanceTransactionType transactionType,
+            BalanceFundingType fundingType,
+            BalanceTransactionStatus status,
+            int page,
+            int size) {
+        int normalizedPage = Math.max(page, 0);
+        int normalizedSize = Math.min(Math.max(size, 1), 100);
+        return transactionRepository.listAdmin(keyword, transactionType, fundingType, status,
+                normalizedPage * normalizedSize, normalizedSize);
+    }
+
+    /**
+     * 统计后台筛选条件下的余额流水数量。
+     */
+    public long countAdminTransactions(String keyword,
+                                       BalanceTransactionType transactionType,
+                                       BalanceFundingType fundingType,
+                                       BalanceTransactionStatus status) {
+        return transactionRepository.countAdmin(keyword, transactionType, fundingType, status);
     }
 
     /**

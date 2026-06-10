@@ -1,6 +1,8 @@
 package com.landgate.infrastructure.adapter.mapper;
 
+import com.landgate.domain.balance.model.entity.AdminBalanceTransactionEntity;
 import com.landgate.domain.balance.model.entity.BalanceTransactionEntity;
+import com.landgate.infrastructure.dao.po.AdminBalanceTransactionPO;
 import com.landgate.infrastructure.dao.po.BalanceTransactionPO;
 import org.mapstruct.Mapper;
 
@@ -11,4 +13,5 @@ import org.mapstruct.Mapper;
 public interface BalanceTransactionMapper {
     BalanceTransactionEntity toEntity(BalanceTransactionPO po);
     BalanceTransactionPO toPO(BalanceTransactionEntity entity);
+    AdminBalanceTransactionEntity toAdminEntity(AdminBalanceTransactionPO po);
 }

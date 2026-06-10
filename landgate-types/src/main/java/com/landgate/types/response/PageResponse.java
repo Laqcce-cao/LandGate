@@ -23,7 +23,7 @@ public class PageResponse<T> {
     /** 数据列表 */
     private List<T> items;
 
-    /** 当前页码 (1-based) */
+    /** 当前页码，前后端约定为 0-based：0 表示第一页 */
     private int page;
 
     /** 每页数量 */

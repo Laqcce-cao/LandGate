@@ -114,4 +114,75 @@
         SELECT COUNT(*) FROM balance_transactions WHERE user_id = #{userId}
     </select>
 
+    <resultMap id="AdminBalanceTransactionResultMap" type="com.landgate.infrastructure.dao.po.AdminBalanceTransactionPO">
+        <id     column="id"                 property="id"/>
+        <result column="user_id"            property="userId"/>
+        <result column="user_email"         property="userEmail"/>
+        <result column="transaction_type"   property="transactionType"/>
+        <result column="funding_type"       property="fundingType"/>
+        <result column="amount"             property="amount"/>
+        <result column="cash_income_amount" property="cashIncomeAmount"/>
+        <result column="balance_before"     property="balanceBefore"/>
+        <result column="balance_after"      property="balanceAfter"/>
+        <result column="operator_type"      property="operatorType"/>
+        <result column="operator_id"        property="operatorId"/>
+        <result column="remark"             property="remark"/>
+        <result column="status"             property="status"/>
+        <result column="failure_reason"     property="failureReason"/>
+        <result column="completed_at"       property="completedAt"/>
+        <result column="created_at"         property="createdAt"/>
+    </resultMap>
+
+    <sql id="AdminWhereClause">
+        <where>
+            <if test="keyword != null and keyword != ''">
+                AND (
+                    CAST(bt.user_id AS CHAR) = #{keyword}
+                    OR u.email = #{keyword}
+                )
+            </if>
+            <if test="transactionType != null and transactionType != ''">
+                AND bt.transaction_type = #{transactionType}
+            </if>
+            <if test="fundingType != null and fundingType != ''">
+                AND bt.funding_type = #{fundingType}
+            </if>
+            <if test="status != null and status != ''">
+                AND bt.status = #{status}
+            </if>
+        </where>
+    </sql>
+
+    <select id="selectAdmin" resultMap="AdminBalanceTransactionResultMap">
+        SELECT
+            bt.id,
+            bt.user_id,
+            u.email AS user_email,
+            bt.transaction_type,
+            bt.funding_type,
+            bt.amount,
+            bt.cash_income_amount,
+            bt.balance_before,
+            bt.balance_after,
+            bt.operator_type,
+            bt.operator_id,
+            bt.remark,
+            bt.status,
+            bt.failure_reason,
+            bt.completed_at,
+            bt.created_at
+        FROM balance_transactions bt
+        LEFT JOIN users u ON u.id = bt.user_id
+        <include refid="AdminWhereClause"/>
+        ORDER BY bt.created_at DESC, bt.id DESC
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countAdmin" resultType="long">
+        SELECT COUNT(*)
+        FROM balance_transactions bt
+        LEFT JOIN users u ON u.id = bt.user_id
+        <include refid="AdminWhereClause"/>
+    </select>
+
 </mapper>
