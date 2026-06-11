@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.converter;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -50,6 +51,11 @@ public class ResponsesConverter implements ProtocolConverter {
     @Override
     public String requestFromIR(JsonNode ir) {
         try {
+            if (ir != null && ir.isObject() && ir.has("_landgate_stop_sequences")) {
+                ObjectNode sanitized = ((ObjectNode) ir).deepCopy();
+                sanitized.remove("_landgate_stop_sequences");
+                return JSON.writeValueAsString(sanitized);
+            }
             return JSON.writeValueAsString(ir);
         } catch (Exception e) {
             log.warn("Responses pass-through requestFromIR error: {}", e.getMessage());

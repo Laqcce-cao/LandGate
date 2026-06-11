@@ -42,12 +42,51 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
 
             assertEquals("gpt-4o", resp.get("model").asText());
-            assertTrue(resp.get("stream").asBoolean()); // 始终强制 true
+            assertFalse(resp.has("stream"));
             assertFalse(resp.get("store").asBoolean());
 
             JsonNode input = resp.get("input");
             assertEquals(1, input.size());
             assertEquals("user", input.get(0).get("role").asText());
+        }
+
+        @Test
+        @DisplayName("stream 字段保留客户端语义")
+        void streamFlagPreserved() throws Exception {
+            String streamTrue = """
+                    {
+                        "model": "gpt-4o",
+                        "stream": true,
+                        "messages": [{"role": "user", "content": "Hello"}]
+                    }""";
+            String streamFalse = """
+                    {
+                        "model": "gpt-4o",
+                        "stream": false,
+                        "messages": [{"role": "user", "content": "Hello"}]
+                    }""";
+
+            assertTrue(toIR.requestToIR(streamTrue).get("stream").asBoolean());
+            assertFalse(toIR.requestToIR(streamFalse).get("stream").asBoolean());
+        }
+
+        @Test
+        @DisplayName("developer 消息 → developer role input item")
+        void developerMessage() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "messages": [
+                            {"role": "developer", "content": "Project rules."},
+                            {"role": "user", "content": "Hi"}
+                        ]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode input = resp.get("input");
+            assertEquals(2, input.size());
+            assertEquals("developer", input.get(0).get("role").asText());
+            assertEquals("Project rules.", input.get(0).get("content").asText());
         }
 
         @Test
@@ -109,7 +148,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("max_tokens → max_output_tokens（最小 128）")
+        @DisplayName("max_tokens → max_output_tokens 精确映射")
         void maxTokens() throws Exception {
             String body = """
                     {
@@ -119,8 +158,7 @@ class ChatCompletionsConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            // 低于 minMaxOutputTokens(128)，应被 clamp 到 128
-            assertEquals(128, resp.get("max_output_tokens").asInt());
+            assertEquals(100, resp.get("max_output_tokens").asInt());
         }
 
         @Test
@@ -152,6 +190,39 @@ class ChatCompletionsConverterTest {
             assertNotNull(resp.get("reasoning"));
             assertEquals("high", resp.get("reasoning").get("effort").asText());
             assertEquals("auto", resp.get("reasoning").get("summary").asText());
+        }
+
+        @Test
+        @DisplayName("response_format json_schema → text.format")
+        void responseFormatJsonSchema() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "messages": [{"role": "user", "content": "Return JSON"}],
+                        "response_format": {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "weather_answer",
+                                "description": "Weather answer",
+                                "strict": true,
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {"city": {"type": "string"}},
+                                    "required": ["city"],
+                                    "additionalProperties": false
+                                }
+                            }
+                        }
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode format = resp.get("text").get("format");
+
+            assertEquals("json_schema", format.get("type").asText());
+            assertEquals("weather_answer", format.get("name").asText());
+            assertEquals("Weather answer", format.get("description").asText());
+            assertTrue(format.get("strict").asBoolean());
+            assertEquals("object", format.get("schema").get("type").asText());
         }
 
         @Test
@@ -237,6 +308,25 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("Chat 嵌套 tool_choice → Responses 扁平 function tool_choice")
+        void nestedToolChoiceToResponsesToolChoice() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "messages": [{"role": "user", "content": "Hi"}],
+                        "tools": [{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}],
+                        "tool_choice": {"type":"function","function":{"name":"get_weather"}}
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode tc = resp.get("tool_choice");
+
+            assertEquals("function", tc.get("type").asText());
+            assertEquals("get_weather", tc.get("name").asText());
+            assertFalse(tc.has("function"));
+        }
+
+        @Test
         @DisplayName("service_tier 透传")
         void serviceTier() throws Exception {
             String body = """
@@ -248,6 +338,61 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
             assertEquals("flex", resp.get("service_tier").asText());
+        }
+
+        @Test
+        @DisplayName("metadata/user/parallel_tool_calls 与 tool strict 透传")
+        void commonFieldsAndToolStrictPreserved() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "metadata": {"trace_id": "req_123"},
+                        "user": "user_abc",
+                        "parallel_tool_calls": false,
+                        "messages": [{"role": "user", "content": "Hi"}],
+                        "tools": [{"type":"function","function":{
+                            "name":"get_weather",
+                            "description":"Get weather",
+                            "parameters":{"type":"object"},
+                            "strict": true
+                        }}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("req_123", resp.get("metadata").get("trace_id").asText());
+            assertEquals("user_abc", resp.get("user").asText());
+            assertFalse(resp.get("parallel_tool_calls").asBoolean());
+            assertTrue(resp.get("tools").get(0).get("strict").asBoolean());
+
+            JsonNode chat = JSON.readTree(fromIR.requestFromIR(resp));
+            assertEquals("req_123", chat.get("metadata").get("trace_id").asText());
+            assertEquals("user_abc", chat.get("user").asText());
+            assertFalse(chat.get("parallel_tool_calls").asBoolean());
+            assertTrue(chat.get("tools").get(0).get("function").get("strict").asBoolean());
+        }
+
+        @Test
+        @DisplayName("stop → 内部 stop_sequences 扩展")
+        void stopToInternalStopSequences() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "stop": ["</end>", "DONE"],
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("</end>", resp.get("_landgate_stop_sequences").get(0).asText());
+            assertEquals("DONE", resp.get("_landgate_stop_sequences").get(1).asText());
+
+            String chatBody = fromIR.requestFromIR(resp);
+            JsonNode chat = JSON.readTree(chatBody);
+            assertEquals("</end>", chat.get("stop").get(0).asText());
+
+            String responsesBody = new ResponsesConverter().requestFromIR(resp);
+            assertFalse(JSON.readTree(responsesBody).has("_landgate_stop_sequences"));
         }
 
         @Test
@@ -271,6 +416,28 @@ class ChatCompletionsConverterTest {
             assertEquals("user", input.get(0).get("role").asText());
             assertEquals("assistant", input.get(1).get("role").asText());
             assertEquals("function_call", input.get(2).get("type").asText());
+        }
+
+        @Test
+        @DisplayName("旧式 assistant function_call 请求 → function_call input item")
+        void assistantLegacyFunctionCallRequest() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "messages": [
+                            {"role":"user","content":"Call weather"},
+                            {"role":"assistant","content":null,
+                                "function_call":{"name":"get_weather","arguments":"{\\"city\\":\\"NYC\\"}"}}
+                        ]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode input = resp.get("input");
+
+            assertEquals(2, input.size());
+            assertEquals("function_call", input.get(1).get("type").asText());
+            assertEquals("get_weather", input.get(1).get("name").asText());
+            assertEquals("{\"city\":\"NYC\"}", input.get(1).get("arguments").asText());
         }
 
         @Test
@@ -380,6 +547,23 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("refusal content 作为兼容文本保留")
+        void refusalContentAsText() throws Exception {
+            String body = """
+                    {
+                        "id": "resp_refusal",
+                        "status": "completed",
+                        "output": [{"type":"message","content":[{"type":"refusal","refusal":"I cannot help with that."}]}]
+                    }""";
+
+            String result = fromIR.responseFromIR(JSON.readTree(body));
+            JsonNode chat = JSON.readTree(result);
+
+            assertEquals("I cannot help with that.",
+                    chat.get("choices").get(0).get("message").get("content").asText());
+        }
+
+        @Test
         @DisplayName("tool_calls 响应")
         void toolCalls() throws Exception {
             String body = """
@@ -424,6 +608,29 @@ class ChatCompletionsConverterTest {
             JsonNode message = chat.get("choices").get(0).get("message");
             assertEquals("The answer is 42.", message.get("content").asText());
             assertEquals("I thought about it.", message.get("reasoning_content").asText());
+        }
+
+        @Test
+        @DisplayName("多个 message/reasoning output item 聚合为 Chat 单条消息")
+        void multipleMessageAndReasoningItemsAggregate() throws Exception {
+            String body = """
+                    {
+                        "id": "resp_multi",
+                        "status": "completed",
+                        "output": [
+                            {"type":"reasoning","summary":[{"type":"summary_text","text":"First thought."}]},
+                            {"type":"message","content":[{"type":"output_text","text":"First answer."}]},
+                            {"type":"reasoning","summary":[{"type":"summary_text","text":"Second thought."}]},
+                            {"type":"message","content":[{"type":"output_text","text":"Second answer."}]}
+                        ]
+                    }""";
+
+            String result = fromIR.responseFromIR(JSON.readTree(body));
+            JsonNode chat = JSON.readTree(result);
+            JsonNode message = chat.get("choices").get(0).get("message");
+
+            assertEquals("First answer.\nSecond answer.", message.get("content").asText());
+            assertEquals("First thought.\nSecond thought.", message.get("reasoning_content").asText());
         }
 
         @Test
@@ -547,6 +754,26 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("refusal → Responses refusal content part")
+        void refusalContent() throws Exception {
+            String body = """
+                    {
+                        "id": "chatcmpl-refusal",
+                        "object": "chat.completion",
+                        "model": "gpt-4o",
+                        "choices": [{"index":0,
+                            "message":{"role":"assistant","content":null,"refusal":"I cannot help with that."},
+                            "finish_reason":"stop"}]
+                    }""";
+
+            JsonNode result = toIR.responseToIR(body);
+            JsonNode part = result.get("output").get(0).get("content").get(0);
+
+            assertEquals("refusal", part.get("type").asText());
+            assertEquals("I cannot help with that.", part.get("refusal").asText());
+        }
+
+        @Test
         @DisplayName("tool_calls → function_call items")
         void toolCallsInResponse() throws Exception {
             String body = """
@@ -569,6 +796,28 @@ class ChatCompletionsConverterTest {
             assertEquals("function_call", output.get(0).get("type").asText());
             assertEquals("call_1", output.get(0).get("call_id").asText());
             assertEquals("ping", output.get(0).get("name").asText());
+        }
+
+        @Test
+        @DisplayName("旧式 function_call 响应 → function_call item")
+        void legacyFunctionCallInResponse() throws Exception {
+            String body = """
+                    {
+                        "id": "chatcmpl-legacy-fn",
+                        "object": "chat.completion",
+                        "model": "gpt-4o",
+                        "choices": [{"index":0,
+                            "message":{"role":"assistant","content":null,
+                                "function_call":{"name":"get_weather","arguments":"{\\"city\\":\\"NYC\\"}"}},
+                            "finish_reason":"function_call"}]
+                    }""";
+
+            JsonNode result = toIR.responseToIR(body);
+            JsonNode output = result.get("output");
+
+            assertEquals("function_call", output.get(0).get("type").asText());
+            assertEquals("get_weather", output.get(0).get("name").asText());
+            assertEquals("{\"city\":\"NYC\"}", output.get(0).get("arguments").asText());
         }
 
         @Test
@@ -656,6 +905,37 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("连续 function_call input 合并为单条 assistant tool_calls")
+        void consecutiveFunctionCallsInputMerged() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "input": [
+                            {"role":"user","content":"Do both"},
+                            {"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\\"city\\":\\"NYC\\"}"},
+                            {"type":"function_call","call_id":"call_2","name":"get_time","arguments":"{\\"tz\\":\\"UTC\\"}"},
+                            {"type":"function_call_output","call_id":"call_1","output":"Sunny"},
+                            {"type":"function_call_output","call_id":"call_2","output":"10:00"}
+                        ]
+                    }""";
+
+            JsonNode ir = JSON.readTree(body);
+            String result = fromIR.requestFromIR(ir);
+            JsonNode chat = JSON.readTree(result);
+            JsonNode messages = chat.get("messages");
+
+            assertEquals(4, messages.size());
+            JsonNode assistantMsg = messages.get(1);
+            assertEquals("assistant", assistantMsg.get("role").asText());
+            JsonNode toolCalls = assistantMsg.get("tool_calls");
+            assertEquals(2, toolCalls.size());
+            assertEquals("call_1", toolCalls.get(0).get("id").asText());
+            assertEquals("call_2", toolCalls.get(1).get("id").asText());
+            assertEquals("tool", messages.get(2).get("role").asText());
+            assertEquals("tool", messages.get(3).get("role").asText());
+        }
+
+        @Test
         @DisplayName("function_call_output → tool message")
         void functionCallOutput() throws Exception {
             String body = """
@@ -678,8 +958,8 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("developer role → system")
-        void developerRoleToSystem() throws Exception {
+        @DisplayName("developer role 保留")
+        void developerRolePreserved() throws Exception {
             String body = """
                     {
                         "model": "gpt-4o",
@@ -692,7 +972,7 @@ class ChatCompletionsConverterTest {
 
             JsonNode messages = chat.get("messages");
             assertEquals(1, messages.size());
-            assertEquals("system", messages.get(0).get("role").asText());
+            assertEquals("developer", messages.get(0).get("role").asText());
         }
 
         @Test
@@ -712,6 +992,60 @@ class ChatCompletionsConverterTest {
             JsonNode tc = chat.get("tool_choice");
             assertEquals("function", tc.get("type").asText());
             assertEquals("get_weather", tc.get("function").get("name").asText());
+        }
+
+        @Test
+        @DisplayName("text.format json_schema → response_format")
+        void textFormatJsonSchemaToResponseFormat() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "input": [{"role":"user","content":"Return JSON"}],
+                        "text": {
+                            "format": {
+                                "type": "json_schema",
+                                "name": "weather_answer",
+                                "description": "Weather answer",
+                                "strict": true,
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {"city": {"type": "string"}},
+                                    "required": ["city"],
+                                    "additionalProperties": false
+                                }
+                            }
+                        }
+                    }""";
+
+            JsonNode ir = JSON.readTree(body);
+            String result = fromIR.requestFromIR(ir);
+            JsonNode chat = JSON.readTree(result);
+            JsonNode responseFormat = chat.get("response_format");
+
+            assertEquals("json_schema", responseFormat.get("type").asText());
+            assertEquals("weather_answer", responseFormat.get("json_schema").get("name").asText());
+            assertEquals("Weather answer", responseFormat.get("json_schema").get("description").asText());
+            assertTrue(responseFormat.get("json_schema").get("strict").asBoolean());
+            assertEquals("object", responseFormat.get("json_schema").get("schema").get("type").asText());
+        }
+
+        @Test
+        @DisplayName("developer role input 转回 Chat developer message")
+        void developerInputRolePreserved() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "input": [
+                            {"role":"developer","content":"Project rules."},
+                            {"role":"user","content":"Hi"}
+                        ]
+                    }""";
+
+            JsonNode ir = JSON.readTree(body);
+            JsonNode chat = JSON.readTree(fromIR.requestFromIR(ir));
+
+            assertEquals("developer", chat.get("messages").get(0).get("role").asText());
+            assertEquals("Project rules.", chat.get("messages").get(0).get("content").asText());
         }
     }
 
@@ -757,6 +1091,98 @@ class ChatCompletionsConverterTest {
             // arguments delta
             out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"}}]}}]}");
             assertTrue(out.stream().anyMatch(s -> s.contains("response.function_call_arguments.delta")));
+
+            out = t.feed("data: [DONE]");
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.function_call_arguments.done")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"")));
+        }
+
+        @Test
+        @DisplayName("多个 tool_calls 流按 index 独立累积参数")
+        void multipleToolCallsStream() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-4o");
+
+            List<String> out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}},{\"index\":1,\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"get_time\"}}]}}]}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"output_index\":0")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"output_index\":1")));
+
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\"}},{\"index\":1,\"function\":{\"arguments\":\"{\\\"tz\\\":\"}}]}}]}");
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"\\\"UTC\\\"}\"}},{\"index\":0,\"function\":{\"arguments\":\"\\\"NYC\\\"}\"}}]}}]}");
+
+            out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"call_id\":\"call_1\"")
+                    && s.contains("\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"call_id\":\"call_2\"")
+                    && s.contains("\"arguments\":\"{\\\"tz\\\":\\\"UTC\\\"}\"")));
+        }
+
+        @Test
+        @DisplayName("旧式 function_call 流转换为 function_call item")
+        void legacyFunctionCallStream() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-4o");
+
+            List<String> out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"function_call\":{\"name\":\"get_weather\"}}}]}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"type\":\"function_call\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"name\":\"get_weather\"")));
+
+            out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"function_call\":{\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"}}}]}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.function_call_arguments.delta")));
+
+            out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"function_call\"}]}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"")));
+        }
+
+        @Test
+        @DisplayName("finish_reason 后仍接收 usage-only chunk")
+        void usageOnlyChunkAfterFinishReason() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-4o");
+
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}");
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}");
+
+            List<String> out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}");
+            assertFalse(t.isDone());
+            assertTrue(out.stream().noneMatch(s -> s.contains("response.completed")));
+
+            out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3,\"total_tokens\":14,\"prompt_tokens_details\":{\"cached_tokens\":7}}}");
+            assertFalse(t.isDone());
+            assertTrue(out.isEmpty());
+
+            out = t.feed("data: [DONE]");
+            assertTrue(t.isDone());
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"input_tokens\":11")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"output_tokens\":3")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"cached_tokens\":7")));
+        }
+
+        @Test
+        @DisplayName("reasoning_content 流使用独立 reasoning item")
+        void reasoningContentStreamUsesReasoningItem() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-4o");
+
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}");
+            List<String> out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Thinking\"}}]}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"type\":\"reasoning\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.reasoning_summary_text.delta")));
+
+            out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Answer\"}}]}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.reasoning_summary_text.done")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"type\":\"message\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"output_index\":1")));
+        }
+
+        @Test
+        @DisplayName("refusal delta 流转换为 Responses refusal delta")
+        void refusalDeltaStream() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-4o");
+
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}");
+            List<String> out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"No.\"}}]}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"type\":\"message\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.refusal.delta")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"delta\":\"No.\"")));
         }
     }
 
@@ -783,6 +1209,26 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("refusal delta 流作为文本 delta 输出")
+        void refusalDelta() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
+
+            List<String> out = t.feed("data: {\"type\":\"response.refusal.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"No.\"}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"content\":\"No.\"")));
+        }
+
+        @Test
+        @DisplayName("content_part.done fallback 输出未见过的文本")
+        void contentPartDoneFallback() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
+
+            List<String> out = t.feed("data: {\"type\":\"response.content_part.done\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Final\"}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"content\":\"Final\"")));
+        }
+
+        @Test
         @DisplayName("tool_call delta 流")
         void toolCallDelta() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
@@ -796,6 +1242,32 @@ class ChatCompletionsConverterTest {
             // arguments delta (uses output_index to match)
             out = t.feed("data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"city\\\":\"}");
             assertTrue(out.stream().anyMatch(s -> s.contains("\"arguments\"")));
+        }
+
+        @Test
+        @DisplayName("output_item.done function_call fallback 输出完整 tool_call")
+        void toolCallFromOutputItemDoneFallback() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
+
+            List<String> out = t.feed("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\",\"status\":\"completed\"}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"tool_calls\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"call_1\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"get_weather\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"")));
+        }
+
+        @Test
+        @DisplayName("response.completed.output fallback 输出最终文本和缓存 usage")
+        void completedOutputFallbackAndCachedUsage() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
+
+            List<String> out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final only\"}]}],\"usage\":{\"input_tokens\":100,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":80}}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"content\":\"final only\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"cached_tokens\":80")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("data: [DONE]")));
+            assertTrue(t.isDone());
         }
 
         @Test

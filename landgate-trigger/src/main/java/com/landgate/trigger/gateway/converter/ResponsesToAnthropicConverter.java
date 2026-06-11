@@ -8,8 +8,10 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -43,6 +45,7 @@ public class ResponsesToAnthropicConverter {
             copyIfExists(ir, dst, "stream");
             copyIfExists(ir, dst, "temperature");
             copyIfExists(ir, dst, "top_p");
+            copyIfExists(ir, dst, "metadata");
 
             // max_output_tokens → max_tokens（无值时默认 8192）
             if (ir.has("max_output_tokens")) {
@@ -52,8 +55,17 @@ public class ResponsesToAnthropicConverter {
                 dst.put("max_tokens", 8192);
             }
 
+            // 内部 IR stop 扩展 → Anthropic stop_sequences
+            if (ir.has("_landgate_stop_sequences") && ir.get("_landgate_stop_sequences").isArray()
+                    && ir.get("_landgate_stop_sequences").size() > 0) {
+                dst.set("stop_sequences", ir.get("_landgate_stop_sequences"));
+            }
+
             // input[] → system + messages[]
             String systemText = null;
+            if (ir.has("instructions") && !ir.get("instructions").isNull()) {
+                systemText = appendSystemText(systemText, ir.get("instructions").asText());
+            }
             List<JsonNode> inputItems = new ArrayList<>();
             if (ir.has("input")) {
                 JsonNode inputNode = ir.get("input");
@@ -62,11 +74,11 @@ public class ResponsesToAnthropicConverter {
                         String role = item.has("role") ? item.get("role").asText() : null;
                         String itemType = item.has("type") ? item.get("type").asText() : null;
 
-                        // system role → 提取到顶层 system
-                        if ("system".equals(role)) {
+                        // system/developer role → 提取到 Anthropic 顶层 system
+                        if ("system".equals(role) || "developer".equals(role)) {
                             String text = extractTextFromContent(item.get("content"));
                             if (text != null && !text.isEmpty()) {
-                                systemText = systemText == null ? text : systemText + "\n" + text;
+                                systemText = appendSystemText(systemText, text);
                             }
                             continue;
                         }
@@ -120,16 +132,6 @@ public class ResponsesToAnthropicConverter {
                             messages.add(msg);
                         }
                     }
-                    case "developer" -> {
-                        // Sub2API 行为：developer → user 消息（不提取到 system）
-                        JsonNode content = convertUserContentToAnthropic(item.get("content"));
-                        if (content != null) {
-                            ObjectNode msg = JSON.createObjectNode();
-                            msg.put("role", "user");
-                            msg.set("content", content);
-                            messages.add(msg);
-                        }
-                    }
                     default -> {
                         // 未知 role → user
                         JsonNode content = convertUserContentToAnthropic(item.get("content"));
@@ -163,7 +165,13 @@ public class ResponsesToAnthropicConverter {
 
             // --- tool_choice ---
             if (ir.has("tool_choice")) {
-                dst.set("tool_choice", convertResponsesToolChoiceToAnthropic(ir.get("tool_choice")));
+                JsonNode toolChoice = convertResponsesToolChoiceToAnthropic(ir.get("tool_choice"));
+                if (toolChoice instanceof ObjectNode objectNode
+                        && ir.has("parallel_tool_calls")
+                        && !ir.get("parallel_tool_calls").asBoolean(true)) {
+                    objectNode.put("disable_parallel_tool_use", true);
+                }
+                dst.set("tool_choice", toolChoice);
             }
 
             // --- reasoning.effort → output_config.effort + thinking ---
@@ -239,6 +247,11 @@ public class ResponsesToAnthropicConverter {
                                         ObjectNode textBlock = JSON.createObjectNode();
                                         textBlock.put("type", "text");
                                         textBlock.put("text", part.has("text") ? part.get("text").asText() : "");
+                                        content.add(textBlock);
+                                    } else if ("refusal".equals(partType)) {
+                                        ObjectNode textBlock = JSON.createObjectNode();
+                                        textBlock.put("type", "text");
+                                        textBlock.put("text", part.has("refusal") ? part.get("refusal").asText() : "");
                                         content.add(textBlock);
                                     }
                                 }
@@ -350,6 +363,10 @@ public class ResponsesToAnthropicConverter {
         private String currentToolArgs = "";
         private boolean hasToolCall = false;
         private final Map<Integer, Integer> outputIndexToBlockIdx = new HashMap<>();
+        private final Set<Integer> textDeltasSeen = new HashSet<>();
+        private final Set<Integer> refusalDeltasSeen = new HashSet<>();
+        private final Set<Integer> toolArgumentDeltasSeen = new HashSet<>();
+        private final Set<Integer> reasoningDeltasSeen = new HashSet<>();
 
         private int inputTokens = 0;
         private int outputTokens = 0;
@@ -429,6 +446,7 @@ public class ResponsesToAnthropicConverter {
                     case "response.output_text.delta" -> {
                         String text = root.has("delta") ? root.get("delta").asText() : "";
                         if (!text.isEmpty()) {
+                            textDeltasSeen.add(contentKey(root));
                             // 如果没有打开的 text block，自动开始一个
                             if (!contentBlockOpen || !"text".equals(currentBlockType)) {
                                 closeCurrentBlock(output);
@@ -445,11 +463,65 @@ public class ResponsesToAnthropicConverter {
                         }
                     }
                     case "response.output_text.done" -> {
+                        String text = root.has("text") ? root.get("text").asText() : "";
+                        int key = contentKey(root);
+                        if (!text.isEmpty() && !textDeltasSeen.contains(key)) {
+                            if (!contentBlockOpen || !"text".equals(currentBlockType)) {
+                                closeCurrentBlock(output);
+                                contentBlockIndex++;
+                                currentBlockType = "text";
+                                contentBlockOpen = true;
+                                appendEvent(output, "content_block_start",
+                                        fmt("{\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+                                                contentBlockIndex));
+                            }
+                            appendEvent(output, "content_block_delta",
+                                    fmt("{\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"text_delta\",\"text\":\"%s\"}}",
+                                            contentBlockIndex, escapeJsonValue(text)));
+                            textDeltasSeen.add(key);
+                        }
+                        closeCurrentBlock(output);
+                    }
+                    case "response.content_part.done" -> {
+                        JsonNode part = root.path("part");
+                        String partType = part.path("type").asText("");
+                        int key = contentKey(root);
+                        if ("output_text".equals(partType) && !textDeltasSeen.contains(key)) {
+                            String text = part.path("text").asText("");
+                            if (!text.isEmpty()) {
+                                emitTextBlockDelta(output, text);
+                                textDeltasSeen.add(key);
+                            }
+                        } else if ("refusal".equals(partType) && !refusalDeltasSeen.contains(key)) {
+                            String refusal = part.path("refusal").asText("");
+                            if (!refusal.isEmpty()) {
+                                emitTextBlockDelta(output, refusal);
+                                refusalDeltasSeen.add(key);
+                            }
+                        }
+                        closeCurrentBlock(output);
+                    }
+                    case "response.refusal.delta" -> {
+                        String delta = root.has("delta") ? root.get("delta").asText() : "";
+                        if (!delta.isEmpty()) {
+                            refusalDeltasSeen.add(contentKey(root));
+                            emitTextBlockDelta(output, delta);
+                        }
+                    }
+                    case "response.refusal.done" -> {
+                        String refusal = root.has("refusal") ? root.get("refusal").asText() : "";
+                        int key = contentKey(root);
+                        if (!refusal.isEmpty() && !refusalDeltasSeen.contains(key)) {
+                            emitTextBlockDelta(output, refusal);
+                            refusalDeltasSeen.add(key);
+                        }
                         closeCurrentBlock(output);
                     }
                     case "response.function_call_arguments.delta" -> {
                         String delta = root.has("delta") ? root.get("delta").asText() : "";
                         if (!delta.isEmpty()) {
+                            int outputIdx = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                            toolArgumentDeltasSeen.add(outputIdx);
                             if ("Read".equals(currentToolName)) {
                                 // Read 工具：缓冲 delta，不实时输出
                                 currentToolArgs += delta;
@@ -482,6 +554,8 @@ public class ResponsesToAnthropicConverter {
                     case "response.reasoning_summary_text.delta" -> {
                         String delta = root.has("delta") ? root.get("delta").asText() : "";
                         if (!delta.isEmpty()) {
+                            int outputIdx = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                            reasoningDeltasSeen.add(outputIdx);
                             int idx = findBlockIndex(root);
                             appendEvent(output, "content_block_delta",
                                     fmt("{\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"%s\"}}",
@@ -513,9 +587,19 @@ public class ResponsesToAnthropicConverter {
                                             contentBlockIndex, escapeJsonValue(srvId)));
                             appendEvent(output, "content_block_stop",
                                     fmt("{\"type\":\"content_block_stop\",\"index\":%d}", contentBlockIndex));
+                        } else if (root.has("item")) {
+                            int outputIndex = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                            emitFinalOutputItem(output, outputIndex, root.get("item"));
                         }
                     }
                     case "response.completed", "response.done", "response.incomplete", "response.failed" -> {
+                        if (root.has("response") && root.get("response").has("output")
+                                && root.get("response").get("output").isArray()) {
+                            JsonNode responseOutput = root.get("response").get("output");
+                            for (int i = 0; i < responseOutput.size(); i++) {
+                                emitFinalOutputItem(output, i, responseOutput.get(i));
+                            }
+                        }
                         closeCurrentBlock(output);
 
                         // usage：优先从顶层 usage 读取，fallback 到 response.usage
@@ -531,6 +615,9 @@ public class ResponsesToAnthropicConverter {
                             JsonNode u = root.get("response").get("usage");
                             if (u.has("input_tokens")) usageInput = u.get("input_tokens").asInt();
                             if (u.has("output_tokens")) usageOutput = u.get("output_tokens").asInt();
+                            if (u.has("input_tokens_details") && u.get("input_tokens_details").has("cached_tokens")) {
+                                usageCached = u.get("input_tokens_details").get("cached_tokens").asInt();
+                            }
                         }
 
                         inputTokens = Math.max(usageInput - usageCached, 0);
@@ -556,8 +643,11 @@ public class ResponsesToAnthropicConverter {
                         }
 
                         appendEvent(output, "message_delta",
-                                fmt("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d}}",
-                                        stopReason, outputTokens));
+                                fmt("{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"%s\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":%d%s}}",
+                                        stopReason, outputTokens,
+                                        cacheReadInputTokens > 0
+                                                ? fmt(",\"cache_read_input_tokens\":%d", cacheReadInputTokens)
+                                                : ""));
                         appendEvent(output, "message_stop", "{\"type\":\"message_stop\"}");
                         done = true;
                     }
@@ -566,6 +656,82 @@ public class ResponsesToAnthropicConverter {
                 log.debug("IR→Anthropic SSE error: {}", e.getMessage());
             }
             return output;
+        }
+
+        private void emitFinalOutputItem(List<String> output, int outputIndex, JsonNode item) {
+            String itemType = item.path("type").asText("");
+            if ("message".equals(itemType) && item.has("content") && item.get("content").isArray()) {
+                for (int contentIndex = 0; contentIndex < item.get("content").size(); contentIndex++) {
+                    JsonNode part = item.get("content").get(contentIndex);
+                    String partType = part.path("type").asText("");
+                    int key = outputIndex * 10_000 + contentIndex;
+                    if ("output_text".equals(partType) && !textDeltasSeen.contains(key)) {
+                        String text = part.path("text").asText("");
+                        if (!text.isEmpty()) {
+                            emitTextBlockDelta(output, text);
+                            textDeltasSeen.add(key);
+                        }
+                    } else if ("refusal".equals(partType) && !refusalDeltasSeen.contains(key)) {
+                        String refusal = part.path("refusal").asText("");
+                        if (!refusal.isEmpty()) {
+                            emitTextBlockDelta(output, refusal);
+                            refusalDeltasSeen.add(key);
+                        }
+                    }
+                }
+            } else if ("function_call".equals(itemType)) {
+                hasToolCall = true;
+                Integer blockIndex = outputIndexToBlockIdx.get(outputIndex);
+                if (blockIndex == null) {
+                    closeCurrentBlock(output);
+                    contentBlockIndex++;
+                    blockIndex = contentBlockIndex;
+                    outputIndexToBlockIdx.put(outputIndex, blockIndex);
+                    currentBlockType = "tool_use";
+                    contentBlockOpen = true;
+                    currentToolName = item.path("name").asText("");
+                    String callId = item.has("call_id") ? fromResponsesCallID(item.get("call_id").asText()) : "";
+                    appendEvent(output, "content_block_start",
+                            fmt("{\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"tool_use\",\"id\":\"%s\",\"name\":\"%s\",\"input\":{}}}",
+                                    blockIndex, escapeJsonValue(callId), escapeJsonValue(currentToolName)));
+                }
+                String arguments = item.path("arguments").asText("");
+                if (!arguments.isEmpty() && !toolArgumentDeltasSeen.contains(outputIndex)) {
+                    if (currentToolName != null) {
+                        arguments = sanitizeAnthropicToolUseInput(currentToolName, arguments);
+                    }
+                    if (!arguments.isEmpty() && !"{}".equals(arguments)) {
+                        appendEvent(output, "content_block_delta",
+                                fmt("{\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"%s\"}}",
+                                        blockIndex, escapeJsonValue(arguments)));
+                    }
+                    toolArgumentDeltasSeen.add(outputIndex);
+                }
+                closeCurrentBlock(output);
+            } else if ("reasoning".equals(itemType) && !reasoningDeltasSeen.contains(outputIndex)
+                    && item.has("summary") && item.get("summary").isArray()) {
+                StringBuilder thinking = new StringBuilder();
+                for (JsonNode summary : item.get("summary")) {
+                    if (!"summary_text".equals(summary.path("type").asText(""))) continue;
+                    if (thinking.length() > 0) thinking.append("\n");
+                    thinking.append(summary.path("text").asText(""));
+                }
+                if (thinking.length() > 0) {
+                    closeCurrentBlock(output);
+                    contentBlockIndex++;
+                    outputIndexToBlockIdx.put(outputIndex, contentBlockIndex);
+                    currentBlockType = "thinking";
+                    contentBlockOpen = true;
+                    appendEvent(output, "content_block_start",
+                            fmt("{\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}",
+                                    contentBlockIndex));
+                    appendEvent(output, "content_block_delta",
+                            fmt("{\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"%s\"}}",
+                                    contentBlockIndex, escapeJsonValue(thinking.toString())));
+                    reasoningDeltasSeen.add(outputIndex);
+                    closeCurrentBlock(output);
+                }
+            }
         }
 
         private void closeCurrentBlock(List<String> output) {
@@ -583,6 +749,27 @@ public class ResponsesToAnthropicConverter {
                 return outputIndexToBlockIdx.getOrDefault(oi, contentBlockIndex);
             }
             return contentBlockIndex;
+        }
+
+        private void emitTextBlockDelta(List<String> output, String text) {
+            if (!contentBlockOpen || !"text".equals(currentBlockType)) {
+                closeCurrentBlock(output);
+                contentBlockIndex++;
+                currentBlockType = "text";
+                contentBlockOpen = true;
+                appendEvent(output, "content_block_start",
+                        fmt("{\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+                                contentBlockIndex));
+            }
+            appendEvent(output, "content_block_delta",
+                    fmt("{\"type\":\"content_block_delta\",\"index\":%d,\"delta\":{\"type\":\"text_delta\",\"text\":\"%s\"}}",
+                            contentBlockIndex, escapeJsonValue(text)));
+        }
+
+        private int contentKey(JsonNode root) {
+            int outputIdx = root.has("output_index") ? root.get("output_index").asInt() : 0;
+            int contentIdx = root.has("content_index") ? root.get("content_index").asInt() : 0;
+            return outputIdx * 10_000 + contentIdx;
         }
 
         @Override public boolean isDone() { return done; }
@@ -615,6 +802,11 @@ public class ResponsesToAnthropicConverter {
         content.add(toolUse);
         msg.set("content", content);
         return msg;
+    }
+
+    private static String appendSystemText(String current, String next) {
+        if (next == null || next.isEmpty()) return current;
+        return current == null || current.isEmpty() ? next : current + "\n\n" + next;
     }
 
     /**

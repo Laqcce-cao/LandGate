@@ -53,7 +53,7 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
                 endpointKind,
                 resolveTargetUrl(request, defaultUrl, pathSuffix),
                 upstreamCapabilityService.isPassthroughEnabled(request.account()),
-                useResponses,
+                false,
                 false,
                 upstreamFormat,
                 useResponses ? "openai_api_key_responses" : "openai_api_key_chat_completions"

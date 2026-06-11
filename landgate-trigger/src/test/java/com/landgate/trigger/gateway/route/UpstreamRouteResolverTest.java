@@ -56,7 +56,7 @@ class UpstreamRouteResolverTest {
         assertEquals("responses", route.upstreamFormat());
         assertEquals("responses", route.usageFormat());
         assertEquals("https://api.openai.com/v1/responses", route.targetUrl());
-        assertTrue(route.forceStreaming());
+        assertFalse(route.forceStreaming());
         assertFalse(route.normalizeCodexOAuthBody());
     }
 

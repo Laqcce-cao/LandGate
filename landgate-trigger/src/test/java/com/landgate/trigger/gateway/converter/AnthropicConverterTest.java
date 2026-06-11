@@ -47,6 +47,8 @@ class AnthropicConverterTest {
             assertTrue(resp.get("stream").asBoolean());
             assertEquals(1024, resp.get("max_output_tokens").asInt());
             assertFalse(resp.get("store").asBoolean());
+            assertFalse(resp.has("reasoning"));
+            assertFalse(resp.has("text"));
 
             JsonNode input = resp.get("input");
             assertEquals(1, input.size());
@@ -124,6 +126,30 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("stop_sequences → 内部 stop 扩展并可还原")
+        void stopSequencesToInternalStopExtension() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 100,
+                        "stop_sequences": ["</end>", "DONE"],
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            assertEquals("</end>", resp.get("_landgate_stop_sequences").get(0).asText());
+            assertEquals("DONE", resp.get("_landgate_stop_sequences").get(1).asText());
+
+            String anthropicBody = fromIR.requestFromIR(resp);
+            JsonNode anthropic = JSON.readTree(anthropicBody);
+            assertEquals("</end>", anthropic.get("stop_sequences").get(0).asText());
+            assertEquals("DONE", anthropic.get("stop_sequences").get(1).asText());
+
+            String responsesBody = new ResponsesConverter().requestFromIR(resp);
+            assertFalse(JSON.readTree(responsesBody).has("_landgate_stop_sequences"));
+        }
+
+        @Test
         @DisplayName("tool_use 转换")
         void toolUse() throws Exception {
             String body = """
@@ -191,8 +217,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("max_tokens 最小值限制（128）")
-        void maxTokensFloor() throws Exception {
+        @DisplayName("max_tokens 精确映射")
+        void maxTokensPreserved() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -201,7 +227,7 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            assertEquals(128, resp.get("max_output_tokens").asInt());
+            assertEquals(10, resp.get("max_output_tokens").asInt());
         }
 
         @Test
@@ -312,6 +338,23 @@ class AnthropicConverterTest {
             JsonNode tc = resp.get("tool_choice");
             assertEquals("function", tc.get("type").asText());
             assertEquals("get_weather", tc.get("name").asText());
+        }
+
+        @Test
+        @DisplayName("tool_choice disable_parallel_tool_use → parallel_tool_calls=false")
+        void toolChoiceDisableParallelToolUse() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "tool_choice": {"type":"auto","disable_parallel_tool_use":true}
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("auto", resp.get("tool_choice").asText());
+            assertFalse(resp.get("parallel_tool_calls").asBoolean());
         }
 
         @Test
@@ -494,8 +537,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("推理模型（gpt-5）不传递 temperature/top_p")
-        void reasoningModelNoTemperature() throws Exception {
+        @DisplayName("协议转换层不按模型名丢弃 temperature/top_p")
+        void modelNameDoesNotDropSamplingParams() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -506,8 +549,8 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            assertNull(resp.get("temperature"));
-            assertNull(resp.get("top_p"));
+            assertEquals(0.7, resp.get("temperature").asDouble());
+            assertEquals(0.9, resp.get("top_p").asDouble());
         }
     }
 
@@ -547,6 +590,24 @@ class AnthropicConverterTest {
             JsonNode usage = anth.get("usage");
             assertEquals(10, usage.get("input_tokens").asInt());
             assertEquals(5, usage.get("output_tokens").asInt());
+        }
+
+        @Test
+        @DisplayName("refusal content 作为 Anthropic text block 保留")
+        void refusalContentAsTextBlock() throws Exception {
+            String body = """
+                    {
+                        "id": "resp_refusal",
+                        "model": "gpt-5.2",
+                        "status": "completed",
+                        "output": [{"type":"message","content":[{"type":"refusal","refusal":"I cannot help with that."}]}]
+                    }""";
+
+            String result = fromIR.responseFromIR(JSON.readTree(body));
+            JsonNode anth = JSON.readTree(result);
+
+            assertEquals("text", anth.get("content").get(0).get("type").asText());
+            assertEquals("I cannot help with that.", anth.get("content").get(0).get("text").asText());
         }
 
         @Test
@@ -892,6 +953,29 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("cache_read_input_tokens → Responses cached_tokens 且计入 input_tokens")
+        void cacheReadTokensToResponsesUsage() throws Exception {
+            String body = """
+                    {
+                        "id": "msg_cached",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-opus-4-6",
+                        "stop_reason": "end_turn",
+                        "content": [{"type":"text","text":"Cached"}],
+                        "usage": {"input_tokens":12,"cache_read_input_tokens":80,"output_tokens":4}
+                    }""";
+
+            JsonNode result = toIR.responseToIR(body);
+            JsonNode usage = result.get("usage");
+
+            assertEquals(92, usage.get("input_tokens").asInt());
+            assertEquals(80, usage.get("input_tokens_details").get("cached_tokens").asInt());
+            assertEquals(4, usage.get("output_tokens").asInt());
+            assertEquals(96, usage.get("total_tokens").asInt());
+        }
+
+        @Test
         @DisplayName("空 content → 空 text 块兜底")
         void emptyContentFallback() throws Exception {
             String body = """
@@ -930,6 +1014,27 @@ class AnthropicConverterTest {
             JsonNode tc = anth.get("tool_choice");
             assertEquals("tool", tc.get("type").asText());
             assertEquals("get_weather", tc.get("name").asText());
+        }
+
+        @Test
+        @DisplayName("parallel_tool_calls=false → Anthropic disable_parallel_tool_use")
+        void parallelToolCallsFalseToAnthropicToolChoice() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "input": [{"role":"user","content":"Hello"}],
+                        "parallel_tool_calls": false,
+                        "tool_choice": {"type":"function","name":"get_weather"}
+                    }""";
+
+            JsonNode ir = JSON.readTree(body);
+            String result = fromIR.requestFromIR(ir);
+            JsonNode anth = JSON.readTree(result);
+            JsonNode tc = anth.get("tool_choice");
+
+            assertEquals("tool", tc.get("type").asText());
+            assertEquals("get_weather", tc.get("name").asText());
+            assertTrue(tc.get("disable_parallel_tool_use").asBoolean());
         }
 
         @Test
@@ -977,8 +1082,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("developer role → user 消息（与 Sub2API 一致）")
-        void developerRoleToUser() throws Exception {
+        @DisplayName("developer role → Anthropic 顶层 system")
+        void developerRoleToSystem() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -989,10 +1094,31 @@ class AnthropicConverterTest {
             String result = fromIR.requestFromIR(ir);
             JsonNode anth = JSON.readTree(result);
 
-            // Sub2API 行为：developer → user 消息
-            JsonNode messages = anth.get("messages");
-            assertEquals(1, messages.size());
-            assertEquals("user", messages.get(0).get("role").asText());
+            assertEquals("You are a helpful assistant.", anth.get("system").asText());
+            assertEquals(0, anth.get("messages").size());
+        }
+
+        @Test
+        @DisplayName("instructions 与 system/developer input 合并为 Anthropic system")
+        void instructionsAndInstructionRolesMergedToSystem() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "instructions": "Top instructions.",
+                        "input": [
+                            {"role":"system","content":"System rules."},
+                            {"role":"developer","content":"Developer rules."},
+                            {"role":"user","content":"Hello"}
+                        ]
+                    }""";
+
+            JsonNode ir = JSON.readTree(body);
+            String result = fromIR.requestFromIR(ir);
+            JsonNode anth = JSON.readTree(result);
+
+            assertEquals("Top instructions.\n\nSystem rules.\n\nDeveloper rules.", anth.get("system").asText());
+            assertEquals(1, anth.get("messages").size());
+            assertEquals("user", anth.get("messages").get(0).get("role").asText());
         }
     }
 
@@ -1034,6 +1160,56 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("流式 cache_read_input_tokens → Responses cached_tokens")
+        void streamingCacheReadTokens() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            t.feed("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"gpt-5.2\",\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":40}}}");
+            t.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}");
+            List<String> out = t.feed("data: {\"type\":\"message_stop\"}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"input_tokens\":50")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"cached_tokens\":40")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"total_tokens\":55")));
+        }
+
+        @Test
+        @DisplayName("message_delta stop_reason=max_tokens → response incomplete")
+        void streamingMaxTokensStopReason() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            t.feed("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"gpt-5.2\",\"usage\":{\"input_tokens\":10}}}");
+            t.feed("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":5}}");
+            List<String> out = t.feed("data: {\"type\":\"message_stop\"}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"status\":\"incomplete\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"reason\":\"max_output_tokens\"")));
+        }
+
+        @Test
+        @DisplayName("refusal delta 流作为 Anthropic text_delta 输出")
+        void streamingRefusalDelta() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":\"response.refusal.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"No.\"}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("content_block_start")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("text_delta")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("No.")));
+        }
+
+        @Test
+        @DisplayName("content_part.done fallback 输出未见过的文本")
+        void streamingContentPartDoneFallback() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":\"response.content_part.done\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"Final\"}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("text_delta")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("Final")));
+        }
+
+        @Test
         @DisplayName("tool_use 流式翻译")
         void streamingToolCall() {
             StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
@@ -1041,6 +1217,13 @@ class AnthropicConverterTest {
             // content_block_start (tool_use) → output_item.added function_call
             List<String> out = t.feed("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\"}}");
             assertTrue(out.stream().anyMatch(s -> s.contains("function_call")));
+
+            out = t.feed("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"NYC\\\"}\"}}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.function_call_arguments.delta")));
+
+            out = t.feed("data: {\"type\":\"content_block_stop\",\"index\":0}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.function_call_arguments.done")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"")));
         }
 
         @Test
@@ -1062,6 +1245,18 @@ class AnthropicConverterTest {
         void noDoneLine() {
             StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
             assertTrue(t.feed("data: [DONE]").isEmpty());
+        }
+
+        @Test
+        @DisplayName("error event → response.failed")
+        void streamingErrorEvent() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.failed")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("overloaded_error")));
+            assertTrue(t.isDone());
         }
     }
 
@@ -1124,6 +1319,34 @@ class AnthropicConverterTest {
             // response.completed
             out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10}}}");
             assertTrue(out.stream().anyMatch(s -> s.contains("\"tool_use\"")));
+            assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("output_item.done function_call fallback 输出完整 tool_use")
+        void streamingToolCallFromOutputItemDoneFallback() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool_done\",\"model\":\"gpt-5.2\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\",\"status\":\"completed\"}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("content_block_start")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("tool_use")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("input_json_delta")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("{\\\"city\\\":\\\"NYC\\\"}")));
+        }
+
+        @Test
+        @DisplayName("response.completed.output fallback 输出最终文本和 cached usage")
+        void completedOutputFallbackAndCachedUsage() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_final\",\"model\":\"gpt-5.2\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final only\"}]}],\"usage\":{\"input_tokens\":100,\"output_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":80}}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("final only")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"cache_read_input_tokens\":80")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("message_stop")));
             assertTrue(t.isDone());
         }
 

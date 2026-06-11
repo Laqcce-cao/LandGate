@@ -2,6 +2,8 @@ package com.landgate.trigger.gateway.response;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.trigger.gateway.ConcurrencyService;
 import com.landgate.trigger.gateway.GatewayRequestContext;
@@ -23,6 +25,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 @Slf4j
@@ -191,10 +195,16 @@ public class GatewayResponseService {
         response.setCharacterEncoding("UTF-8");
 
         UsageTokens totalUsage = UsageTokens.builder().build();
-        StringBuilder responseText = new StringBuilder();
-        String responseId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+        Map<Integer, ObjectNode> outputItems = new LinkedHashMap<>();
+        Map<Integer, StringBuilder> textByContentKey = new LinkedHashMap<>();
+        Map<Integer, String> contentTypeByContentKey = new LinkedHashMap<>();
+        Map<Integer, StringBuilder> argumentsByOutputIndex = new LinkedHashMap<>();
+        Map<Integer, StringBuilder> reasoningByOutputIndex = new LinkedHashMap<>();
+        String responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
         String responseModel = ctx != null && ctx.getRequestedModel() != null ? ctx.getRequestedModel() : "unknown";
-        String stopReason = "end_turn";
+        String status = "completed";
+        String incompleteReason = null;
+        ObjectNode errorNode = null;
 
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8))) {
@@ -214,30 +224,119 @@ public class GatewayResponseService {
                     JsonNode resp = event.get("response");
                     if (resp.has("id")) responseId = resp.get("id").asText(responseId);
                     if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
+                } else if ("response.output_item.added".equals(type) && event.has("item")) {
+                    int outputIndex = event.path("output_index").asInt(outputItems.size());
+                    ObjectNode item = normalizeStreamingOutputItem(event.get("item"));
+                    outputItems.put(outputIndex, item);
+                } else if ("response.output_item.done".equals(type) && event.has("item")) {
+                    int outputIndex = event.path("output_index").asInt(outputItems.size());
+                    JsonNode item = event.get("item");
+                    outputItems.put(outputIndex, normalizeStreamingOutputItem(item));
+                    mergeFinalOutputItem(outputIndex, item, textByContentKey, contentTypeByContentKey,
+                            argumentsByOutputIndex, reasoningByOutputIndex);
                 } else if ("response.output_text.delta".equals(type)) {
-                    responseText.append(event.path("delta").asText(""));
+                    int outputIndex = event.path("output_index").asInt(0);
+                    int contentIndex = event.path("content_index").asInt(0);
+                    int contentKey = contentKey(outputIndex, contentIndex);
+                    contentTypeByContentKey.put(contentKey, "output_text");
+                    textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder())
+                            .append(event.path("delta").asText(""));
+                } else if ("response.output_text.done".equals(type)) {
+                    int outputIndex = event.path("output_index").asInt(0);
+                    int contentIndex = event.path("content_index").asInt(0);
+                    String text = event.path("text").asText("");
+                    if (!text.isEmpty()) {
+                        int contentKey = contentKey(outputIndex, contentIndex);
+                        contentTypeByContentKey.put(contentKey, "output_text");
+                        StringBuilder builder = textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder());
+                        builder.setLength(0);
+                        builder.append(text);
+                    }
+                } else if ("response.content_part.done".equals(type)) {
+                    JsonNode part = event.path("part");
+                    String partType = part.path("type").asText("");
+                    if ("output_text".equals(partType) || "refusal".equals(partType)) {
+                        int outputIndex = event.path("output_index").asInt(0);
+                        int contentIndex = event.path("content_index").asInt(0);
+                        String text = "refusal".equals(partType)
+                                ? part.path("refusal").asText("")
+                                : part.path("text").asText("");
+                        int contentKey = contentKey(outputIndex, contentIndex);
+                        contentTypeByContentKey.put(contentKey, partType);
+                        StringBuilder builder = textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder());
+                        builder.setLength(0);
+                        builder.append(text);
+                    }
+                } else if ("response.refusal.delta".equals(type)) {
+                    int outputIndex = event.path("output_index").asInt(0);
+                    int contentIndex = event.path("content_index").asInt(0);
+                    int contentKey = contentKey(outputIndex, contentIndex);
+                    contentTypeByContentKey.put(contentKey, "refusal");
+                    textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder())
+                            .append(event.path("delta").asText(""));
+                } else if ("response.refusal.done".equals(type)) {
+                    int outputIndex = event.path("output_index").asInt(0);
+                    int contentIndex = event.path("content_index").asInt(0);
+                    String refusal = event.path("refusal").asText("");
+                    if (!refusal.isEmpty()) {
+                        int contentKey = contentKey(outputIndex, contentIndex);
+                        contentTypeByContentKey.put(contentKey, "refusal");
+                        StringBuilder builder = textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder());
+                        builder.setLength(0);
+                        builder.append(refusal);
+                    }
+                } else if ("response.function_call_arguments.delta".equals(type)) {
+                    int outputIndex = event.path("output_index").asInt(0);
+                    argumentsByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
+                            .append(event.path("delta").asText(""));
+                } else if ("response.function_call_arguments.done".equals(type)) {
+                    int outputIndex = event.path("output_index").asInt(0);
+                    String arguments = event.path("arguments").asText("");
+                    if (!arguments.isEmpty()) {
+                        argumentsByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
+                                .setLength(0);
+                        argumentsByOutputIndex.get(outputIndex).append(arguments);
+                    }
+                } else if ("response.reasoning_summary_text.delta".equals(type)) {
+                    int outputIndex = event.path("output_index").asInt(0);
+                    reasoningByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
+                            .append(event.path("delta").asText(""));
                 } else if ("response.completed".equals(type) || "response.done".equals(type)) {
                     if (event.has("response")) {
                         JsonNode resp = event.get("response");
                         if (resp.has("id")) responseId = resp.get("id").asText(responseId);
                         if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
+                        mergeFinalResponseOutput(resp.path("output"), outputItems, textByContentKey,
+                                contentTypeByContentKey, argumentsByOutputIndex, reasoningByOutputIndex);
                         if ("incomplete".equals(resp.path("status").asText(""))) {
-                            String reason = resp.path("incomplete_details").path("reason").asText("");
-                            stopReason = "max_output_tokens".equals(reason) ? "max_tokens" : "end_turn";
+                            status = "incomplete";
+                            incompleteReason = resp.path("incomplete_details").path("reason").asText("max_output_tokens");
                         }
                     }
                     break;
                 } else if ("response.incomplete".equals(type)) {
-                    stopReason = "max_tokens";
+                    status = "incomplete";
+                    incompleteReason = "max_output_tokens";
                     break;
                 } else if ("response.failed".equals(type)) {
-                    stopReason = "end_turn";
+                    status = "failed";
+                    if (event.has("response") && event.get("response").has("error")
+                            && event.get("response").get("error").isObject()) {
+                        errorNode = (ObjectNode) event.get("response").get("error").deepCopy();
+                    }
                     break;
                 }
             }
         }
 
-        String clientBody = buildAnthropicMessageJson(responseId, responseModel, responseText.toString(), stopReason, totalUsage);
+        String responsesBody = buildResponsesJson(
+                responseId, responseModel, status, incompleteReason, errorNode,
+                outputItems, textByContentKey, contentTypeByContentKey,
+                argumentsByOutputIndex, reasoningByOutputIndex, totalUsage);
+        String clientFormat = resolveClientFormat(ctx);
+        String clientBody = "responses".equals(clientFormat)
+                ? responsesBody
+                : translationService.translateResponse(responsesBody, "responses", clientFormat);
         try (var output = response.getOutputStream()) {
             output.write(clientBody.getBytes(StandardCharsets.UTF_8));
             output.flush();
@@ -248,6 +347,223 @@ public class GatewayResponseService {
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
         return totalUsage;
+    }
+
+    private static ObjectNode normalizeStreamingOutputItem(JsonNode item) {
+        ObjectNode normalized = JSON_MAPPER.createObjectNode();
+        String type = item.path("type").asText("message");
+        normalized.put("type", type);
+        if (item.has("id")) normalized.set("id", item.get("id"));
+        if ("function_call".equals(type)) {
+            normalized.put("call_id", item.path("call_id").asText(""));
+            normalized.put("name", item.path("name").asText(""));
+            normalized.put("arguments", item.path("arguments").asText("{}"));
+            normalized.put("status", "completed");
+        } else if ("reasoning".equals(type)) {
+            normalized.put("status", "completed");
+            normalized.set("summary", item.has("summary") ? item.get("summary") : JSON_MAPPER.createArrayNode());
+        } else {
+            normalized.put("type", "message");
+            normalized.put("role", item.path("role").asText("assistant"));
+            normalized.put("status", "completed");
+            normalized.set("content", JSON_MAPPER.createArrayNode());
+        }
+        return normalized;
+    }
+
+    private static void mergeFinalResponseOutput(JsonNode output,
+                                                 Map<Integer, ObjectNode> outputItems,
+                                                 Map<Integer, StringBuilder> textByContentKey,
+                                                 Map<Integer, String> contentTypeByContentKey,
+                                                 Map<Integer, StringBuilder> argumentsByOutputIndex,
+                                                 Map<Integer, StringBuilder> reasoningByOutputIndex) {
+        if (output == null || !output.isArray()) return;
+        for (int i = 0; i < output.size(); i++) {
+            JsonNode item = output.get(i);
+            outputItems.put(i, normalizeStreamingOutputItem(item));
+            mergeFinalOutputItem(i, item, textByContentKey, contentTypeByContentKey,
+                    argumentsByOutputIndex, reasoningByOutputIndex);
+        }
+    }
+
+    private static void mergeFinalOutputItem(int outputIndex,
+                                             JsonNode item,
+                                             Map<Integer, StringBuilder> textByContentKey,
+                                             Map<Integer, String> contentTypeByContentKey,
+                                             Map<Integer, StringBuilder> argumentsByOutputIndex,
+                                             Map<Integer, StringBuilder> reasoningByOutputIndex) {
+        String itemType = item.path("type").asText("");
+        if ("message".equals(itemType) && item.has("content") && item.get("content").isArray()) {
+            int contentIndex = 0;
+            for (JsonNode part : item.get("content")) {
+                String partType = part.path("type").asText("");
+                if ("output_text".equals(partType) || "refusal".equals(partType)) {
+                    String text = "refusal".equals(partType)
+                            ? part.path("refusal").asText("")
+                            : part.path("text").asText("");
+                    int key = contentKey(outputIndex, contentIndex);
+                    contentTypeByContentKey.put(key, partType);
+                    StringBuilder builder = textByContentKey.computeIfAbsent(key, ignored -> new StringBuilder());
+                    builder.setLength(0);
+                    builder.append(text);
+                }
+                contentIndex++;
+            }
+        } else if ("function_call".equals(itemType)) {
+            if (item.has("arguments")) {
+                StringBuilder builder = argumentsByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder());
+                builder.setLength(0);
+                builder.append(item.path("arguments").asText("{}"));
+            }
+        } else if ("reasoning".equals(itemType) && item.has("summary") && item.get("summary").isArray()) {
+            StringBuilder builder = reasoningByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder());
+            builder.setLength(0);
+            for (JsonNode summary : item.get("summary")) {
+                if (!"summary_text".equals(summary.path("type").asText(""))) continue;
+                if (builder.length() > 0) builder.append("\n");
+                builder.append(summary.path("text").asText(""));
+            }
+        }
+    }
+
+    private static String buildResponsesJson(String responseId,
+                                             String responseModel,
+                                             String status,
+                                             String incompleteReason,
+                                             ObjectNode errorNode,
+                                             Map<Integer, ObjectNode> outputItems,
+                                             Map<Integer, StringBuilder> textByContentKey,
+                                             Map<Integer, String> contentTypeByContentKey,
+                                             Map<Integer, StringBuilder> argumentsByOutputIndex,
+                                             Map<Integer, StringBuilder> reasoningByOutputIndex,
+                                             UsageTokens usage) throws IOException {
+        Map<Integer, ArrayNode> contentByOutputIndex = new LinkedHashMap<>();
+        textByContentKey.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> {
+                    int outputIndex = outputIndexFromContentKey(entry.getKey());
+                    String partType = contentTypeByContentKey.getOrDefault(entry.getKey(), "output_text");
+                    ObjectNode text = JSON_MAPPER.createObjectNode();
+                    text.put("type", partType);
+                    if ("refusal".equals(partType)) {
+                        text.put("refusal", entry.getValue().toString());
+                    } else {
+                        text.put("text", entry.getValue().toString());
+                    }
+                    contentByOutputIndex.computeIfAbsent(outputIndex, ignored -> JSON_MAPPER.createArrayNode())
+                            .add(text);
+                });
+
+        for (Map.Entry<Integer, ArrayNode> entry : contentByOutputIndex.entrySet()) {
+            ObjectNode item = outputItems.computeIfAbsent(entry.getKey(), ignored -> {
+                ObjectNode message = JSON_MAPPER.createObjectNode();
+                message.put("type", "message");
+                message.put("role", "assistant");
+                message.put("status", "completed");
+                message.set("content", JSON_MAPPER.createArrayNode());
+                return message;
+            });
+            if (!"message".equals(item.path("type").asText())) continue;
+            item.set("content", entry.getValue());
+        }
+
+        for (Map.Entry<Integer, StringBuilder> entry : argumentsByOutputIndex.entrySet()) {
+            ObjectNode item = outputItems.get(entry.getKey());
+            if (item != null && "function_call".equals(item.path("type").asText())) {
+                String arguments = entry.getValue().toString();
+                item.put("arguments", arguments.isEmpty() ? "{}" : arguments);
+                item.put("status", "completed");
+            }
+        }
+
+        for (Map.Entry<Integer, StringBuilder> entry : reasoningByOutputIndex.entrySet()) {
+            ObjectNode item = outputItems.computeIfAbsent(entry.getKey(), ignored -> {
+                ObjectNode reasoning = JSON_MAPPER.createObjectNode();
+                reasoning.put("type", "reasoning");
+                reasoning.put("status", "completed");
+                reasoning.set("summary", JSON_MAPPER.createArrayNode());
+                return reasoning;
+            });
+            if (!"reasoning".equals(item.path("type").asText())) continue;
+            ArrayNode summary = JSON_MAPPER.createArrayNode();
+            ObjectNode text = JSON_MAPPER.createObjectNode();
+            text.put("type", "summary_text");
+            text.put("text", entry.getValue().toString());
+            summary.add(text);
+            item.set("summary", summary);
+            item.put("status", "completed");
+        }
+
+        if (outputItems.isEmpty()) {
+            ObjectNode message = JSON_MAPPER.createObjectNode();
+            message.put("type", "message");
+            message.put("role", "assistant");
+            message.put("status", "completed");
+            ArrayNode content = JSON_MAPPER.createArrayNode();
+            ObjectNode text = JSON_MAPPER.createObjectNode();
+            text.put("type", "output_text");
+            text.put("text", "");
+            content.add(text);
+            message.set("content", content);
+            outputItems.put(0, message);
+        }
+
+        ObjectNode root = JSON_MAPPER.createObjectNode();
+        root.put("id", responseId);
+        root.put("object", "response");
+        root.put("model", responseModel);
+        root.put("status", status == null || status.isBlank() ? "completed" : status);
+        if ("incomplete".equals(status)) {
+            ObjectNode details = JSON_MAPPER.createObjectNode();
+            details.put("reason", incompleteReason == null || incompleteReason.isBlank()
+                    ? "max_output_tokens"
+                    : incompleteReason);
+            root.set("incomplete_details", details);
+        }
+        if ("failed".equals(status) && errorNode != null) {
+            root.set("error", errorNode);
+        }
+        ArrayNode output = JSON_MAPPER.createArrayNode();
+        outputItems.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> output.add(entry.getValue()));
+        root.set("output", output);
+
+        ObjectNode usageNode = JSON_MAPPER.createObjectNode();
+        int inputTokens = usage != null ? usage.getInputTokens() : 0;
+        int cachedTokens = usage != null ? usage.getCacheReadTokens() : 0;
+        int outputTokens = usage != null ? usage.getOutputTokens() : 0;
+        usageNode.put("input_tokens", inputTokens + cachedTokens);
+        usageNode.put("output_tokens", outputTokens);
+        usageNode.put("total_tokens", inputTokens + cachedTokens + outputTokens);
+        if (cachedTokens > 0) {
+            ObjectNode inputDetails = JSON_MAPPER.createObjectNode();
+            inputDetails.put("cached_tokens", cachedTokens);
+            usageNode.set("input_tokens_details", inputDetails);
+        }
+        root.set("usage", usageNode);
+
+        return JSON_MAPPER.writeValueAsString(root);
+    }
+
+    private static int contentKey(int outputIndex, int contentIndex) {
+        return outputIndex * 10_000 + contentIndex;
+    }
+
+    private static int outputIndexFromContentKey(int contentKey) {
+        return contentKey / 10_000;
+    }
+
+    private static String resolveClientFormat(GatewayRequestContext ctx) {
+        if (ctx == null) return "responses";
+        UpstreamRoute route = ctx.getUpstreamRoute();
+        if (route != null && route.clientFormat() != null) {
+            return route.clientFormat();
+        }
+        if (ctx.getRequestFormat() != null) {
+            return ctx.getRequestFormat();
+        }
+        return ProtocolTranslationService.platformToFormatId(ctx.getRequestPlatform());
     }
 
     public UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,

@@ -22,8 +22,6 @@ import java.util.UUID;
 public class AnthropicToResponsesConverter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final int MIN_MAX_OUTPUT_TOKENS = 128;
-
     // ========================
     // 请求转换：Anthropic → Responses IR
     // ========================
@@ -38,22 +36,26 @@ public class AnthropicToResponsesConverter {
         try {
             JsonNode src = JSON.readTree(body);
             ObjectNode dst = JSON.createObjectNode();
+            boolean parallelToolCalls = true;
 
             // --- 基础字段透传 ---
             copyIfExists(src, dst, "model");
             copyIfExists(src, dst, "stream");
+            copyIfExists(src, dst, "metadata");
 
-            // temperature / top_p：仅对非推理模型透传（gpt-5 前缀跳过）
-            String model = src.has("model") ? src.get("model").asText() : "";
-            if (!isReasoningModel(model)) {
-                copyIfExists(src, dst, "temperature");
-                copyIfExists(src, dst, "top_p");
-            }
+            // 协议转换层不根据模型名猜能力；采样参数按客户端显式请求保留。
+            copyIfExists(src, dst, "temperature");
+            copyIfExists(src, dst, "top_p");
 
-            // max_tokens → max_output_tokens（最小 128）
+            // max_tokens → max_output_tokens
             if (src.has("max_tokens")) {
                 int maxTokens = src.get("max_tokens").asInt();
-                dst.put("max_output_tokens", Math.max(maxTokens, MIN_MAX_OUTPUT_TOKENS));
+                dst.put("max_output_tokens", maxTokens);
+            }
+
+            // stop_sequences → 内部 IR 扩展。Responses 上游不直接消费，跨协议转 Chat/Anthropic 时再还原。
+            if (src.has("stop_sequences") && src.get("stop_sequences").isArray()) {
+                dst.set("_landgate_stop_sequences", src.get("stop_sequences"));
             }
 
             // --- system + messages → input[] ---
@@ -104,31 +106,34 @@ public class AnthropicToResponsesConverter {
 
             // --- tool_choice ---
             if (src.has("tool_choice")) {
+                if (src.get("tool_choice").path("disable_parallel_tool_use").asBoolean(false)) {
+                    parallelToolCalls = false;
+                }
                 dst.set("tool_choice", convertAnthropicToolChoiceToResponses(src.get("tool_choice")));
             }
 
-            // --- reasoning: output_config.effort → reasoning.effort（默认 medium） ---
-            String effort = "medium";
-            if (src.has("output_config") && src.get("output_config").has("effort")) {
-                String rawEffort = src.get("output_config").get("effort").asText();
-                if (rawEffort != null && !rawEffort.isEmpty()) {
-                    effort = mapAnthropicEffortToResponses(rawEffort);
+            // --- thinking/output_config.effort → reasoning.effort ---
+            // 只在源请求显式表达 thinking/output_config 时映射，避免普通 Messages 请求被转换成推理请求。
+            if (src.has("thinking") || src.has("output_config")) {
+                String effort = "medium";
+                if (src.has("output_config") && src.get("output_config").has("effort")) {
+                    String rawEffort = src.get("output_config").get("effort").asText();
+                    if (rawEffort != null && !rawEffort.isEmpty()) {
+                        effort = mapAnthropicEffortToResponses(rawEffort);
+                    }
                 }
+                ObjectNode reasoning = JSON.createObjectNode();
+                reasoning.put("effort", effort);
+                reasoning.put("summary", "auto");
+                dst.set("reasoning", reasoning);
             }
-            ObjectNode reasoning = JSON.createObjectNode();
-            reasoning.put("effort", effort);
-            reasoning.put("summary", "auto");
-            dst.set("reasoning", reasoning);
 
             // --- 固定字段 ---
             dst.put("store", false);
             ArrayNode include = JSON.createArrayNode();
             include.add("reasoning.encrypted_content");
             dst.set("include", include);
-            dst.put("parallel_tool_calls", true);
-            ObjectNode textConfig = JSON.createObjectNode();
-            textConfig.put("verbosity", "medium");
-            dst.set("text", textConfig);
+            dst.put("parallel_tool_calls", parallelToolCalls);
 
             return dst;
         } catch (Exception e) {
@@ -243,12 +248,14 @@ public class AnthropicToResponsesConverter {
                 ObjectNode respUsage = JSON.createObjectNode();
                 int inputTokens = usage.has("input_tokens") ? usage.get("input_tokens").asInt() : 0;
                 int outputTokens = usage.has("output_tokens") ? usage.get("output_tokens").asInt() : 0;
-                respUsage.put("input_tokens", inputTokens);
+                int cachedTokens = usage.has("cache_read_input_tokens")
+                        ? usage.get("cache_read_input_tokens").asInt() : 0;
+                respUsage.put("input_tokens", inputTokens + cachedTokens);
                 respUsage.put("output_tokens", outputTokens);
-                respUsage.put("total_tokens", inputTokens + outputTokens);
-                if (usage.has("cache_read_input_tokens") && usage.get("cache_read_input_tokens").asInt() > 0) {
+                respUsage.put("total_tokens", inputTokens + cachedTokens + outputTokens);
+                if (cachedTokens > 0) {
                     ObjectNode details = JSON.createObjectNode();
-                    details.put("cached_tokens", usage.get("cache_read_input_tokens").asInt());
+                    details.put("cached_tokens", cachedTokens);
                     respUsage.set("input_tokens_details", details);
                 }
                 dst.set("usage", respUsage);
@@ -298,12 +305,14 @@ public class AnthropicToResponsesConverter {
         private String currentItemId;
         private String currentCallId;
         private String currentName;
+        private final StringBuilder currentArguments = new StringBuilder();
         private int contentIndex = 0;
         private boolean messageItemOpen = false;
 
         private int inputTokens = 0;
         private int outputTokens = 0;
         private int cacheReadInputTokens = 0;
+        private String stopReason = "end_turn";
 
         AnthropicToIRStreamTranslator(String model) {
             this.model = model != null ? model : "unknown";
@@ -330,6 +339,9 @@ public class AnthropicToResponsesConverter {
                             if (msg.has("model")) model = msg.get("model").asText();
                             if (msg.has("usage") && msg.get("usage").has("input_tokens")) {
                                 inputTokens = msg.get("usage").get("input_tokens").asInt();
+                            }
+                            if (msg.has("usage") && msg.get("usage").has("cache_read_input_tokens")) {
+                                cacheReadInputTokens = msg.get("usage").get("cache_read_input_tokens").asInt();
                             }
                         }
                         ensureCreatedSent(output);
@@ -374,6 +386,11 @@ public class AnthropicToResponsesConverter {
                                 currentItemType = ItemType.FUNCTION_CALL;
                                 currentCallId = block.has("id") ? block.get("id").asText() : "call_" + UUID.randomUUID();
                                 currentName = block.has("name") ? block.get("name").asText() : "";
+                                currentArguments.setLength(0);
+                                if (block.has("input") && !block.get("input").isNull()
+                                        && !(block.get("input").isObject() && block.get("input").size() == 0)) {
+                                    currentArguments.append(block.get("input").toString());
+                                }
 
                                 ensureCreatedSent(output);
                                 appendEvent(output, "response.output_item.added",
@@ -413,6 +430,7 @@ public class AnthropicToResponsesConverter {
                             case "input_json_delta" -> {
                                 String partialJson = delta.has("partial_json") ? delta.get("partial_json").asText() : "";
                                 if (!partialJson.isEmpty()) {
+                                    currentArguments.append(partialJson);
                                     appendEvent(output, "response.function_call_arguments.delta",
                                             fmt("{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"delta\":\"%s\"}",
                                                     sequenceNumber++, responseId, currentItemId, outputIndex,
@@ -433,15 +451,18 @@ public class AnthropicToResponsesConverter {
                                             sequenceNumber++, responseId, outputIndex, currentItemId));
                             currentItemType = ItemType.NONE;
                         } else if (currentItemType == ItemType.FUNCTION_CALL) {
+                            String arguments = currentArguments.length() > 0 ? currentArguments.toString() : "{}";
                             appendEvent(output, "response.function_call_arguments.done",
                                     fmt("{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"arguments\":\"%s\"}",
                                             sequenceNumber++, responseId, currentItemId, outputIndex,
-                                            escapeJsonValue("{}")));
+                                            escapeJsonValue(arguments)));
                             appendEvent(output, "response.output_item.done",
-                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"status\":\"completed\"}}",
+                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"arguments\":\"%s\",\"status\":\"completed\"}}",
                                             sequenceNumber++, responseId, outputIndex, currentItemId,
-                                            escapeJsonValue(currentCallId), escapeJsonValue(currentName)));
+                                            escapeJsonValue(currentCallId), escapeJsonValue(currentName),
+                                            escapeJsonValue(arguments)));
                             currentItemType = ItemType.NONE;
+                            currentArguments.setLength(0);
                         } else if (currentItemType == ItemType.MESSAGE) {
                             // text block stop: 只发送 text.done，不关闭 message item
                             appendEvent(output, "response.output_text.done",
@@ -453,15 +474,43 @@ public class AnthropicToResponsesConverter {
                         if (root.has("usage") && root.get("usage").has("output_tokens")) {
                             outputTokens = root.get("usage").get("output_tokens").asInt();
                         }
-                        // stop_reason / stop_sequence 不在此阶段处理
+                        if (root.has("delta") && root.get("delta").has("stop_reason")
+                                && !root.get("delta").get("stop_reason").isNull()) {
+                            stopReason = root.get("delta").get("stop_reason").asText("end_turn");
+                        }
                     }
                     case "message_stop" -> {
                         closeCurrentItem(output);
                         // response.completed
+                        String status = "max_tokens".equals(stopReason) ? "incomplete" : "completed";
+                        String incompleteDetails = "max_tokens".equals(stopReason)
+                                ? ",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}"
+                                : "";
+                        String cacheDetails = cacheReadInputTokens > 0
+                                ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
+                                : "";
+                        int responseInputTokens = inputTokens + cacheReadInputTokens;
                         appendEvent(output, "response.completed",
-                                fmt("{\"type\":\"response.completed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"completed\",\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d}}}",
+                                fmt("{\"type\":\"response.completed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"%s\"%s,\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
                                         sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
-                                        inputTokens, outputTokens, inputTokens + outputTokens));
+                                        status, incompleteDetails,
+                                        responseInputTokens, outputTokens, responseInputTokens + outputTokens, cacheDetails));
+                        done = true;
+                    }
+                    case "error" -> {
+                        JsonNode error = root.path("error");
+                        String errorType = error.path("type").asText("api_error");
+                        String message = error.path("message").asText("Anthropic stream error");
+                        ensureCreatedSent(output);
+                        String cacheDetails = cacheReadInputTokens > 0
+                                ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
+                                : "";
+                        int responseInputTokens = inputTokens + cacheReadInputTokens;
+                        appendEvent(output, "response.failed",
+                                fmt("{\"type\":\"response.failed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"failed\",\"error\":{\"code\":\"%s\",\"message\":\"%s\"},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
+                                        sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
+                                        escapeJsonValue(errorType), escapeJsonValue(message),
+                                        responseInputTokens, outputTokens, responseInputTokens + outputTokens, cacheDetails));
                         done = true;
                     }
                 }
@@ -797,13 +846,6 @@ public class AnthropicToResponsesConverter {
             case "max_tokens" -> "incomplete";
             default -> "completed";
         };
-    }
-
-    /**
-     * 检测是否为推理模型（gpt-5 前缀），推理模型不接受 temperature/top_p。
-     */
-    private static boolean isReasoningModel(String model) {
-        return model != null && model.startsWith("gpt-5");
     }
 
     /**
