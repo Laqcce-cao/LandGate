@@ -118,13 +118,21 @@ public class ResponsesConverter implements ProtocolConverter {
     static class PassThroughStreamTranslator implements StreamTranslator {
 
         private boolean done = false;
+        private boolean terminalSeparatorPending = false;
         private int inputTokens = 0;
         private int outputTokens = 0;
 
         @Override
         public List<String> feed(String line) {
             List<String> output = new ArrayList<>();
-            if (done || line == null) return output;
+            if (line == null) return output;
+            if (done) {
+                if (terminalSeparatorPending && line.isBlank()) {
+                    output.add(line);
+                    terminalSeparatorPending = false;
+                }
+                return output;
+            }
 
             // 透传所有 SSE 行（包括 event: 行、data: 行、空行分隔符）
             output.add(line);
@@ -142,6 +150,7 @@ public class ResponsesConverter implements ProtocolConverter {
                             if (usage.has("output_tokens")) outputTokens = usage.get("output_tokens").asInt();
                         }
                         done = true;
+                        terminalSeparatorPending = true;
                     }
                 } catch (Exception e) {
                     log.debug("Pass-through SSE parse error: {}", e.getMessage());

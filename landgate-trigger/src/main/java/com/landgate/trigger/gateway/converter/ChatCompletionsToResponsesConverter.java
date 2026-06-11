@@ -294,6 +294,8 @@ public class ChatCompletionsToResponsesConverter {
         private int outputIndex = 0;
         private int contentIndex = 0;
         private String currentItemId;
+        private boolean finishReasonSeen = false;
+        private boolean completedSent = false;
 
         private boolean hasToolCalls = false;
         private int nextToolCallIndex = 0;
@@ -429,15 +431,26 @@ public class ChatCompletionsToResponsesConverter {
                     }
                 }
 
-                // finish_reason → 关闭 + completed
+                // finish_reason 只表示 choice 内容结束，OpenAI 兼容流后面还可能有 usage-only chunk 和 [DONE]。
                 if (choice.has("finish_reason") && !choice.get("finish_reason").isNull()
                         && !"null".equals(choice.get("finish_reason").asText())) {
+                    finishReasonSeen = true;
                     closeOpenItem(output);
-                    appendCompleted(output);
-                    done = true;
                 }
             } catch (Exception e) {
                 log.debug("Chat→IR SSE error: {}", e.getMessage());
+            }
+            return output;
+        }
+
+        @Override
+        public List<String> finish() {
+            List<String> output = new ArrayList<>();
+            if (done) return output;
+            if (createdSent || outputItemAdded || finishReasonSeen || inputTokens > 0 || outputTokens > 0) {
+                closeOpenItem(output);
+                appendCompleted(output);
+                done = true;
             }
             return output;
         }
@@ -461,10 +474,13 @@ public class ChatCompletionsToResponsesConverter {
         }
 
         private void appendCompleted(List<String> output) {
+            if (completedSent) return;
+            ensureCreatedSent(output);
             appendEvent(output, "response.completed",
                     fmt("{\"type\":\"response.completed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"completed\",\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d}}}",
                             sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
                             inputTokens, outputTokens, inputTokens + outputTokens));
+            completedSent = true;
         }
 
         private void extractUsage(JsonNode usage) {

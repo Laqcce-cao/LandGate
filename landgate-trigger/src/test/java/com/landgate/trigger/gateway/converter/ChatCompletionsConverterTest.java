@@ -744,6 +744,46 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("finish_reason 后继续读取 usage-only chunk")
+        void finishReasonWaitsForUsageOnlyChunkAndDone() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.5");
+
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}");
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"pong\"},\"finish_reason\":null}]}");
+
+            List<String> out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}");
+            assertFalse(out.stream().anyMatch(s -> s.contains("response.completed")));
+            assertFalse(t.isDone());
+
+            out = t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":5089,\"completion_tokens\":5,\"total_tokens\":5094,\"prompt_tokens_details\":{\"cached_tokens\":4864}}}");
+            assertTrue(out.isEmpty());
+            assertEquals(5089, t.getInputTokens());
+            assertEquals(5, t.getOutputTokens());
+
+            out = t.feed("data: [DONE]");
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.completed")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"input_tokens\":5089")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"output_tokens\":5")));
+            assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("上游 EOF 缺少 DONE 时补 response.completed")
+        void eofCompletesWhenDoneIsMissing() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.5");
+
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}");
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"pong\"},\"finish_reason\":null}]}");
+            t.feed("data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}");
+
+            List<String> out = t.finish();
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.completed")));
+            assertTrue(t.isDone());
+
+            assertTrue(t.finish().isEmpty());
+        }
+
+        @Test
         @DisplayName("tool_calls 流")
         void toolCallsStream() {
             StreamTranslator t = toIR.createStreamToIR("gpt-4o");

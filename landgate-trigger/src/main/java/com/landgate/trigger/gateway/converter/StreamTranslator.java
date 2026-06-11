@@ -26,6 +26,15 @@ public interface StreamTranslator {
      */
     List<String> feed(String line);
 
+    /**
+     * 上游流 EOF 时的收尾钩子。
+     *
+     * @return 需要写入客户端的补充 SSE 行列表（可能为空）
+     */
+    default List<String> finish() {
+        return List.of();
+    }
+
     /** 翻译是否已完成（上游流已结束或已收到终端事件） */
     boolean isDone();
 

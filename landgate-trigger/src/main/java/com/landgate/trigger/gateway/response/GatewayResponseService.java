@@ -143,6 +143,20 @@ public class GatewayResponseService {
                     if (upstreamToIR.isDone()) break;
                 }
             }
+
+            if (upstreamToIR != null && irToClient != null) {
+                for (String irLine : upstreamToIR.finish()) {
+                    for (String clientLine : irToClient.feed(irLine)) {
+                        writer.write(clientLine);
+                        writer.write("\n");
+                    }
+                }
+                for (String clientLine : irToClient.finish()) {
+                    writer.write(clientLine);
+                    writer.write("\n");
+                }
+                writer.flush();
+            }
         } catch (IOException e) {
             if (response.isCommitted()) {
                 clientDisconnected = true;
