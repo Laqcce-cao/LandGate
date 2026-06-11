@@ -32,13 +32,13 @@ public class CheckinDomainService {
 
     private static final ZoneId CHECKIN_ZONE = ZoneId.of("Asia/Shanghai");
     private static final List<BigDecimal> REWARDS = List.of(
-            new BigDecimal("0.05"),
-            new BigDecimal("0.06"),
-            new BigDecimal("0.07"),
-            new BigDecimal("0.08"),
-            new BigDecimal("0.09"),
-            new BigDecimal("0.10"),
-            new BigDecimal("0.15")
+            new BigDecimal("0.5"),
+            new BigDecimal("0.5"),
+            new BigDecimal("0.5"),
+            new BigDecimal("0.5"),
+            new BigDecimal("0.5"),
+            new BigDecimal("0.5"),
+            new BigDecimal("0.5")
     );
 
     private final IUserCheckinRepository checkinRepository;

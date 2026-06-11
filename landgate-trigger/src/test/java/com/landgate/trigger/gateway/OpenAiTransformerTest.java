@@ -149,6 +149,51 @@ class OpenAiTransformerTest {
     }
 
     @Test
+    @DisplayName("OAuth Codex compact 请求移除不支持字段")
+    void codexOAuthCompactRequestRemovesUnsupportedFields() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .build();
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "input":[{"role":"user","content":"Hi"}],
+                  "store":true,
+                  "stream":false
+                }""";
+
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                body,
+                account,
+                "token-1",
+                new UpstreamRoute(
+                        Platform.OPENAI,
+                        "responses",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://chatgpt.com/backend-api/codex/responses/compact",
+                        false,
+                        true,
+                        true,
+                        "responses",
+                        "openai_oauth_codex"),
+                null,
+                "/v1/responses/compact",
+                "gpt-5.5",
+                true,
+                false,
+                Map.of()));
+
+        JsonNode root = JSON.readTree(readBody(request));
+
+        assertFalse(root.has("store"));
+        assertFalse(root.has("stream"));
+    }
+
+    @Test
     @DisplayName("OAuth Codex 请求强制上游流式")
     void codexOAuthRequestForcesUpstreamStreaming() throws Exception {
         OpenAiTransformer transformer = new OpenAiTransformer();
