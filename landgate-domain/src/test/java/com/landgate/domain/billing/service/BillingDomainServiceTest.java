@@ -1,7 +1,6 @@
 package com.landgate.domain.billing.service;
 
 import com.landgate.domain.auth.adapter.repository.IApiKeyRepository;
-import com.landgate.domain.auth.model.entity.ApiKeyEntity;
 import com.landgate.domain.billing.adapter.repository.IUsageLogRepository;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
@@ -132,21 +131,6 @@ class BillingDomainServiceTest {
         verify(usageLogRepository).updateBillingStatusFromPendingOrFailed(9L, "SETTLING", null);
     }
 
-    @Test
-    @DisplayName("API Key quota 使用数据库原子累加")
-    void accumulateQuotaUsesAtomicRepositoryUpdate() {
-        CapturingApiKeyRepository apiKeyRepository = new CapturingApiKeyRepository();
-        BillingDomainService service = new BillingDomainService(null, null, apiKeyRepository);
-
-        service.accumulateQuota(6L, new BigDecimal("0.1234567890"));
-
-        assertEquals(6L, apiKeyRepository.accumulatedId);
-        assertEquals(new BigDecimal("0.1234567890"), apiKeyRepository.accumulatedAmount);
-        assertEquals(1, apiKeyRepository.accumulateCalls);
-        assertEquals(0, apiKeyRepository.findByIdCalls);
-        assertEquals(0, apiKeyRepository.saveCalls);
-    }
-
     private static class CapturingUsageLogRepository implements IUsageLogRepository {
         @Override
         public UsageLogEntity save(UsageLogEntity entity) {
@@ -182,30 +166,5 @@ class BillingDomainServiceTest {
         @Override public double avgDurationByUserIdAndDateRange(Long userId, Instant start, Instant end) { return 0; }
         @Override public com.landgate.api.billing.dto.TokenCostSummary sumTokensAndCostByUserIdAndDateRange(Long userId, Instant start, Instant end) { return null; }
         @Override public List<com.landgate.api.billing.dto.ModelStats> aggregateByUserIdAndModel(Long userId, Instant start, Instant end) { return List.of(); }
-    }
-
-    private static class CapturingApiKeyRepository implements IApiKeyRepository {
-        private Long accumulatedId;
-        private BigDecimal accumulatedAmount;
-        private int accumulateCalls;
-        private int findByIdCalls;
-        private int saveCalls;
-
-        @Override public Optional<ApiKeyEntity> findByKey(String key) { return Optional.empty(); }
-        @Override public List<ApiKeyEntity> findByUserId(Long userId) { return List.of(); }
-        @Override public ApiKeyEntity save(ApiKeyEntity entity) { saveCalls++; return entity; }
-        @Override public Optional<ApiKeyEntity> findById(Long id) { findByIdCalls++; return Optional.empty(); }
-
-        @Override
-        public int accumulateQuotaUsage(Long id, BigDecimal amount) {
-            accumulatedId = id;
-            accumulatedAmount = amount;
-            accumulateCalls++;
-            return 1;
-        }
-
-        @Override public void deleteById(Long id) {}
-        @Override public long count() { return 0; }
-        @Override public long countByStatus(String status) { return 0; }
     }
 }

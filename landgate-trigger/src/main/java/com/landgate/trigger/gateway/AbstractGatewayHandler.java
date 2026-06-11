@@ -369,23 +369,19 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 if (shouldMimicClaudeCode) {
                     log.info("[{}] OAuth 伪装: account_id={}, model={}, type={}",
                             requestId, account.getId(), model, account.getType());
-                    boolean preserveGeneratedClaudeCodeCacheControl = false;
                     if (model != null && !model.toLowerCase().contains("haiku")) {
-                        String rewrittenBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
+                        upstreamBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
                                 upstreamBody, model);
-                        preserveGeneratedClaudeCodeCacheControl = !rewrittenBody.equals(upstreamBody);
-                        upstreamBody = rewrittenBody;
                     }
                     // 获取或创建指纹，用于 metadata.user_id 构建
                     com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fp =
                             fingerprintService.getOrCreateFingerprint(
                                     account.getId(),
                                     clientProfile.headers());
-                    String oauthMetadataUserId = oAuthMimicryService.buildOAuthMetadataUserID(
-                            account, fp, upstreamBody);
+                    upstreamBody = oAuthMimicryService.buildAndInjectMetadataUserID(
+                            upstreamBody, account, fp);
                     upstreamBody = oAuthMimicryService.normalizeClaudeOAuthRequestBody(
-                            upstreamBody, model, true, oauthMetadataUserId,
-                            preserveGeneratedClaudeCodeCacheControl);
+                            upstreamBody, model);
                 }
 
                 // Passthrough 模式：跳过协议翻译，直接透传原始 body。
@@ -473,26 +469,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 clientStream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
                                 request, requestId);
                     } else {
-                        String usageState = usage == null ? "usage_not_parsed" : "usage_zero";
-                        log.warn("[{}] 上游成功但用量不可计费，不写入 usage_logs: state={}, account_id={}, platform={}, endpoint={}, parser={}, client_stream={}, upstream_stream={}, handled_as_stream={}, content_type={}, input={}, output={}, cache_write={}, cache_read={}",
-                                requestId, usageState,
-                                account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
+                        log.warn("[{}] 上游成功但未解析到用量，不写入 usage_logs: account_id={}, platform={}, endpoint={}, parser={}, client_stream={}, upstream_stream={}, handled_as_stream={}, content_type={}",
+                                requestId, account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
                                 usageParser.getClass().getSimpleName(), clientStream, upstreamStream, handleAsStreaming,
-                                upstreamResp.headers().firstValue("Content-Type").orElse(""),
-                                usage != null ? usage.getInputTokens() : 0,
-                                usage != null ? usage.getOutputTokens() : 0,
-                                usage != null ? usage.getCacheCreationTokens() : 0,
-                                usage != null ? usage.getCacheReadTokens() : 0);
-                        String noUsageReason = usageState + "; endpoint=" + upstreamRoute.endpointKind()
+                                upstreamResp.headers().firstValue("Content-Type").orElse(""));
+                        String noUsageReason = "usage_not_parsed; endpoint=" + upstreamRoute.endpointKind()
                                 + "; parser=" + usageParser.getClass().getSimpleName()
                                 + "; client_stream=" + clientStream
                                 + "; upstream_stream=" + upstreamStream
                                 + "; handled_as_stream=" + handleAsStreaming
-                                + "; content_type=" + upstreamResp.headers().firstValue("Content-Type").orElse("")
-                                + "; input=" + (usage != null ? usage.getInputTokens() : 0)
-                                + "; output=" + (usage != null ? usage.getOutputTokens() : 0)
-                                + "; cache_write=" + (usage != null ? usage.getCacheCreationTokens() : 0)
-                                + "; cache_read=" + (usage != null ? usage.getCacheReadTokens() : 0);
+                                + "; content_type=" + upstreamResp.headers().firstValue("Content-Type").orElse("");
                         billingSettlementService.recordNoUsageLog(model, accountPlatform.name(), userId, apiKeyId,
                                 account, group, clientStream,
                                 streamingResult != null && streamingResult.clientDisconnected(),

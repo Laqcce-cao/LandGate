@@ -46,15 +46,6 @@ public interface IApiKeyRepository {
     Optional<ApiKeyEntity> findById(Long id);
 
     /**
-     * 原子累加 API Key 已用额度，并更新最后使用时间。
-     *
-     * @param id API Key ID
-     * @param amount 本次累加额度
-     * @return 受影响行数
-     */
-    int accumulateQuotaUsage(Long id, java.math.BigDecimal amount);
-
-    /**
      * 根据ID删除API密钥
      *
      * @param id 主键ID

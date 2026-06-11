@@ -11,7 +11,4 @@ public interface IEmailPort {
 
     /** 发送忘记密码重置验证码。 */
     void sendPasswordResetCode(String to, String username, String code);
-
-    /** 发送通用 HTML 告警邮件。 */
-    void sendAlertEmail(String to, String subject, String html);
 }

@@ -74,16 +74,9 @@ public class AnthropicUsageParser implements IUsageParser {
 
     @Override
     public UsageTokens parseNonStreaming(String responseBody) {
-        if (responseBody == null || responseBody.isBlank()) {
-            return null;
-        }
         try {
             JsonNode root = JSON.readTree(responseBody);
             JsonNode usage = root.path("usage");
-            if (usage.isMissingNode() || usage.isNull()) {
-                log.warn("Anthropic non-streaming response has no usage field");
-                return null;
-            }
             JsonNode cacheCreation = usage.path("cache_creation");
             return UsageTokens.builder()
                     .inputTokens(usage.path("input_tokens").asInt())
@@ -94,8 +87,8 @@ public class AnthropicUsageParser implements IUsageParser {
                     .cacheCreation1hTokens(cacheCreation.path("ephemeral_1h_input_tokens").asInt())
                     .build();
         } catch (Exception e) {
-            log.warn("Failed to parse usage from Anthropic response body", e);
-            return null;
+            log.warn("Failed to parse usage from response body");
+            return new UsageTokens();
         }
     }
 

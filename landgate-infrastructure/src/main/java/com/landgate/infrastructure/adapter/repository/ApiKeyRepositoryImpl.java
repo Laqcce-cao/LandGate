@@ -57,11 +57,6 @@ public class ApiKeyRepositoryImpl implements IApiKeyRepository {
     }
 
     @Override
-    public int accumulateQuotaUsage(Long id, java.math.BigDecimal amount) {
-        return apiKeyDao.accumulateQuotaUsage(id, amount);
-    }
-
-    @Override
     public void deleteById(Long id) {
         ApiKeyPO po = apiKeyDao.selectById(id);
         if (po != null) {
