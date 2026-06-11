@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IAccountDao">
+
+    <resultMap id="AccountResultMap" type="com.landgate.infrastructure.dao.po.AccountPO">
+        <id     column="id"                          property="id"/>
+        <result column="name"                        property="name"/>
+        <result column="notes"                       property="notes"/>
+        <result column="platform"                    property="platform"/>
+        <result column="type"                        property="type"/>
+        <result column="credentials"                 property="credentials"/>
+        <result column="extra"                       property="extra"/>
+        <result column="proxy_id"                    property="proxyId"/>
+        <result column="concurrency"                 property="concurrency"/>
+        <result column="load_factor"                 property="loadFactor"/>
+        <result column="priority"                    property="priority"/>
+        <result column="status"                      property="status"/>
+        <result column="error_message"               property="errorMessage"/>
+        <result column="last_used_at"                property="lastUsedAt"/>
+        <result column="expires_at"                  property="expiresAt"/>
+        <result column="auto_pause_on_expired"       property="autoPauseOnExpired"/>
+        <result column="schedulable"                 property="schedulable"/>
+        <result column="rate_limited_at"             property="rateLimitedAt"/>
+        <result column="rate_limit_reset_at"         property="rateLimitResetAt"/>
+        <result column="overload_until"              property="overloadUntil"/>
+        <result column="temp_unschedulable_until"    property="tempUnschedulableUntil"/>
+        <result column="temp_unschedulable_reason"   property="tempUnschedulableReason"/>
+        <result column="session_window_start"        property="sessionWindowStart"/>
+        <result column="session_window_end"          property="sessionWindowEnd"/>
+        <result column="session_window_status"       property="sessionWindowStatus"/>
+        <result column="supported_models"            property="supportedModels"/>
+        <result column="supported_protocols"         property="supportedProtocols"/>
+        <result column="mixed_scheduling"            property="mixedScheduling"/>
+        <result column="created_at"                  property="createdAt"/>
+        <result column="updated_at"                  property="updatedAt"/>
+        <result column="deleted_at"                  property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="AccountResultMap">
+        SELECT * FROM accounts WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <!-- 批量根据 ID 查询未删除的账户 -->
+    <select id="selectByIds" resultMap="AccountResultMap">
+        SELECT * FROM accounts
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+        AND deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO accounts (
+            name, notes, platform, type, credentials, extra, proxy_id,
+            concurrency, load_factor, priority, status, error_message,
+            last_used_at, expires_at, auto_pause_on_expired, schedulable,
+            rate_limited_at, rate_limit_reset_at, overload_until,
+            temp_unschedulable_until, temp_unschedulable_reason,
+            session_window_start, session_window_end, session_window_status,
+            supported_models, supported_protocols, mixed_scheduling,
+            created_at, updated_at, deleted_at
+        ) VALUES (
+            #{name}, #{notes}, #{platform}, #{type}, #{credentials}, #{extra}, #{proxyId},
+            #{concurrency}, #{loadFactor}, #{priority}, #{status}, #{errorMessage},
+            #{lastUsedAt}, #{expiresAt}, #{autoPauseOnExpired}, #{schedulable},
+            #{rateLimitedAt}, #{rateLimitResetAt}, #{overloadUntil},
+            #{tempUnschedulableUntil}, #{tempUnschedulableReason},
+            #{sessionWindowStart}, #{sessionWindowEnd}, #{sessionWindowStatus},
+            #{supportedModels}, #{supportedProtocols}, #{mixedScheduling},
+            NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE accounts SET
+            name = #{name}, notes = #{notes}, platform = #{platform}, type = #{type},
+            credentials = #{credentials}, extra = #{extra}, proxy_id = #{proxyId},
+            concurrency = #{concurrency}, load_factor = #{loadFactor},
+            priority = #{priority},
+            status = #{status}, error_message = #{errorMessage},
+            last_used_at = #{lastUsedAt}, expires_at = #{expiresAt},
+            auto_pause_on_expired = #{autoPauseOnExpired}, schedulable = #{schedulable},
+            rate_limited_at = #{rateLimitedAt}, rate_limit_reset_at = #{rateLimitResetAt},
+            overload_until = #{overloadUntil},
+            temp_unschedulable_until = #{tempUnschedulableUntil},
+            temp_unschedulable_reason = #{tempUnschedulableReason},
+            session_window_start = #{sessionWindowStart},
+            session_window_end = #{sessionWindowEnd},
+            session_window_status = #{sessionWindowStatus},
+            supported_models = #{supportedModels},
+            supported_protocols = #{supportedProtocols},
+            mixed_scheduling = #{mixedScheduling},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="AccountResultMap">
+        SELECT * FROM accounts WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM accounts WHERE deleted_at IS NULL
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByPlatform" resultMap="AccountResultMap">
+        SELECT * FROM accounts WHERE platform = #{platform} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByPlatformAndType" resultMap="AccountResultMap">
+        SELECT * FROM accounts WHERE platform = #{platform} AND type = #{type} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByStatus" resultMap="AccountResultMap">
+        SELECT * FROM accounts WHERE status = #{status} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByProxyId" resultMap="AccountResultMap">
+        SELECT * FROM accounts WHERE proxy_id = #{proxyId} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectSchedulableByPlatformAndStatus" resultMap="AccountResultMap">
+        SELECT * FROM accounts
+        WHERE platform = #{platform} AND status = #{status}
+          AND schedulable = TRUE
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="countByStatus" resultType="long">
+        SELECT COUNT(*) FROM accounts WHERE status = #{status} AND deleted_at IS NULL
+    </select>
+
+</mapper>

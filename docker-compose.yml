@@ -1,0 +1,119 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: landgate-mysql
+    command: --default-time-zone=+08:00
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: sub2api
+      TZ: Asia/Shanghai
+    volumes:
+      - ./docs/dev-ops/mysql/sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - landgate-net
+
+  # phpmyadmin https://hub.docker.com/_/phpmyadmin
+  phpmyadmin:
+    image: phpmyadmin:5.2.1
+    container_name: landgate_phpmyadmin
+    hostname: phpmyadmin
+    ports:
+      - 8899:80
+    environment:
+      - PMA_HOST=mysql
+      - PMA_PORT=3306
+      - MYSQL_ROOT_PASSWORD=${DB_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - landgate-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: landgate-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD} --save "" --appendonly no --stop-writes-on-bgsave-error no
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - landgate-net
+
+  app:
+    image: ${APP_IMAGE}/landgate:latest
+    container_name: landgate-app
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data/log:/app/data/log
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: sub2api
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY}
+      LANDGATE_ADMIN_EMAIL: ${LANDGATE_ADMIN_EMAIL}
+      LANDGATE_ADMIN_PASSWORD: ${LANDGATE_ADMIN_PASSWORD}
+      LANDGATE_ADMIN_USERNAME: ${LANDGATE_ADMIN_USERNAME:-Administrator}
+      LANDGATE_ADMIN_RESET_PASSWORD: ${LANDGATE_ADMIN_RESET_PASSWORD:-false}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      CAPTCHA_ENABLED: ${CAPTCHA_ENABLED:-false}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-http://localhost:80/oauth/callback}
+      # 访问宿主机 Mihomo 代理
+      http_proxy: http://host.docker.internal:10801
+      https_proxy: http://host.docker.internal:10801
+      # java虚拟机环境变量JVM
+      JAVA_TOOL_OPTIONS: "-Duser.timezone=Asia/Shanghai -Djava.net.preferIPv4Stack=true -Dhttp.proxyHost=host.docker.internal -Dhttp.proxyPort=10801 -Dhttps.proxyHost=host.docker.internal -Dhttps.proxyPort=10801 -Dhttp.nonProxyHosts=localhost|127.0.0.1|mysql|redis"
+      TZ: Asia/Shanghai
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - landgate-net
+
+  web:
+    image: ${APP_IMAGE}/landgate-web:latest
+    container_name: landgate-web
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+    restart: unless-stopped
+    networks:
+      - landgate-net
+
+volumes:
+  mysql_data:
+
+networks:
+  landgate-net:
+    driver: bridge

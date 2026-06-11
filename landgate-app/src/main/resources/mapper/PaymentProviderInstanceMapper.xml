@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IPaymentProviderInstanceDao">
+
+    <resultMap id="PaymentProviderInstanceResultMap" type="com.landgate.infrastructure.dao.po.PaymentProviderInstancePO">
+        <id     column="id"                  property="id"/>
+        <result column="provider_key"        property="providerKey"/>
+        <result column="name"                property="name"/>
+        <result column="config"              property="config"/>
+        <result column="supported_types"     property="supportedTypes"/>
+        <result column="enabled"             property="enabled"/>
+        <result column="payment_mode"        property="paymentMode"/>
+        <result column="sort_order"          property="sortOrder"/>
+        <result column="limits"              property="limits"/>
+        <result column="refund_enabled"      property="refundEnabled"/>
+        <result column="allow_user_refund"   property="allowUserRefund"/>
+        <result column="created_at"          property="createdAt"/>
+        <result column="updated_at"          property="updatedAt"/>
+        <result column="deleted_at"          property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="PaymentProviderInstanceResultMap">
+        SELECT * FROM payment_provider_instances WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO payment_provider_instances (
+            provider_key, name, config, supported_types, enabled, payment_mode,
+            sort_order, limits, refund_enabled, allow_user_refund,
+            created_at, updated_at, deleted_at
+        ) VALUES (
+            #{providerKey}, #{name}, #{config}, #{supportedTypes}, #{enabled}, #{paymentMode},
+            #{sortOrder}, #{limits}, #{refundEnabled}, #{allowUserRefund},
+            NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE payment_provider_instances SET
+            provider_key = #{providerKey}, name = #{name}, config = #{config},
+            supported_types = #{supportedTypes}, enabled = #{enabled},
+            payment_mode = #{paymentMode}, sort_order = #{sortOrder},
+            limits = #{limits}, refund_enabled = #{refundEnabled},
+            allow_user_refund = #{allowUserRefund},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="PaymentProviderInstanceResultMap">
+        SELECT * FROM payment_provider_instances
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM payment_provider_instances
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByProviderKeyAndEnabled" resultMap="PaymentProviderInstanceResultMap">
+        SELECT * FROM payment_provider_instances WHERE provider_key = #{providerKey} AND enabled = TRUE
+    </select>
+
+    <select id="selectEnabled" resultMap="PaymentProviderInstanceResultMap">
+        SELECT * FROM payment_provider_instances WHERE enabled = TRUE
+    </select>
+
+    <select id="selectByProviderKey" resultMap="PaymentProviderInstanceResultMap">
+        SELECT * FROM payment_provider_instances WHERE provider_key = #{providerKey}
+    </select>
+
+</mapper>

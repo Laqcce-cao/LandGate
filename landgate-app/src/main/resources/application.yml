@@ -1,0 +1,74 @@
+spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:test}
+  flyway:
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  type-aliases-package: com.landgate.infrastructure.dao.po
+  configuration:
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+landgate:
+  admin:
+    email: ${LANDGATE_ADMIN_EMAIL:}
+    password: ${LANDGATE_ADMIN_PASSWORD:}
+    username: ${LANDGATE_ADMIN_USERNAME:Administrator}
+    reset-password: ${LANDGATE_ADMIN_RESET_PASSWORD:false}
+  jwt:
+    access-token-expire-seconds: 3600
+    refresh-token-expire-seconds: 604800
+  security:
+    credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY:}
+  gateway:
+    max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}
+  oauth:
+    default-redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:1455/auth/callback}
+    state-expire-seconds: 300
+    providers:
+      anthropic:
+        authorize-url: https://claude.ai/oauth/authorize
+        token-url: https://platform.claude.com/v1/oauth/token
+        client-id: 9d1c250a-e61b-44d9-88ed-5944d1962f5e
+        scopes: user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload
+        token-exchange-format: json
+        redirect-uri: https://platform.claude.com/oauth/code/callback
+        extra-authorize-params:
+          code: "true"
+      openai:
+        token-url: https://auth.openai.com/oauth/token
+        client-id: app_EMoamEEZ73f0CkXaXp7hrann
+        scopes: openid profile email offline_access
+        user-agent: codex-cli/0.91.0
+        refresh-scopes: openid profile email
+        device-code-url: https://auth.openai.com/api/accounts/deviceauth/usercode
+        device-poll-url: https://auth.openai.com/api/accounts/deviceauth/token
+        device-verification-uri: https://auth.openai.com/codex/device
+        device-redirect-uri: https://auth.openai.com/deviceauth/callback
+  verification:
+    email-code-expire-seconds: 300
+    email-resend-cooldown-seconds: 60
+  captcha:
+    enabled: ${CAPTCHA_ENABLED:false}
+    turnstile-secret-key: ${TURNSTILE_SECRET_KEY:}
+  ratelimit:
+    registration:
+      max-per-ip-per-hour: ${REGISTER_RATE_LIMIT:3}
+
+server:
+  shutdown: graceful

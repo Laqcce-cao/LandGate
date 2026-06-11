@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IModelPriceDao">
+
+    <resultMap id="ModelPriceResultMap" type="com.landgate.infrastructure.dao.po.ModelPricePO">
+        <id     column="id"                property="id"/>
+        <result column="model"             property="model"/>
+        <result column="billing_mode"      property="billingMode"/>
+        <result column="wildcard_match"    property="wildcardMatch"/>
+        <result column="image_size"        property="imageSize"/>
+        <result column="input_price"       property="inputPrice"/>
+        <result column="output_price"      property="outputPrice"/>
+        <result column="cache_write_price" property="cacheWritePrice"/>
+        <result column="cache_read_price"  property="cacheReadPrice"/>
+        <result column="cache_write_5m_price" property="cacheWrite5mPrice"/>
+        <result column="cache_write_1h_price" property="cacheWrite1hPrice"/>
+        <result column="supports_cache_breakdown" property="supportsCacheBreakdown"/>
+        <result column="enabled"           property="enabled"/>
+        <result column="notes"             property="notes"/>
+        <result column="created_at"        property="createdAt"/>
+        <result column="updated_at"        property="updatedAt"/>
+        <result column="deleted_at"        property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="ModelPriceResultMap">
+        SELECT * FROM model_prices WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <!-- 根据模型名查询启用的价格（精确匹配） -->
+    <select id="selectByModel" resultMap="ModelPriceResultMap">
+        SELECT * FROM model_prices
+        WHERE model = #{model}
+          AND deleted_at IS NULL
+          AND enabled = 1
+        LIMIT 1
+    </select>
+
+    <!-- 查询所有启用的通配符价格规则（wildcard_match = 1） -->
+    <select id="selectWildcardMatches" resultMap="ModelPriceResultMap">
+        SELECT * FROM model_prices
+        WHERE wildcard_match = 1
+          AND deleted_at IS NULL
+          AND enabled = 1
+        ORDER BY model
+    </select>
+
+    <select id="selectAll" resultMap="ModelPriceResultMap">
+        SELECT * FROM model_prices
+        WHERE deleted_at IS NULL
+        ORDER BY model
+        LIMIT #{size} OFFSET #{offset}
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM model_prices WHERE deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO model_prices (
+            model, billing_mode, wildcard_match, image_size,
+            input_price, output_price, cache_write_price, cache_read_price,
+            cache_write_5m_price, cache_write_1h_price, supports_cache_breakdown,
+            enabled, notes, created_at, updated_at, deleted_at
+        ) VALUES (
+            #{model}, #{billingMode}, #{wildcardMatch}, #{imageSize},
+            #{inputPrice}, #{outputPrice}, #{cacheWritePrice}, #{cacheReadPrice},
+            #{cacheWrite5mPrice}, #{cacheWrite1hPrice}, #{supportsCacheBreakdown},
+            #{enabled}, #{notes}, NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE model_prices SET
+            model = #{model},
+            billing_mode = #{billingMode},
+            wildcard_match = #{wildcardMatch},
+            image_size = #{imageSize},
+            input_price = #{inputPrice}, output_price = #{outputPrice},
+            cache_write_price = #{cacheWritePrice}, cache_read_price = #{cacheReadPrice},
+            cache_write_5m_price = #{cacheWrite5mPrice}, cache_write_1h_price = #{cacheWrite1hPrice},
+            supports_cache_breakdown = #{supportsCacheBreakdown},
+            enabled = #{enabled}, notes = #{notes},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <update id="softDelete">
+        UPDATE model_prices SET deleted_at = NOW(), updated_at = NOW() WHERE id = #{id}
+    </update>
+
+</mapper>

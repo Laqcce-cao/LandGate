@@ -1,0 +1,40 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Java
+*.class
+*.jar
+*.war
+*.log
+
+# Environment
+.env
+.env.local
+application-local.yml
+
+# Node
+node_modules/
+dist/
+/.claude/
+/landgate-app/src/test/
+/data/
+/CLAUDE.md
+/.docker-build/
+/landgate-app/data/
+/docs/

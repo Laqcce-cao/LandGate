@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IPaymentOrderDao">
+
+    <resultMap id="PaymentOrderResultMap" type="com.landgate.infrastructure.dao.po.PaymentOrderPO">
+        <id     column="id"                          property="id"/>
+        <result column="user_id"                     property="userId"/>
+        <result column="user_email"                  property="userEmail"/>
+        <result column="user_name"                   property="userName"/>
+        <result column="user_notes"                  property="userNotes"/>
+        <result column="amount"                      property="amount"/>
+        <result column="pay_amount"                  property="payAmount"/>
+        <result column="fee_rate"                    property="feeRate"/>
+        <result column="recharge_code"               property="rechargeCode"/>
+        <result column="out_trade_no"                property="outTradeNo"/>
+        <result column="payment_type"                property="paymentType"/>
+        <result column="payment_trade_no"            property="paymentTradeNo"/>
+        <result column="pay_url"                     property="payUrl"/>
+        <result column="qr_code"                     property="qrCode"/>
+        <result column="qr_code_img"                 property="qrCodeImg"/>
+        <result column="order_type"                  property="orderType"/>
+        <result column="plan_id"                     property="planId"/>
+        <result column="subscription_group_id"       property="subscriptionGroupId"/>
+        <result column="subscription_days"           property="subscriptionDays"/>
+        <result column="provider_instance_id"        property="providerInstanceId"/>
+        <result column="provider_key"                property="providerKey"/>
+        <result column="provider_snapshot"           property="providerSnapshot"/>
+        <result column="status"                      property="status"/>
+        <result column="refund_amount"               property="refundAmount"/>
+        <result column="refund_reason"               property="refundReason"/>
+        <result column="refund_at"                   property="refundAt"/>
+        <result column="force_refund"                property="forceRefund"/>
+        <result column="refund_requested_at"         property="refundRequestedAt"/>
+        <result column="refund_request_reason"       property="refundRequestReason"/>
+        <result column="refund_requested_by"         property="refundRequestedBy"/>
+        <result column="expires_at"                  property="expiresAt"/>
+        <result column="paid_at"                     property="paidAt"/>
+        <result column="completed_at"                property="completedAt"/>
+        <result column="failed_at"                   property="failedAt"/>
+        <result column="failed_reason"               property="failedReason"/>
+        <result column="client_ip"                   property="clientIp"/>
+        <result column="src_host"                    property="srcHost"/>
+        <result column="src_url"                     property="srcUrl"/>
+        <result column="created_at"                  property="createdAt"/>
+        <result column="updated_at"                  property="updatedAt"/>
+        <result column="deleted_at"                  property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO payment_orders (
+            user_id, user_email, user_name, user_notes,
+            amount, pay_amount, fee_rate,
+            recharge_code, out_trade_no, payment_type, payment_trade_no,
+            pay_url, qr_code, qr_code_img,
+            order_type, plan_id, subscription_group_id, subscription_days,
+            provider_instance_id, provider_key, provider_snapshot,
+            status,
+            refund_amount, refund_reason, refund_at, force_refund,
+            refund_requested_at, refund_request_reason, refund_requested_by,
+            expires_at, paid_at, completed_at, failed_at, failed_reason,
+            client_ip, src_host, src_url,
+            created_at, updated_at, deleted_at
+        ) VALUES (
+            #{userId}, #{userEmail}, #{userName}, #{userNotes},
+            #{amount}, #{payAmount}, #{feeRate},
+            #{rechargeCode}, #{outTradeNo}, #{paymentType}, #{paymentTradeNo},
+            #{payUrl}, #{qrCode}, #{qrCodeImg},
+            #{orderType}, #{planId}, #{subscriptionGroupId}, #{subscriptionDays},
+            #{providerInstanceId}, #{providerKey}, #{providerSnapshot},
+            #{status},
+            #{refundAmount}, #{refundReason}, #{refundAt}, #{forceRefund},
+            #{refundRequestedAt}, #{refundRequestReason}, #{refundRequestedBy},
+            #{expiresAt}, #{paidAt}, #{completedAt}, #{failedAt}, #{failedReason},
+            #{clientIp}, #{srcHost}, #{srcUrl},
+            NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE payment_orders SET
+            user_id = #{userId}, user_email = #{userEmail}, user_name = #{userName},
+            user_notes = #{userNotes},
+            amount = #{amount}, pay_amount = #{payAmount}, fee_rate = #{feeRate},
+            recharge_code = #{rechargeCode}, out_trade_no = #{outTradeNo},
+            payment_type = #{paymentType}, payment_trade_no = #{paymentTradeNo},
+            pay_url = #{payUrl}, qr_code = #{qrCode}, qr_code_img = #{qrCodeImg},
+            order_type = #{orderType}, plan_id = #{planId},
+            subscription_group_id = #{subscriptionGroupId},
+            subscription_days = #{subscriptionDays},
+            provider_instance_id = #{providerInstanceId}, provider_key = #{providerKey},
+            provider_snapshot = #{providerSnapshot},
+            status = #{status},
+            refund_amount = #{refundAmount}, refund_reason = #{refundReason},
+            refund_at = #{refundAt}, force_refund = #{forceRefund},
+            refund_requested_at = #{refundRequestedAt},
+            refund_request_reason = #{refundRequestReason},
+            refund_requested_by = #{refundRequestedBy},
+            expires_at = #{expiresAt}, paid_at = #{paidAt},
+            completed_at = #{completedAt}, failed_at = #{failedAt},
+            failed_reason = #{failedReason},
+            client_ip = #{clientIp}, src_host = #{srcHost}, src_url = #{srcUrl},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM payment_orders
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByOutTradeNo" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE out_trade_no = #{outTradeNo}
+    </select>
+
+    <select id="selectByPaymentTradeNo" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE payment_trade_no = #{paymentTradeNo}
+    </select>
+
+    <select id="selectByRechargeCode" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE recharge_code = #{rechargeCode}
+    </select>
+
+    <select id="selectByUserId" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE user_id = #{userId}
+    </select>
+
+    <select id="selectByStatus" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE status = #{status}
+    </select>
+
+    <select id="selectByUserIdAndStatus" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE user_id = #{userId} AND status = #{status}
+    </select>
+
+    <select id="selectByStatusAndExpiresAtBefore" resultMap="PaymentOrderResultMap">
+        SELECT * FROM payment_orders WHERE status = #{status} AND expires_at &lt; #{expiresAt}
+    </select>
+
+</mapper>

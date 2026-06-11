@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IPaymentAuditLogDao">
+
+    <resultMap id="PaymentAuditLogResultMap" type="com.landgate.infrastructure.dao.po.PaymentAuditLogPO">
+        <id     column="id"          property="id"/>
+        <result column="order_id"    property="orderId"/>
+        <result column="action"      property="action"/>
+        <result column="detail"      property="detail"/>
+        <result column="operator"    property="operator"/>
+        <result column="created_at"  property="createdAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="PaymentAuditLogResultMap">
+        SELECT * FROM payment_audit_logs WHERE id = #{id}
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO payment_audit_logs (order_id, action, detail, operator, created_at)
+        VALUES (#{orderId}, #{action}, #{detail}, #{operator}, NOW())
+    </insert>
+
+    <select id="selectAll" resultMap="PaymentAuditLogResultMap">
+        SELECT * FROM payment_audit_logs
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByOrderId" resultMap="PaymentAuditLogResultMap">
+        SELECT * FROM payment_audit_logs WHERE order_id = #{orderId} ORDER BY created_at ASC
+    </select>
+
+    <select id="selectByOrderIdAndAction" resultMap="PaymentAuditLogResultMap">
+        SELECT * FROM payment_audit_logs WHERE order_id = #{orderId} AND action = #{action}
+    </select>
+
+    <select id="existsByOrderIdAndAction" resultType="boolean">
+        SELECT COUNT(*) > 0 FROM payment_audit_logs WHERE order_id = #{orderId} AND action = #{action}
+    </select>
+
+</mapper>

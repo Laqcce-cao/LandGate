@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IUserAllowedGroupDao">
+
+    <resultMap id="UserAllowedGroupResultMap" type="com.landgate.infrastructure.dao.po.UserAllowedGroupPO">
+        <id     column="user_id"     property="userId"/>
+        <id     column="group_id"    property="groupId"/>
+        <result column="created_at"  property="createdAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <insert id="insert">
+        INSERT INTO user_allowed_groups (user_id, group_id, created_at)
+        VALUES (#{userId}, #{groupId}, NOW())
+    </insert>
+
+    <update id="update">
+        UPDATE user_allowed_groups SET user_id = #{userId}, group_id = #{groupId}
+        WHERE user_id = #{userId} AND group_id = #{groupId}
+    </update>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByUserId" resultMap="UserAllowedGroupResultMap">
+        SELECT * FROM user_allowed_groups WHERE user_id = #{userId}
+    </select>
+
+    <select id="selectByGroupId" resultMap="UserAllowedGroupResultMap">
+        SELECT * FROM user_allowed_groups WHERE group_id = #{groupId}
+    </select>
+
+    <delete id="deleteByUserId">
+        DELETE FROM user_allowed_groups WHERE user_id = #{userId}
+    </delete>
+
+    <delete id="deleteByGroupId">
+        DELETE FROM user_allowed_groups WHERE group_id = #{groupId}
+    </delete>
+
+</mapper>

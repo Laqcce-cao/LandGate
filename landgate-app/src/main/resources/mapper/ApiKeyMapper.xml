@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IApiKeyDao">
+
+    <resultMap id="ApiKeyResultMap" type="com.landgate.infrastructure.dao.po.ApiKeyPO">
+        <id     column="id"                property="id"/>
+        <result column="user_id"           property="userId"/>
+        <result column="key"               property="key"/>
+        <result column="name"              property="name"/>
+        <result column="group_id"          property="groupId"/>
+        <result column="status"            property="status"/>
+        <result column="last_used_at"      property="lastUsedAt"/>
+        <result column="ip_whitelist"      property="ipWhitelist"/>
+        <result column="ip_blacklist"      property="ipBlacklist"/>
+        <result column="quota"             property="quota"/>
+        <result column="quota_used"        property="quotaUsed"/>
+        <result column="expires_at"        property="expiresAt"/>
+        <result column="created_at"        property="createdAt"/>
+        <result column="updated_at"        property="updatedAt"/>
+        <result column="deleted_at"        property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="ApiKeyResultMap">
+        SELECT * FROM api_keys WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO api_keys (
+            user_id, `key`, name, group_id, status, last_used_at,
+            ip_whitelist, ip_blacklist, quota, quota_used, expires_at,
+            created_at, updated_at, deleted_at
+        ) VALUES (
+            #{userId}, #{key}, #{name}, #{groupId}, #{status}, #{lastUsedAt},
+            #{ipWhitelist}, #{ipBlacklist}, #{quota}, #{quotaUsed}, #{expiresAt},
+            NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE api_keys SET
+            user_id = #{userId}, `key` = #{key}, name = #{name}, group_id = #{groupId},
+            status = #{status}, last_used_at = #{lastUsedAt},
+            ip_whitelist = #{ipWhitelist}, ip_blacklist = #{ipBlacklist},
+            quota = #{quota}, quota_used = #{quotaUsed}, expires_at = #{expiresAt},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="ApiKeyResultMap">
+        SELECT * FROM api_keys WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM api_keys WHERE deleted_at IS NULL
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByKey" resultMap="ApiKeyResultMap">
+        SELECT * FROM api_keys WHERE `key` = #{key} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByUserId" resultMap="ApiKeyResultMap">
+        SELECT * FROM api_keys WHERE user_id = #{userId} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByGroupId" resultMap="ApiKeyResultMap">
+        SELECT * FROM api_keys WHERE group_id = #{groupId} AND deleted_at IS NULL
+    </select>
+
+    <select id="countByStatus" resultType="long">
+        SELECT COUNT(*) FROM api_keys WHERE status = #{status} AND deleted_at IS NULL
+    </select>
+
+</mapper>

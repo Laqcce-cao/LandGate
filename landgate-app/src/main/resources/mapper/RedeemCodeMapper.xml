@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.landgate.infrastructure.dao.IRedeemCodeDao">
+
+    <resultMap id="RedeemCodeResultMap" type="com.landgate.infrastructure.dao.po.RedeemCodePO">
+        <id     column="id"                property="id"/>
+        <result column="code"              property="code"/>
+        <result column="type"              property="type"/>
+        <result column="amount"            property="amount"/>
+        <result column="group_id"          property="groupId"/>
+        <result column="subscription_days" property="subscriptionDays"/>
+        <result column="max_uses"          property="maxUses"/>
+        <result column="used_count"        property="usedCount"/>
+        <result column="bound_user_id"     property="boundUserId"/>
+        <result column="enabled"           property="enabled"/>
+        <result column="expires_at"        property="expiresAt"/>
+        <result column="created_by"        property="createdBy"/>
+        <result column="notes"             property="notes"/>
+        <result column="created_at"        property="createdAt"/>
+        <result column="updated_at"        property="updatedAt"/>
+        <result column="deleted_at"        property="deletedAt"/>
+    </resultMap>
+
+    <!-- ==================== 基础 CRUD ==================== -->
+
+    <select id="selectById" resultMap="RedeemCodeResultMap">
+        SELECT * FROM redeem_codes WHERE id = #{id} AND deleted_at IS NULL
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO redeem_codes (
+            code, type, amount, group_id, subscription_days,
+            max_uses, used_count, bound_user_id, enabled, expires_at, created_by, notes,
+            created_at, updated_at, deleted_at
+        ) VALUES (
+            #{code}, #{type}, #{amount}, #{groupId}, #{subscriptionDays},
+            #{maxUses}, #{usedCount}, #{boundUserId}, #{enabled}, #{expiresAt}, #{createdBy}, #{notes},
+            NOW(), NOW(), NULL
+        )
+    </insert>
+
+    <update id="update">
+        UPDATE redeem_codes SET
+            code = #{code}, type = #{type}, amount = #{amount},
+            group_id = #{groupId}, subscription_days = #{subscriptionDays},
+            max_uses = #{maxUses}, used_count = #{usedCount},
+            bound_user_id = #{boundUserId}, enabled = #{enabled},
+            expires_at = #{expiresAt}, created_by = #{createdBy}, notes = #{notes},
+            deleted_at = #{deletedAt},
+            updated_at = NOW()
+        WHERE id = #{id}
+    </update>
+
+    <select id="selectAll" resultMap="RedeemCodeResultMap">
+        SELECT * FROM redeem_codes WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countAll" resultType="long">
+        SELECT COUNT(*) FROM redeem_codes WHERE deleted_at IS NULL
+    </select>
+
+    <!-- ==================== 业务查询 ==================== -->
+
+    <select id="selectByCode" resultMap="RedeemCodeResultMap">
+        SELECT * FROM redeem_codes WHERE code = #{code} AND deleted_at IS NULL
+    </select>
+
+    <select id="selectEnabled" resultMap="RedeemCodeResultMap">
+        SELECT * FROM redeem_codes WHERE enabled = TRUE AND deleted_at IS NULL
+    </select>
+
+    <select id="selectByCreatedBy" resultMap="RedeemCodeResultMap">
+        SELECT * FROM redeem_codes WHERE created_by = #{createdBy} AND deleted_at IS NULL
+    </select>
+
+</mapper>
