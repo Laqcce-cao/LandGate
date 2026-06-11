@@ -469,16 +469,26 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 clientStream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
                                 request, requestId);
                     } else {
-                        log.warn("[{}] 上游成功但未解析到用量，不写入 usage_logs: account_id={}, platform={}, endpoint={}, parser={}, client_stream={}, upstream_stream={}, handled_as_stream={}, content_type={}",
-                                requestId, account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
+                        String usageState = usage == null ? "usage_not_parsed" : "usage_zero";
+                        log.warn("[{}] 上游成功但用量不可计费，不写入 usage_logs: state={}, account_id={}, platform={}, endpoint={}, parser={}, client_stream={}, upstream_stream={}, handled_as_stream={}, content_type={}, input={}, output={}, cache_write={}, cache_read={}",
+                                requestId, usageState,
+                                account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
                                 usageParser.getClass().getSimpleName(), clientStream, upstreamStream, handleAsStreaming,
-                                upstreamResp.headers().firstValue("Content-Type").orElse(""));
-                        String noUsageReason = "usage_not_parsed; endpoint=" + upstreamRoute.endpointKind()
+                                upstreamResp.headers().firstValue("Content-Type").orElse(""),
+                                usage != null ? usage.getInputTokens() : 0,
+                                usage != null ? usage.getOutputTokens() : 0,
+                                usage != null ? usage.getCacheCreationTokens() : 0,
+                                usage != null ? usage.getCacheReadTokens() : 0);
+                        String noUsageReason = usageState + "; endpoint=" + upstreamRoute.endpointKind()
                                 + "; parser=" + usageParser.getClass().getSimpleName()
                                 + "; client_stream=" + clientStream
                                 + "; upstream_stream=" + upstreamStream
                                 + "; handled_as_stream=" + handleAsStreaming
-                                + "; content_type=" + upstreamResp.headers().firstValue("Content-Type").orElse("");
+                                + "; content_type=" + upstreamResp.headers().firstValue("Content-Type").orElse("")
+                                + "; input=" + (usage != null ? usage.getInputTokens() : 0)
+                                + "; output=" + (usage != null ? usage.getOutputTokens() : 0)
+                                + "; cache_write=" + (usage != null ? usage.getCacheCreationTokens() : 0)
+                                + "; cache_read=" + (usage != null ? usage.getCacheReadTokens() : 0);
                         billingSettlementService.recordNoUsageLog(model, accountPlatform.name(), userId, apiKeyId,
                                 account, group, clientStream,
                                 streamingResult != null && streamingResult.clientDisconnected(),

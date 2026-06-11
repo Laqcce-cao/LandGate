@@ -59,7 +59,8 @@ public class NoUsageAlertService {
             return;
         }
 
-        String key = account.getId().toString();
+        String reasonType = extractReasonType(reason);
+        String key = account.getId() + ":" + reasonType;
         AccountNoUsageState state = states.computeIfAbsent(key, ignored -> new AccountNoUsageState());
         AlertSnapshot snapshot;
         Instant now = Instant.now();
@@ -80,11 +81,12 @@ public class NoUsageAlertService {
             snapshot = new AlertSnapshot(count, state.events.peekFirst(), now);
         }
 
-        sendAlert(snapshot, model, platform, userId, apiKeyId, account, group,
+        sendAlert(snapshot, reasonType, model, platform, userId, apiKeyId, account, group,
                 stream, clientDisconnected, durationMs, request, requestId, reason);
     }
 
     private void sendAlert(AlertSnapshot snapshot,
+                           String reasonType,
                            String model,
                            String platform,
                            Long userId,
@@ -97,8 +99,8 @@ public class NoUsageAlertService {
                            HttpServletRequest request,
                            String requestId,
                            String reason) {
-        String subject = "[LandGate] No usage alert: account " + account.getId();
-        String html = buildHtml(snapshot, model, platform, userId, apiKeyId, account, group,
+        String subject = "[LandGate] " + reasonType + " alert: account " + account.getId();
+        String html = buildHtml(snapshot, reasonType, model, platform, userId, apiKeyId, account, group,
                 stream, clientDisconnected, durationMs, request, requestId, reason);
 
         for (String recipient : recipients) {
@@ -112,6 +114,7 @@ public class NoUsageAlertService {
     }
 
     private String buildHtml(AlertSnapshot snapshot,
+                             String reasonType,
                              String model,
                              String platform,
                              Long userId,
@@ -126,8 +129,8 @@ public class NoUsageAlertService {
                              String reason) {
         return """
                 <div style="max-width:760px;margin:0 auto;font-family:Arial,sans-serif;color:#111827;">
-                  <h2>LandGate no-usage alert</h2>
-                  <p>Account <b>%s</b> triggered <b>%d</b> no-usage events within %d seconds.</p>
+                  <h2>LandGate %s alert</h2>
+                  <p>Account <b>%s</b> triggered <b>%d</b> %s events within %d seconds.</p>
                   <table style="border-collapse:collapse;width:100%%;">
                     %s
                     %s
@@ -148,8 +151,10 @@ public class NoUsageAlertService {
                   </table>
                 </div>
                 """.formatted(
+                escape(reasonType),
                 escape(account.getName()),
                 snapshot.count(),
+                escape(reasonType),
                 window.toSeconds(),
                 row("Account ID", account.getId()),
                 row("Account Name", account.getName()),
@@ -167,6 +172,16 @@ public class NoUsageAlertService {
                 row("Remote Addr", request != null ? request.getRemoteAddr() : null),
                 row("First Event At", snapshot.firstEventAt()),
                 row("Alert At", snapshot.alertAt()));
+    }
+
+    private static String extractReasonType(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "usage_unknown";
+        }
+        int semicolon = reason.indexOf(';');
+        String type = semicolon >= 0 ? reason.substring(0, semicolon) : reason;
+        type = type.trim();
+        return type.isEmpty() ? "usage_unknown" : type;
     }
 
     private static String row(String label, Object value) {

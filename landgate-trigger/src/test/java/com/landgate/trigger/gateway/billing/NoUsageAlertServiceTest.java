@@ -72,4 +72,28 @@ class NoUsageAlertServiceTest {
 
         verify(emailPort, never()).sendAlertEmail(anyString(), anyString(), anyString());
     }
+
+    @Test
+    @DisplayName("不同 no-usage 类型按账户分别累计")
+    void countsDifferentReasonTypesSeparately() {
+        IEmailPort emailPort = mock(IEmailPort.class);
+        NoUsageAlertService service = new NoUsageAlertService(
+                emailPort,
+                true,
+                "ops@example.com",
+                2,
+                300,
+                1800);
+        AccountEntity account = AccountEntity.builder().id(2L).build();
+
+        service.onNoUsage("gpt-5.5", "OPENAI", 10L, 20L, account, null,
+                true, false, 100L, null, "req-1", "usage_not_parsed; parser=ResponsesUsageParser");
+        service.onNoUsage("gpt-5.5", "OPENAI", 10L, 20L, account, null,
+                true, false, 120L, null, "req-2", "usage_zero; parser=ResponsesUsageParser");
+        verify(emailPort, never()).sendAlertEmail(anyString(), anyString(), anyString());
+
+        service.onNoUsage("gpt-5.5", "OPENAI", 10L, 20L, account, null,
+                true, false, 140L, null, "req-3", "usage_zero; parser=ResponsesUsageParser");
+        verify(emailPort, times(1)).sendAlertEmail(anyString(), anyString(), anyString());
+    }
 }
