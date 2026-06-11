@@ -42,7 +42,7 @@ class CheckinDomainServiceTest {
         assertFalse(result.alreadySigned());
         assertEquals(CheckinStatus.COMPLETED.name(), result.record().getStatus().name());
         assertEquals(1, result.record().getStreakDays());
-        assertEquals(new BigDecimal("0.05"), result.record().getRewardAmount());
+        assertEquals(new BigDecimal("0.5"), result.record().getRewardAmount());
         assertEquals(99L, result.record().getBalanceTransactionId());
         verify(balanceService).apply(any(BalanceTransactionCommand.class));
     }
@@ -56,7 +56,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today.minusDays(1))
                 .streakDays(2)
-                .rewardAmount(new BigDecimal("0.06"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.COMPLETED)
                 .build());
         CheckinDomainService service = new CheckinDomainService(repository, mockBalanceService());
@@ -64,7 +64,7 @@ class CheckinDomainServiceTest {
         var result = service.checkin(7L);
 
         assertEquals(3, result.record().getStreakDays());
-        assertEquals(new BigDecimal("0.07"), result.record().getRewardAmount());
+        assertEquals(new BigDecimal("0.5"), result.record().getRewardAmount());
     }
 
     @Test
@@ -76,7 +76,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today)
                 .streakDays(1)
-                .rewardAmount(new BigDecimal("0.05"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.COMPLETED)
                 .balanceTransactionId(99L)
                 .build());
@@ -98,7 +98,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today)
                 .streakDays(1)
-                .rewardAmount(new BigDecimal("0.05"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.PENDING)
                 .build());
         CheckinDomainService service = new CheckinDomainService(repository, mockBalanceService());
@@ -117,7 +117,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today)
                 .streakDays(1)
-                .rewardAmount(new BigDecimal("0.05"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.FAILED)
                 .failureReason("REDIS_ERROR")
                 .build());
@@ -140,7 +140,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today.minusDays(1))
                 .streakDays(2)
-                .rewardAmount(new BigDecimal("0.06"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.COMPLETED)
                 .build());
         CheckinDomainService service = new CheckinDomainService(repository, mockBalanceService());
@@ -151,8 +151,8 @@ class CheckinDomainServiceTest {
         assertTrue(status.canCheckin());
         assertEquals("NONE", status.todayStatus());
         assertEquals(2, status.streakDays());
-        assertEquals(new BigDecimal("0.07"), status.todayReward());
-        assertEquals(new BigDecimal("0.08"), status.nextReward());
+        assertEquals(new BigDecimal("0.5"), status.todayReward());
+        assertEquals(new BigDecimal("0.5"), status.nextReward());
     }
 
     @Test
@@ -164,7 +164,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today.minusDays(2))
                 .streakDays(5)
-                .rewardAmount(new BigDecimal("0.09"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.COMPLETED)
                 .build());
         CheckinDomainService service = new CheckinDomainService(repository, mockBalanceService());
@@ -174,8 +174,8 @@ class CheckinDomainServiceTest {
         assertFalse(status.signedToday());
         assertTrue(status.canCheckin());
         assertEquals(0, status.streakDays());
-        assertEquals(new BigDecimal("0.05"), status.todayReward());
-        assertEquals(new BigDecimal("0.06"), status.nextReward());
+        assertEquals(new BigDecimal("0.5"), status.todayReward());
+        assertEquals(new BigDecimal("0.5"), status.nextReward());
     }
 
     @Test
@@ -187,7 +187,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today.minusDays(1))
                 .streakDays(8)
-                .rewardAmount(new BigDecimal("0.15"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.COMPLETED)
                 .build());
         CheckinDomainService service = new CheckinDomainService(repository, mockBalanceService());
@@ -195,8 +195,8 @@ class CheckinDomainServiceTest {
         var status = service.getStatus(7L);
 
         assertEquals(8, status.streakDays());
-        assertEquals(new BigDecimal("0.15"), status.todayReward());
-        assertEquals(new BigDecimal("0.15"), status.nextReward());
+        assertEquals(new BigDecimal("0.5"), status.todayReward());
+        assertEquals(new BigDecimal("0.5"), status.nextReward());
     }
 
     @Test
@@ -208,7 +208,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today)
                 .streakDays(3)
-                .rewardAmount(new BigDecimal("0.07"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.PENDING)
                 .build());
         CheckinDomainService service = new CheckinDomainService(repository, mockBalanceService());
@@ -219,7 +219,7 @@ class CheckinDomainServiceTest {
         assertFalse(status.canCheckin());
         assertEquals("PENDING", status.todayStatus());
         assertEquals(3, status.streakDays());
-        assertEquals(new BigDecimal("0.07"), status.todayReward());
+        assertEquals(new BigDecimal("0.5"), status.todayReward());
     }
 
     @Test
@@ -231,7 +231,7 @@ class CheckinDomainServiceTest {
                 .userId(7L)
                 .signDate(today)
                 .streakDays(3)
-                .rewardAmount(new BigDecimal("0.07"))
+                .rewardAmount(new BigDecimal("0.5"))
                 .status(CheckinStatus.FAILED)
                 .build());
         CheckinDomainService service = new CheckinDomainService(repository, mockBalanceService());
@@ -241,7 +241,7 @@ class CheckinDomainServiceTest {
         assertTrue(status.signedToday());
         assertTrue(status.canCheckin());
         assertEquals("FAILED", status.todayStatus());
-        assertEquals(new BigDecimal("0.07"), status.todayReward());
+        assertEquals(new BigDecimal("0.5"), status.todayReward());
     }
 
     private BalanceTransactionDomainService mockBalanceService() {

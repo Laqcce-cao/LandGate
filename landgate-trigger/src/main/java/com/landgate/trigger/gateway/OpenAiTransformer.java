@@ -56,7 +56,7 @@ public class OpenAiTransformer implements IRequestTransformer {
         if (route != null) {
             targetUrl = route.targetUrl();
             if (route.normalizeCodexOAuthBody()) {
-                body = normalizeCodexOAuthRequestBody(body, account);
+                body = normalizeCodexOAuthRequestBody(body, account, route);
             } else if (route.endpointKind() == EndpointKind.OPENAI_CHAT_COMPLETIONS) {
                 body = ensureChatCompletionsStreamUsage(body);
             }
@@ -112,15 +112,24 @@ public class OpenAiTransformer implements IRequestTransformer {
      * 路由层执行，避免影响普通 OpenAI API Key 的 Responses 请求。
      */
     private String normalizeCodexOAuthRequestBody(String body, AccountEntity account) {
+        return normalizeCodexOAuthRequestBody(body, account, null);
+    }
+
+    private String normalizeCodexOAuthRequestBody(String body, AccountEntity account, UpstreamRoute route) {
         try {
             ObjectNode root = (ObjectNode) JSON.readTree(body);
 
             for (String field : CODEX_UNSUPPORTED_FIELDS) {
                 root.remove(field);
             }
-            root.put("store", false);
-            // ChatGPT Codex 内部 Responses 端点只接受流式请求；客户端非流式由网关聚合后返回。
-            root.put("stream", true);
+            if (isCodexCompactEndpoint(route)) {
+                root.remove("store");
+                root.remove("stream");
+            } else {
+                root.put("store", false);
+                // ChatGPT Codex 内部 Responses 端点只接受流式请求；客户端非流式由网关聚合后返回。
+                root.put("stream", true);
+            }
 
             extractSystemMessagesToInstructions(root);
 //            // 过滤上游不支持的 tool 类型（如 Codex CLI 的 namespace MCP 工具）
@@ -133,6 +142,17 @@ public class OpenAiTransformer implements IRequestTransformer {
         } catch (Exception e) {
             log.warn("Failed to normalize Codex OAuth request body: account_id={}", account.getId(), e);
             return body;
+        }
+    }
+
+    private static boolean isCodexCompactEndpoint(UpstreamRoute route) {
+        if (route == null || route.targetUrl() == null || route.targetUrl().isBlank()) {
+            return false;
+        }
+        try {
+            return URI.create(route.targetUrl()).getPath().endsWith("/compact");
+        } catch (Exception ignored) {
+            return route.targetUrl().endsWith("/compact");
         }
     }
 
