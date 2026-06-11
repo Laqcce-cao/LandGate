@@ -31,18 +31,11 @@ public class ResponsesUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(responseBody);
-            JsonNode usage = root.path("usage");
-            if (usage.isMissingNode() || usage.isNull()) {
+            JsonNode usage = findUsageNode(root);
+            if (usage == null) {
                 return new UsageTokens();
             }
-            // OpenAI Responses API: input_tokens 包含缓存部分，需减去避免重复计费
-            int rawInputTokens = usage.path("input_tokens").asInt();
-            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt();
-            return UsageTokens.builder()
-                    .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
-                    .outputTokens(usage.path("output_tokens").asInt())
-                    .cacheReadTokens(cachedTokens)
-                    .build();
+            return toUsageTokens(usage);
         } catch (Exception e) {
             log.debug("Failed to parse Responses non-streaming usage", e);
             return new UsageTokens();
@@ -56,23 +49,17 @@ public class ResponsesUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(sseData);
-            // 仅从 response.completed 事件中提取用量
+            // Terminal response events may carry final usage. OpenAI-compatible
+            // providers are not fully consistent about completed vs done.
             String type = root.path("type").asText();
-            if (!"response.completed".equals(type)) {
+            if (!isTerminalResponseEvent(type)) {
                 return null;
             }
-            JsonNode usage = root.path("response").path("usage");
-            if (usage.isMissingNode() || usage.isNull()) {
+            JsonNode usage = findUsageNode(root);
+            if (usage == null) {
                 return null;
             }
-            // OpenAI Responses API: input_tokens 包含缓存部分，需减去避免重复计费
-            int rawInputTokens = usage.path("input_tokens").asInt();
-            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt();
-            return UsageTokens.builder()
-                    .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
-                    .outputTokens(usage.path("output_tokens").asInt())
-                    .cacheReadTokens(cachedTokens)
-                    .build();
+            return toUsageTokens(usage);
         } catch (Exception e) {
             log.debug("Failed to parse Responses SSE line", e);
             return null;
@@ -93,13 +80,43 @@ public class ResponsesUsageParser implements IUsageParser {
         try {
             JsonNode root = JSON.readTree(sseLine.substring(6));
             String type = root.path("type").asText();
-            return "response.completed".equals(type)
-                    || "response.done".equals(type)
-                    || "response.failed".equals(type)
-                    || "response.incomplete".equals(type);
+            return isTerminalResponseEvent(type);
         } catch (Exception e) {
             log.debug("Failed to parse Responses SSE done line", e);
             return false;
         }
+    }
+
+    private boolean isTerminalResponseEvent(String type) {
+        return "response.completed".equals(type)
+                || "response.done".equals(type)
+                || "response.failed".equals(type)
+                || "response.incomplete".equals(type);
+    }
+
+    private JsonNode findUsageNode(JsonNode root) {
+        if (root == null || root.isMissingNode() || root.isNull()) {
+            return null;
+        }
+        JsonNode usage = root.path("usage");
+        if (!usage.isMissingNode() && !usage.isNull()) {
+            return usage;
+        }
+        usage = root.path("response").path("usage");
+        if (!usage.isMissingNode() && !usage.isNull()) {
+            return usage;
+        }
+        return null;
+    }
+
+    private UsageTokens toUsageTokens(JsonNode usage) {
+        // OpenAI Responses API: input_tokens 包含缓存部分，需减去避免重复计费
+        int rawInputTokens = usage.path("input_tokens").asInt();
+        int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt();
+        return UsageTokens.builder()
+                .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
+                .outputTokens(usage.path("output_tokens").asInt())
+                .cacheReadTokens(cachedTokens)
+                .build();
     }
 }

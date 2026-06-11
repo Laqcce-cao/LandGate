@@ -50,9 +50,6 @@ public class GatewayRequestParser {
 
     /** 判断客户端请求本身是否表达了流式响应意图。 */
     public static boolean shouldClientRequestStreaming(String requestFormat, String body) {
-        // Responses API 入口当前默认按 SSE 响应处理。
-        if ("responses".equals(requestFormat)) return true;
-
         return isStreamRequest(body);
     }
 }
