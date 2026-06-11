@@ -29,9 +29,10 @@ public class FingerprintService {
      */
     public ClientFingerprint getOrCreateFingerprint(Long accountId, Map<String, String> requestHeaders) {
         return cache.computeIfAbsent(accountId, id -> {
-            String userAgent = requestHeaders != null
-                    ? requestHeaders.getOrDefault("User-Agent", "claude-cli/" + ClaudeConstants.CLI_CURRENT_VERSION)
-                    : "claude-cli/" + ClaudeConstants.CLI_CURRENT_VERSION;
+            String userAgent = getHeaderIgnoreCase(
+                    requestHeaders,
+                    "User-Agent",
+                    "claude-cli/" + ClaudeConstants.CLI_CURRENT_VERSION);
             String clientId = generateClientId();
             return new ClientFingerprint(clientId, userAgent);
         });
@@ -56,6 +57,18 @@ public class FingerprintService {
 
     private String generateClientId() {
         return UUID.randomUUID().toString().replace("-", "");
+    }
+
+    private static String getHeaderIgnoreCase(Map<String, String> headers, String name, String defaultValue) {
+        if (headers == null || headers.isEmpty()) return defaultValue;
+        String exact = headers.get(name);
+        if (exact != null) return exact;
+        for (var entry : headers.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(name)) {
+                return entry.getValue();
+            }
+        }
+        return defaultValue;
     }
 
     // ========================

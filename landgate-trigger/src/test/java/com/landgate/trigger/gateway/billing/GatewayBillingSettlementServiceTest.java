@@ -32,7 +32,8 @@ class GatewayBillingSettlementServiceTest {
         BillingDomainService billingDomainService = mock(BillingDomainService.class);
         GatewayBillingSettlementService service = new GatewayBillingSettlementService(
                 billingDomainService,
-                mock(BalanceDomainService.class));
+                mock(BalanceDomainService.class),
+                mock(NoUsageAlertService.class));
         AccountEntity account = AccountEntity.builder()
                 .id(2L)
                 .platform(Platform.OPENAI)

@@ -38,6 +38,11 @@ public class EmailService implements IEmailPort {
         );
     }
 
+    @Override
+    public void sendAlertEmail(String to, String subject, String html) {
+        sendCodeEmail(to, subject, html, "alert email");
+    }
+
     private void sendCodeEmail(String to, String subject, String html, String logName) {
         try {
             MimeMessage message = mailSender.createMimeMessage();

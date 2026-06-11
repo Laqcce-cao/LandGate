@@ -37,6 +37,12 @@ landgate:
     credential-encryption-key: ${CREDENTIAL_ENCRYPTION_KEY:}
   gateway:
     max-body-size: ${GATEWAY_MAX_BODY_SIZE:67108864}
+    no-usage-alert:
+      enabled: ${NO_USAGE_ALERT_ENABLED:false}
+      recipients: ${NO_USAGE_ALERT_RECIPIENTS:${LANDGATE_ADMIN_EMAIL:}}
+      threshold: ${NO_USAGE_ALERT_THRESHOLD:3}
+      window-seconds: ${NO_USAGE_ALERT_WINDOW_SECONDS:300}
+      cooldown-seconds: ${NO_USAGE_ALERT_COOLDOWN_SECONDS:1800}
   oauth:
     default-redirect-uri: ${OAUTH_REDIRECT_URI:http://localhost:1455/auth/callback}
     state-expire-seconds: 300

@@ -163,8 +163,7 @@ public class AnthropicTransformer implements IRequestTransformer {
         // 非伪装模式（真实 CC 客户端）使用基础 beta
         if (isAnthropicOAuth(account)) {
             if (context.shouldMimicClaudeCode()) {
-                // 伪装模式：beta 头在 applyClaudeCodeMimicHeaders 中设置
-                headers.addAll(List.of("anthropic-beta", "oauth-2025-04-20"));
+                // 伪装模式：完整 beta 列表由 applyClaudeCodeMimicHeaders 设置，避免重复 header。
             } else {
                 // 真实 CC 客户端：仅基础 oauth beta
                 headers.addAll(List.of("anthropic-beta", "oauth-2025-04-20"));

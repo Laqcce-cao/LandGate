@@ -39,6 +39,9 @@ public interface IApiKeyDao {
     /** 根据分组 ID 查询未删除的 Key 列表 */
     List<ApiKeyPO> selectByGroupId(@Param("groupId") Long groupId);
 
+    /** 原子累加已用额度并更新最后使用时间 */
+    int accumulateQuotaUsage(@Param("id") Long id, @Param("amount") java.math.BigDecimal amount);
+
     /** 按状态统计未删除 Key 数 */
     long countByStatus(@Param("status") String status);
 }

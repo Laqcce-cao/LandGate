@@ -28,18 +28,11 @@ public class OpenAiUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(responseBody);
-            JsonNode usage = root.path("usage");
-            if (usage.isMissingNode() || usage.isNull()) {
+            JsonNode usage = findUsageNode(root);
+            if (usage == null) {
                 return new UsageTokens();
             }
-            // OpenAI API: prompt_tokens 包含缓存部分，需减去避免重复计费
-            int rawPromptTokens = usage.path("prompt_tokens").asInt();
-            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt();
-            return UsageTokens.builder()
-                    .inputTokens(Math.max(0, rawPromptTokens - cachedTokens))
-                    .outputTokens(usage.path("completion_tokens").asInt())
-                    .cacheReadTokens(cachedTokens)
-                    .build();
+            return toUsageTokens(usage);
         } catch (Exception e) {
             log.debug("Failed to parse OpenAI non-streaming usage", e);
             return new UsageTokens();
@@ -53,18 +46,11 @@ public class OpenAiUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(sseData);
-            JsonNode usage = root.path("usage");
-            if (usage.isMissingNode() || usage.isNull()) {
+            JsonNode usage = findUsageNode(root);
+            if (usage == null) {
                 return null;
             }
-            // OpenAI API: prompt_tokens 包含缓存部分，需减去避免重复计费
-            int rawPromptTokens = usage.path("prompt_tokens").asInt();
-            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt();
-            return UsageTokens.builder()
-                    .inputTokens(Math.max(0, rawPromptTokens - cachedTokens))
-                    .outputTokens(usage.path("completion_tokens").asInt())
-                    .cacheReadTokens(cachedTokens)
-                    .build();
+            return toUsageTokens(usage);
         } catch (Exception e) {
             log.debug("Failed to parse OpenAI SSE line", e);
             return null;
@@ -74,5 +60,65 @@ public class OpenAiUsageParser implements IUsageParser {
     @Override
     public boolean isStreamDone(String sseLine) {
         return "data: [DONE]".equals(sseLine);
+    }
+
+    private JsonNode findUsageNode(JsonNode root) {
+        if (root == null || root.isMissingNode() || root.isNull()) {
+            return null;
+        }
+        JsonNode usage = root.path("usage");
+        if (!usage.isMissingNode() && !usage.isNull()) {
+            return usage;
+        }
+        usage = root.path("response").path("usage");
+        if (!usage.isMissingNode() && !usage.isNull()) {
+            return usage;
+        }
+        JsonNode choices = root.path("choices");
+        if (choices.isArray()) {
+            for (JsonNode choice : choices) {
+                usage = choice.path("usage");
+                if (!usage.isMissingNode() && !usage.isNull()) {
+                    return usage;
+                }
+            }
+        }
+        return null;
+    }
+
+    private UsageTokens toUsageTokens(JsonNode usage) {
+        int rawInputTokens = firstInt(usage, "prompt_tokens", "input_tokens");
+        int outputTokens = firstInt(usage, "completion_tokens", "output_tokens");
+        int cachedTokens = firstNestedInt(usage,
+                new String[]{"prompt_tokens_details", "cached_tokens"},
+                new String[]{"input_tokens_details", "cached_tokens"});
+        return UsageTokens.builder()
+                .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
+                .outputTokens(outputTokens)
+                .cacheReadTokens(cachedTokens)
+                .build();
+    }
+
+    private int firstInt(JsonNode node, String... fieldNames) {
+        for (String fieldName : fieldNames) {
+            JsonNode value = node.path(fieldName);
+            if (!value.isMissingNode() && !value.isNull()) {
+                return value.asInt();
+            }
+        }
+        return 0;
+    }
+
+    private int firstNestedInt(JsonNode node, String[]... paths) {
+        for (String[] path : paths) {
+            JsonNode value = node;
+            for (String fieldName : path) {
+                value = value.path(fieldName);
+            }
+            if (!value.isMissingNode() && !value.isNull()) {
+                return value.asInt();
+            }
+        }
+        return 0;
     }
 }

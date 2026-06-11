@@ -40,11 +40,24 @@ class GatewayRequestParserTest {
     }
 
     @Test
-    @DisplayName("Responses 客户端格式默认按流式响应处理")
-    void responsesRequestFormatDefaultsToStreaming() {
+    @DisplayName("Responses 客户端未声明 stream 时不要求流式")
+    void responsesRequestFormatDoesNotDefaultToStreaming() {
         String body = """
                 {
                   "model":"gpt-5.5",
+                  "input":"Hi"
+                }""";
+
+        assertFalse(GatewayRequestParser.shouldClientRequestStreaming("responses", body));
+    }
+
+    @Test
+    @DisplayName("Responses 客户端 stream=true 时要求流式")
+    void responsesStreamTrueIsClientStreamingIntent() {
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "stream":true,
                   "input":"Hi"
                 }""";
 

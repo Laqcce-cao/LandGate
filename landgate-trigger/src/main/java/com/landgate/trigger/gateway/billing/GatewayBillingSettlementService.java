@@ -22,6 +22,7 @@ public class GatewayBillingSettlementService {
 
     private final BillingDomainService billingDomainService;
     private final BalanceDomainService balanceDomainService;
+    private final NoUsageAlertService noUsageAlertService;
 
     /**
      * 保存用量日志并完成余额扣减，失败时保留可对账状态，避免资损静默发生。
@@ -109,5 +110,7 @@ public class GatewayBillingSettlementService {
                                  String reason) {
         log.warn("[{}] 请求成功但未解析到用量，跳过 0 token 使用日志: user_id={}, account_id={}, model={}, reason={}",
                 requestId, userId, account != null ? account.getId() : null, model, reason);
+        noUsageAlertService.onNoUsage(model, platform, userId, apiKeyId, account, group,
+                stream, clientDisconnected, durationMs, request, requestId, reason);
     }
 }
