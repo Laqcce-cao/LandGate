@@ -134,6 +134,12 @@ public class OAuthMimicryService {
      */
     public String normalizeClaudeOAuthRequestBody(String body, String model,
                                                    boolean injectMetadata, String metadataUserId) {
+        return normalizeClaudeOAuthRequestBody(body, model, injectMetadata, metadataUserId, false);
+    }
+
+    public String normalizeClaudeOAuthRequestBody(String body, String model,
+                                                   boolean injectMetadata, String metadataUserId,
+                                                   boolean preserveGeneratedClaudeCodeCacheControl) {
         if (body == null || body.isEmpty()) return body;
 
         try {
@@ -163,8 +169,12 @@ public class OAuthMimicryService {
                                 modified = true;
                             }
                         }
-                        // 剥离 system 中的 cache_control
-                        if (item.isObject() && item.has("cache_control")) {
+                        // 默认剥离客户端原始 system 中的 cache_control。
+                        // 仅在调用方确认刚执行过 rewriteSystemForNonClaudeCode 时，保留网关生成的
+                        // Claude Code prompt 缓存断点。
+                        if (item.isObject() && item.has("cache_control")
+                                && !(preserveGeneratedClaudeCodeCacheControl
+                                && isGeneratedClaudeCodePromptBlock(sysArray, i))) {
                             ((ObjectNode) item).remove("cache_control");
                             modified = true;
                         }
@@ -393,6 +403,22 @@ public class OAuthMimicryService {
         return text.replace(
                 "You are OpenCode, the best coding agent on the planet.",
                 CLAUDE_CODE_SYSTEM_PROMPT.trim());
+    }
+
+    private static boolean isClaudeCodePromptBlock(JsonNode item) {
+        if (item == null || !item.isObject() || !item.has("text")) return false;
+        String text = item.get("text").asText();
+        return CLAUDE_CODE_SYSTEM_PROMPT.equals(text);
+    }
+
+    private static boolean isGeneratedClaudeCodePromptBlock(ArrayNode system, int index) {
+        if (system == null || index <= 0 || index >= system.size()) return false;
+        JsonNode item = system.get(index);
+        JsonNode previous = system.get(index - 1);
+        return isClaudeCodePromptBlock(item)
+                && previous != null
+                && previous.has("text")
+                && previous.get("text").asText().startsWith(ClaudeConstants.BILLING_HEADER_PREFIX);
     }
 
     /**

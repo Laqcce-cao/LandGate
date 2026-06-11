@@ -369,19 +369,23 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 if (shouldMimicClaudeCode) {
                     log.info("[{}] OAuth 伪装: account_id={}, model={}, type={}",
                             requestId, account.getId(), model, account.getType());
+                    boolean preserveGeneratedClaudeCodeCacheControl = false;
                     if (model != null && !model.toLowerCase().contains("haiku")) {
-                        upstreamBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
+                        String rewrittenBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
                                 upstreamBody, model);
+                        preserveGeneratedClaudeCodeCacheControl = !rewrittenBody.equals(upstreamBody);
+                        upstreamBody = rewrittenBody;
                     }
                     // 获取或创建指纹，用于 metadata.user_id 构建
                     com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fp =
                             fingerprintService.getOrCreateFingerprint(
                                     account.getId(),
                                     clientProfile.headers());
-                    upstreamBody = oAuthMimicryService.buildAndInjectMetadataUserID(
-                            upstreamBody, account, fp);
+                    String oauthMetadataUserId = oAuthMimicryService.buildOAuthMetadataUserID(
+                            account, fp, upstreamBody);
                     upstreamBody = oAuthMimicryService.normalizeClaudeOAuthRequestBody(
-                            upstreamBody, model);
+                            upstreamBody, model, true, oauthMetadataUserId,
+                            preserveGeneratedClaudeCodeCacheControl);
                 }
 
                 // Passthrough 模式：跳过协议翻译，直接透传原始 body。
