@@ -440,13 +440,11 @@ public class BillingDomainService {
      */
     public void accumulateQuota(Long apiKeyId, BigDecimal actualCost) {
         if (apiKeyId == null || actualCost == null) return;
-        apiKeyRepository.findById(apiKeyId).ifPresent(apiKey -> {
-            BigDecimal current = apiKey.getQuotaUsed() != null ? apiKey.getQuotaUsed() : BigDecimal.ZERO;
-            apiKey.setQuotaUsed(current.add(actualCost));
-            apiKey.setLastUsedAt(Instant.now());
-            apiKeyRepository.save(apiKey);
-            log.debug("API key quota accumulated: api_key_id={}, used=${}, total=${}",
-                    apiKeyId, actualCost, apiKey.getQuotaUsed());
-        });
+        int updated = apiKeyRepository.accumulateQuotaUsage(apiKeyId, actualCost);
+        if (updated == 0) {
+            log.warn("API key quota accumulation skipped: api_key_id={} not found or deleted", apiKeyId);
+            return;
+        }
+        log.debug("API key quota accumulated: api_key_id={}, used=${}", apiKeyId, actualCost);
     }
 }

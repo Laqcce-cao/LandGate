@@ -233,6 +233,25 @@ class BalanceTransactionDomainServiceTest {
 
         @Override
         public long countByUserId(Long userId) { return 0; }
+
+        @Override
+        public List<com.landgate.domain.balance.model.entity.AdminBalanceTransactionEntity> listAdmin(
+                String keyword,
+                BalanceTransactionType transactionType,
+                BalanceFundingType fundingType,
+                BalanceTransactionStatus status,
+                int offset,
+                int size) {
+            return List.of();
+        }
+
+        @Override
+        public long countAdmin(String keyword,
+                               BalanceTransactionType transactionType,
+                               BalanceFundingType fundingType,
+                               BalanceTransactionStatus status) {
+            return 0;
+        }
     }
 
     private static class StubBalanceRuntime implements IBalanceRuntime {

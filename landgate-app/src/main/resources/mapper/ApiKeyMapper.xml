@@ -71,6 +71,15 @@
         SELECT * FROM api_keys WHERE group_id = #{groupId} AND deleted_at IS NULL
     </select>
 
+    <update id="accumulateQuotaUsage">
+        UPDATE api_keys
+        SET quota_used = COALESCE(quota_used, 0) + #{amount},
+            last_used_at = NOW(),
+            updated_at = NOW()
+        WHERE id = #{id}
+          AND deleted_at IS NULL
+    </update>
+
     <select id="countByStatus" resultType="long">
         SELECT COUNT(*) FROM api_keys WHERE status = #{status} AND deleted_at IS NULL
     </select>

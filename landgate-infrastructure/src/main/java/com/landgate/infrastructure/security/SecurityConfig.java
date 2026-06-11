@@ -48,8 +48,7 @@ public class SecurityConfig {
         http.securityMatcher("/api/v1/auth/login", "/api/v1/auth/register",
                         "/api/v1/auth/refresh", "/api/v1/auth/logout",
                         "/api/v1/auth/verify-email", "/api/v1/auth/resend-verification-code",
-                        "/api/v1/announcements",
-                        "/api/v1/payment/webhook/**")
+                        "/api/v1/announcements")
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
