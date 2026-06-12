@@ -37,20 +37,22 @@ public class ChatCompletionsToResponsesConverter {
             ObjectNode dst = JSON.createObjectNode();
 
             // --- 基础字段 ---
-            copyIfExists(src, dst, "model");
+            copyTextIfExists(src, dst, "model");
             copyTextIfExists(src, dst, "instructions");
             copyTextIfExists(src, dst, "service_tier");
             copyObjectIfExists(src, dst, "metadata");
-            copyIfExists(src, dst, "parallel_tool_calls");
+            copyBooleanIfExists(src, dst, "parallel_tool_calls");
             copyTextIfExists(src, dst, "user");
             copyTextIfExists(src, dst, "safety_identifier");
             copyTextIfExists(src, dst, "prompt_cache_key");
             copyTextIfExists(src, dst, "prompt_cache_retention");
-            copyIfExists(src, dst, "top_logprobs");
+            if (isValidTopLogprobs(src.get("top_logprobs"))) {
+                dst.set("top_logprobs", src.get("top_logprobs"));
+            }
 
             // 协议转换层不根据模型名猜能力；采样参数按客户端显式请求保留。
-            copyIfExists(src, dst, "temperature");
-            copyIfExists(src, dst, "top_p");
+            copyNumberIfExists(src, dst, "temperature");
+            copyNumberIfExists(src, dst, "top_p");
 
             // response_format / verbosity → text
             if (src.has("response_format") && src.get("response_format").isObject()) {
@@ -63,27 +65,28 @@ public class ChatCompletionsToResponsesConverter {
                     dst.set("text", text);
                 }
             }
-            if (src.has("verbosity") && !src.get("verbosity").isNull()) {
+            String verbosity = normalizeVerbosity(src.get("verbosity"));
+            if (verbosity != null) {
                 ObjectNode text = dst.has("text") && dst.get("text").isObject()
                         ? (ObjectNode) dst.get("text")
                         : JSON.createObjectNode();
-                text.set("verbosity", src.get("verbosity"));
+                text.put("verbosity", verbosity);
                 dst.set("text", text);
             }
 
             // max_tokens / max_completion_tokens → max_output_tokens（后者优先）
-            int maxTokens = 0;
+            JsonNode maxTokensNode = null;
             if (src.has("max_completion_tokens")) {
-                maxTokens = src.get("max_completion_tokens").asInt();
+                maxTokensNode = src.get("max_completion_tokens");
             } else if (src.has("max_tokens")) {
-                maxTokens = src.get("max_tokens").asInt();
+                maxTokensNode = src.get("max_tokens");
             }
-            if (maxTokens > 0) {
-                dst.put("max_output_tokens", maxTokens);
+            if (isPositiveInt(maxTokensNode)) {
+                dst.put("max_output_tokens", maxTokensNode.asInt());
             }
 
             // stream：保留客户端语义；未传时让 Responses 使用官方默认的非流式。
-            copyIfExists(src, dst, "stream");
+            copyBooleanIfExists(src, dst, "stream");
 
             // stop → 内部 IR 扩展。Responses 上游不直接消费，跨协议转 Anthropic/Chat 时再还原。
             if (src.has("stop") && !src.get("stop").isNull()) {
@@ -92,9 +95,10 @@ public class ChatCompletionsToResponsesConverter {
             }
 
             // reasoning_effort → reasoning
-            if (src.has("reasoning_effort")) {
+            String reasoningEffort = normalizeChatReasoningEffort(src.get("reasoning_effort"));
+            if (reasoningEffort != null) {
                 ObjectNode reasoning = JSON.createObjectNode();
-                reasoning.put("effort", src.get("reasoning_effort").asText());
+                reasoning.put("effort", reasoningEffort);
                 reasoning.put("summary", "auto");
                 dst.set("reasoning", reasoning);
             }
@@ -132,9 +136,10 @@ public class ChatCompletionsToResponsesConverter {
                         ObjectNode rt = JSON.createObjectNode();
                         rt.put("type", "function");
                         rt.put("name", func.get("name").asText());
-                        if (func.has("description")) rt.put("description", func.get("description").asText());
+                        copyTextIfExists(func, rt, "description");
                         if (func.has("parameters")) rt.set("parameters", normalizeToolParameters(func.get("parameters")));
-                        rt.put("strict", func.has("strict") && func.get("strict").asBoolean(false));
+                        rt.put("strict", func.has("strict") && func.get("strict").isBoolean()
+                                && func.get("strict").asBoolean());
                         responsesTools.add(rt);
                     } else if ("custom".equals(type) && tool.has("custom") && tool.get("custom").isObject()) {
                         JsonNode custom = tool.get("custom");
@@ -144,8 +149,11 @@ public class ChatCompletionsToResponsesConverter {
                         ObjectNode rt = JSON.createObjectNode();
                         rt.put("type", "custom");
                         rt.put("name", custom.get("name").asText());
-                        if (custom.has("description")) rt.set("description", custom.get("description"));
-                        if (custom.has("format")) rt.set("format", custom.get("format"));
+                        copyTextIfExists(custom, rt, "description");
+                        JsonNode format = convertChatCustomToolFormatToResponses(custom.get("format"));
+                        if (format != null) {
+                            rt.set("format", format);
+                        }
                         responsesTools.add(rt);
                     }
                 }
@@ -159,7 +167,7 @@ public class ChatCompletionsToResponsesConverter {
                     ObjectNode rt = JSON.createObjectNode();
                     rt.put("type", "function");
                     rt.put("name", func.get("name").asText());
-                    if (func.has("description")) rt.put("description", func.get("description").asText());
+                    copyTextIfExists(func, rt, "description");
                     if (func.has("parameters")) rt.set("parameters", normalizeToolParameters(func.get("parameters")));
                     rt.put("strict", false);
                     responsesTools.add(rt);
@@ -191,17 +199,21 @@ public class ChatCompletionsToResponsesConverter {
             }
 
             // --- 固定字段 ---
-            if (src.has("store") && !src.get("store").isNull()) {
-                dst.set("store", src.get("store"));
+            if (src.has("store") && src.get("store").isBoolean()) {
+                copyBooleanIfExists(src, dst, "store");
             } else {
                 dst.put("store", false);
             }
             ArrayNode include = JSON.createArrayNode();
-            include.add("reasoning.encrypted_content");
-            if (src.path("logprobs").asBoolean(false)) {
+            if (reasoningEffort != null) {
+                include.add("reasoning.encrypted_content");
+            }
+            if (src.has("logprobs") && src.get("logprobs").isBoolean() && src.get("logprobs").asBoolean()) {
                 include.add("message.output_text.logprobs");
             }
-            dst.set("include", include);
+            if (!include.isEmpty()) {
+                dst.set("include", include);
+            }
 
             return dst;
         } catch (Exception e) {
@@ -222,11 +234,11 @@ public class ChatCompletionsToResponsesConverter {
             JsonNode src = JSON.readTree(body);
             ObjectNode dst = JSON.createObjectNode();
 
-            dst.put("id", src.has("id") ? src.get("id").asText()
-                    : "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+            dst.put("id", textOrDefault(src.get("id"),
+                    "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24)));
             dst.put("object", "response");
-            dst.put("model", src.has("model") ? src.get("model").asText() : "unknown");
-            if (src.has("created") && src.get("created").canConvertToLong()) {
+            dst.put("model", isBlankText(src.get("model")) ? "unknown" : src.get("model").asText());
+            if (isNonNegativeLong(src.get("created"))) {
                 dst.put("created_at", src.get("created").asLong());
             }
 
@@ -239,31 +251,30 @@ public class ChatCompletionsToResponsesConverter {
 
             JsonNode choice = src.get("choices").get(0);
             JsonNode message = choice.has("message") ? choice.get("message") : null;
-            String finishReason = choice.has("finish_reason") ? choice.get("finish_reason").asText() : "stop";
+            String finishReason = textOrDefault(choice.get("finish_reason"), "stop");
 
             ArrayNode output = JSON.createArrayNode();
             boolean hasToolCalls = false;
 
             if (message != null) {
                 // reasoning_content → reasoning output item
-                if (message.has("reasoning_content") && !message.get("reasoning_content").isNull()) {
+                String reasoningContent = textOrDefault(message.get("reasoning_content"), "");
+                if (!reasoningContent.isEmpty()) {
                     ObjectNode reasoningItem = JSON.createObjectNode();
                     reasoningItem.put("type", "reasoning");
                     reasoningItem.put("status", "completed");
                     ArrayNode summary = JSON.createArrayNode();
                     ObjectNode summaryText = JSON.createObjectNode();
                     summaryText.put("type", "summary_text");
-                    summaryText.put("text", message.get("reasoning_content").asText());
+                    summaryText.put("text", reasoningContent);
                     summary.add(summaryText);
                     reasoningItem.set("summary", summary);
                     output.add(reasoningItem);
                 }
 
                 // content/refusal → output_text/refusal
-                String contentText = message.has("content") && !message.get("content").isNull()
-                        ? message.get("content").asText() : "";
-                String refusalText = message.has("refusal") && !message.get("refusal").isNull()
-                        ? message.get("refusal").asText() : "";
+                String contentText = textOrDefault(message.get("content"), "");
+                String refusalText = textOrDefault(message.get("refusal"), "");
 
                 // tool_calls / legacy function_call → function_call output items
                 ArrayNode toolCalls = null;
@@ -285,7 +296,7 @@ public class ChatCompletionsToResponsesConverter {
                             }
                             funcItem.put("type", "custom_tool_call");
                             funcItem.put("name", custom.get("name").asText());
-                            funcItem.put("input", custom.has("input") ? custom.get("input").asText() : "");
+                            funcItem.put("input", textOrDefault(custom.get("input"), ""));
                         } else if (tc.has("function")) {
                             JsonNode func = tc.get("function");
                             if (isBlankText(func.get("name"))) {
@@ -294,7 +305,8 @@ public class ChatCompletionsToResponsesConverter {
                             }
                             funcItem.put("type", "function_call");
                             funcItem.put("name", func.get("name").asText());
-                            funcItem.put("arguments", func.has("arguments") ? func.get("arguments").asText() : "{}");
+                            String args = textOrDefault(func.get("arguments"), "{}");
+                            funcItem.put("arguments", args.isEmpty() ? "{}" : args);
                         } else {
                             log.debug("Chat→Responses: tool_call missing function/custom payload, ignored");
                             continue;
@@ -313,7 +325,8 @@ public class ChatCompletionsToResponsesConverter {
                         funcItem.put("call_id", name);
                         funcItem.put("status", "completed");
                         funcItem.put("name", name);
-                        funcItem.put("arguments", fc.has("arguments") ? fc.get("arguments").asText() : "{}");
+                        String args = textOrDefault(fc.get("arguments"), "{}");
+                        funcItem.put("arguments", args.isEmpty() ? "{}" : args);
                         output.add(funcItem);
                         hasToolCalls = true;
                     }
@@ -357,22 +370,20 @@ public class ChatCompletionsToResponsesConverter {
             if (src.has("usage")) {
                 JsonNode usage = src.get("usage");
                 ObjectNode respUsage = JSON.createObjectNode();
-                int inputTokens = usage.has("prompt_tokens") ? usage.get("prompt_tokens").asInt() : 0;
-                int outputTokens = usage.has("completion_tokens") ? usage.get("completion_tokens").asInt() : 0;
+                int inputTokens = nonNegativeIntOrZero(usage.get("prompt_tokens"));
+                int outputTokens = nonNegativeIntOrZero(usage.get("completion_tokens"));
                 respUsage.put("input_tokens", inputTokens);
                 respUsage.put("output_tokens", outputTokens);
-                respUsage.put("total_tokens", usage.has("total_tokens")
-                        ? usage.get("total_tokens").asInt() : inputTokens + outputTokens);
-                if (usage.has("prompt_tokens_details")
-                        && usage.get("prompt_tokens_details").has("cached_tokens")
-                        && usage.get("prompt_tokens_details").get("cached_tokens").asInt() > 0) {
+                int totalTokens = isNonNegativeInt(usage.get("total_tokens"))
+                        ? usage.get("total_tokens").asInt()
+                        : inputTokens + outputTokens;
+                respUsage.put("total_tokens", totalTokens);
+                if (isPositiveInt(usage.path("prompt_tokens_details").get("cached_tokens"))) {
                     ObjectNode details = JSON.createObjectNode();
                     details.put("cached_tokens", usage.get("prompt_tokens_details").get("cached_tokens").asInt());
                     respUsage.set("input_tokens_details", details);
                 }
-                if (usage.has("completion_tokens_details")
-                        && usage.get("completion_tokens_details").has("reasoning_tokens")
-                        && usage.get("completion_tokens_details").get("reasoning_tokens").asInt() > 0) {
+                if (isPositiveInt(usage.path("completion_tokens_details").get("reasoning_tokens"))) {
                     ObjectNode details = JSON.createObjectNode();
                     details.put("reasoning_tokens", usage.get("completion_tokens_details").get("reasoning_tokens").asInt());
                     respUsage.set("output_tokens_details", details);
@@ -476,7 +487,7 @@ public class ChatCompletionsToResponsesConverter {
 
             try {
                 JsonNode chunk = JSON.readTree(json);
-                if (chunk.has("created") && chunk.get("created").canConvertToLong()) {
+                if (isNonNegativeLong(chunk.get("created"))) {
                     createdAt = chunk.get("created").asLong();
                 }
                 if (!chunk.has("choices") || chunk.get("choices").size() == 0) {
@@ -501,7 +512,7 @@ public class ChatCompletionsToResponsesConverter {
 
                 // content → output_text.delta
                 if (delta != null && delta.has("content") && !delta.get("content").isNull()) {
-                    String text = delta.get("content").asText();
+                    String text = textOrDefault(delta.get("content"), "");
                     if (!text.isEmpty()) {
                         if (outputItemAdded && !"message".equals(currentItemType)) {
                             if (closeOpenItem(output)) outputIndex++;
@@ -524,7 +535,7 @@ public class ChatCompletionsToResponsesConverter {
 
                 // refusal → refusal.delta
                 if (delta != null && delta.has("refusal") && !delta.get("refusal").isNull()) {
-                    String refusal = delta.get("refusal").asText();
+                    String refusal = textOrDefault(delta.get("refusal"), "");
                     if (!refusal.isEmpty()) {
                         if (outputItemAdded && !"message".equals(currentItemType)) {
                             if (closeOpenItem(output)) outputIndex++;
@@ -547,7 +558,7 @@ public class ChatCompletionsToResponsesConverter {
 
                 // reasoning_content → reasoning_summary_text.delta
                 if (delta != null && delta.has("reasoning_content") && !delta.get("reasoning_content").isNull()) {
-                    String rc = delta.get("reasoning_content").asText();
+                    String rc = textOrDefault(delta.get("reasoning_content"), "");
                     if (!rc.isEmpty()) {
                         if (outputItemAdded && !"reasoning".equals(currentItemType)) {
                             if (closeOpenItem(output)) outputIndex++;
@@ -572,12 +583,12 @@ public class ChatCompletionsToResponsesConverter {
                 // Chat 流式工具调用可按 index 并行/交错输出，因此每个 index 独立累积参数。
                 if (delta != null && delta.has("tool_calls") && delta.get("tool_calls").isArray()) {
                     for (JsonNode tc : delta.get("tool_calls")) {
-                        int tcIndex = tc.has("index") ? tc.get("index").asInt() : nextToolCallIndex;
+                        int tcIndex = nonNegativeIntOrDefault(tc.get("index"), nextToolCallIndex);
 
                         // 新增 tool_call
                         if (tc.has("id") && tc.has("function") && tc.get("function").has("name")) {
-                            String callId = tc.get("id").asText();
-                            String funcName = tc.get("function").get("name").asText();
+                            String callId = textOrDefault(tc.get("id"), "");
+                            String funcName = textOrDefault(tc.get("function").get("name"), "");
                             if (callId.isBlank() || funcName.isBlank()) {
                                 log.debug("Chat→Responses stream: tool_call missing id or name, ignored");
                                 continue;
@@ -598,7 +609,7 @@ public class ChatCompletionsToResponsesConverter {
 
                         // function.arguments → function_call_arguments.delta
                         if (tc.has("function") && tc.get("function").has("arguments")) {
-                            String args = tc.get("function").get("arguments").asText();
+                            String args = textOrDefault(tc.get("function").get("arguments"), "");
                             if (!args.isEmpty()) {
                                 ToolCallState state = toolCallStates.get(tcIndex);
                                 if (state == null) {
@@ -619,7 +630,7 @@ public class ChatCompletionsToResponsesConverter {
                 if (delta != null && delta.has("function_call") && delta.get("function_call").isObject()) {
                     JsonNode fc = delta.get("function_call");
                     int tcIndex = 0;
-                    String funcName = fc.has("name") ? fc.get("name").asText() : "";
+                    String funcName = textOrDefault(fc.get("name"), "");
                     ToolCallState state = toolCallStates.get(tcIndex);
                     if (!funcName.isBlank()) {
                         state = ensureToolCallState(output, tcIndex, funcName, funcName);
@@ -629,7 +640,7 @@ public class ChatCompletionsToResponsesConverter {
                         return output;
                     }
                     if (fc.has("arguments")) {
-                        String args = fc.get("arguments").asText();
+                        String args = textOrDefault(fc.get("arguments"), "");
                         if (!args.isEmpty()) {
                             state.arguments.append(args);
                             appendEvent(output, "response.function_call_arguments.delta",
@@ -642,6 +653,7 @@ public class ChatCompletionsToResponsesConverter {
 
                 // finish_reason → 关闭当前 item；等待后续 usage-only chunk 和最终 [DONE] 再完成响应。
                 if (choice.has("finish_reason") && !choice.get("finish_reason").isNull()
+                        && choice.get("finish_reason").isTextual()
                         && !"null".equals(choice.get("finish_reason").asText())) {
                     finishReason = choice.get("finish_reason").asText();
                     closeOpenItem(output);
@@ -762,14 +774,14 @@ public class ChatCompletionsToResponsesConverter {
         }
 
         private void extractUsage(JsonNode usage) {
-            if (usage.has("prompt_tokens")) inputTokens = usage.get("prompt_tokens").asInt();
-            if (usage.has("completion_tokens")) outputTokens = usage.get("completion_tokens").asInt();
+            if (isNonNegativeInt(usage.get("prompt_tokens"))) inputTokens = usage.get("prompt_tokens").asInt();
+            if (isNonNegativeInt(usage.get("completion_tokens"))) outputTokens = usage.get("completion_tokens").asInt();
             if (usage.has("prompt_tokens_details")
-                    && usage.get("prompt_tokens_details").has("cached_tokens")) {
+                    && isNonNegativeInt(usage.get("prompt_tokens_details").get("cached_tokens"))) {
                 cachedTokens = usage.get("prompt_tokens_details").get("cached_tokens").asInt();
             }
             if (usage.has("completion_tokens_details")
-                    && usage.get("completion_tokens_details").has("reasoning_tokens")) {
+                    && isNonNegativeInt(usage.get("completion_tokens_details").get("reasoning_tokens"))) {
                 reasoningTokens = usage.get("completion_tokens_details").get("reasoning_tokens").asInt();
             }
         }
@@ -798,7 +810,7 @@ public class ChatCompletionsToResponsesConverter {
             // 数组格式 → 提取文本
             StringBuilder sb = new StringBuilder();
             for (JsonNode part : contentNode) {
-                if ("text".equals(part.has("type") ? part.get("type").asText() : "")
+                if ("text".equals(textOrDefault(part.get("type"), ""))
                         && !isBlankText(part.get("text"))) {
                     if (sb.length() > 0) sb.append("\n");
                     sb.append(part.get("text").asText());
@@ -828,7 +840,7 @@ public class ChatCompletionsToResponsesConverter {
         } else if (contentNode.isArray()) {
             ArrayNode parts = JSON.createArrayNode();
             for (JsonNode part : contentNode) {
-                String partType = part.has("type") ? part.get("type").asText() : "";
+                String partType = textOrDefault(part.get("type"), "");
                 switch (partType) {
                     case "text" -> {
                         if (isBlankText(part.get("text"))) {
@@ -841,14 +853,15 @@ public class ChatCompletionsToResponsesConverter {
                     }
                     case "image_url" -> {
                         JsonNode imageUrl = part.get("image_url");
-                        if (imageUrl != null && imageUrl.isObject() && imageUrl.has("url")) {
+                        if (imageUrl != null && imageUrl.isObject() && !isBlankText(imageUrl.get("url"))) {
                             String url = imageUrl.get("url").asText();
-                            if (!url.isBlank() && !isEmptyBase64DataURI(url)) {
+                            if (!isEmptyBase64DataURI(url)) {
                                 ObjectNode p = JSON.createObjectNode();
                                 p.put("type", "input_image");
                                 p.put("image_url", url);
-                                if (imageUrl.has("detail") && !imageUrl.get("detail").isNull()) {
-                                    p.set("detail", imageUrl.get("detail"));
+                                String detail = normalizeImageDetail(imageUrl.get("detail"));
+                                if (detail != null) {
+                                    p.put("detail", detail);
                                 }
                                 parts.add(p);
                             }
@@ -868,9 +881,9 @@ public class ChatCompletionsToResponsesConverter {
                         if (file != null && file.isObject() && hasChatFilePayload(file)) {
                             ObjectNode p = JSON.createObjectNode();
                             p.put("type", "input_file");
-                            copyIfExists(file, p, "file_data");
-                            copyIfExists(file, p, "file_id");
-                            copyIfExists(file, p, "filename");
+                            copyTextIfExists(file, p, "file_data");
+                            copyTextIfExists(file, p, "file_id");
+                            copyTextIfExists(file, p, "filename");
                             parts.add(p);
                         }
                     }
@@ -894,9 +907,7 @@ public class ChatCompletionsToResponsesConverter {
         // 兼容客户端传入这类扩展时，拆到 Responses reasoning item，避免污染 output_text。
         ParsedAssistantContent parsedContent = parseAssistantContent(msg.get("content"));
         String contentText = parsedContent.text();
-        String reasoningContent = msg.has("reasoning_content") && !msg.get("reasoning_content").isNull()
-                ? msg.get("reasoning_content").asText()
-                : null;
+        String reasoningContent = textOrDefault(msg.get("reasoning_content"), "");
 
         StringBuilder fullContent = new StringBuilder();
         if (contentText != null && !contentText.isEmpty()) {
@@ -941,7 +952,7 @@ public class ChatCompletionsToResponsesConverter {
                     }
                     toolItem.put("type", "custom_tool_call");
                     toolItem.put("name", custom.get("name").asText());
-                    toolItem.put("input", custom.has("input") ? custom.get("input").asText() : "");
+                    toolItem.put("input", textOrDefault(custom.get("input"), ""));
                 } else if (tc.has("function")) {
                     JsonNode func = tc.get("function");
                     if (isBlankText(func.get("name"))) {
@@ -950,7 +961,7 @@ public class ChatCompletionsToResponsesConverter {
                     }
                     toolItem.put("type", "function_call");
                     toolItem.put("name", func.get("name").asText());
-                    String args = func.has("arguments") ? func.get("arguments").asText() : "{}";
+                    String args = textOrDefault(func.get("arguments"), "{}");
                     toolItem.put("arguments", args.isEmpty() ? "{}" : args);
                 } else {
                     log.debug("Chat→Responses request: tool_call missing function/custom payload, ignored");
@@ -969,7 +980,7 @@ public class ChatCompletionsToResponsesConverter {
             String name = fc.get("name").asText();
             funcItem.put("call_id", name);
             funcItem.put("name", name);
-            String args = fc.has("arguments") ? fc.get("arguments").asText() : "{}";
+            String args = textOrDefault(fc.get("arguments"), "{}");
             funcItem.put("arguments", args.isEmpty() ? "{}" : args);
             input.add(funcItem);
         }
@@ -1044,24 +1055,23 @@ public class ChatCompletionsToResponsesConverter {
             StringBuilder sb = new StringBuilder();
             List<String> reasoningTexts = new ArrayList<>();
             for (JsonNode part : content) {
-                String partType = part.has("type") ? part.get("type").asText() : "";
+                String partType = textOrDefault(part.get("type"), "");
                 if ("thinking".equals(partType) || "reasoning".equals(partType)) {
-                    String thinkingText = part.has("thinking") ? part.get("thinking").asText()
-                            : part.has("text") ? part.get("text").asText() : "";
+                    String thinkingText = textOrDefault(part.get("thinking"), textOrDefault(part.get("text"), ""));
                     if (!thinkingText.isEmpty()) {
                         reasoningTexts.add(thinkingText);
                     }
-                } else if ("refusal".equals(partType) && part.has("refusal")) {
+                } else if ("refusal".equals(partType) && !isBlankText(part.get("refusal"))) {
                     if (sb.length() > 0) sb.append("\n");
                     sb.append(part.get("refusal").asText());
-                } else if (part.has("text")) {
+                } else if (!isBlankText(part.get("text"))) {
                     if (sb.length() > 0) sb.append("\n");
                     sb.append(part.get("text").asText());
                 }
             }
             return new ParsedAssistantContent(sb.toString(), reasoningTexts);
         }
-        return new ParsedAssistantContent(content.asText(), List.of());
+        return new ParsedAssistantContent("", List.of());
     }
 
     private record ParsedAssistantContent(String text, List<String> reasoningTexts) {}
@@ -1075,7 +1085,7 @@ public class ChatCompletionsToResponsesConverter {
         if (content.isArray()) {
             StringBuilder sb = new StringBuilder();
             for (JsonNode part : content) {
-                if (part.has("text")) {
+                if (!isBlankText(part.get("text"))) {
                     if (sb.length() > 0) sb.append("\n");
                     sb.append(part.get("text").asText());
                 } else if (part.isTextual()) {
@@ -1085,7 +1095,7 @@ public class ChatCompletionsToResponsesConverter {
             }
             return sb.toString();
         }
-        return content.asText();
+        return "";
     }
 
     // ========================
@@ -1165,7 +1175,10 @@ public class ChatCompletionsToResponsesConverter {
             ObjectNode obj = JSON.createObjectNode();
             obj.put("type", "allowed_tools");
             JsonNode allowed = toolChoice.get("allowed_tools");
-            copyIfExists(allowed, obj, "mode");
+            String mode = normalizeAllowedToolsMode(allowed.get("mode"));
+            if (mode != null) {
+                obj.put("mode", mode);
+            }
             if (allowed.has("tools") && allowed.get("tools").isArray()) {
                 ArrayNode tools = JSON.createArrayNode();
                 for (JsonNode tool : allowed.get("tools")) {
@@ -1208,6 +1221,35 @@ public class ChatCompletionsToResponsesConverter {
         return null;
     }
 
+    private static JsonNode convertChatCustomToolFormatToResponses(JsonNode format) {
+        if (format == null || !format.isObject() || isBlankText(format.get("type"))) return null;
+        String type = format.get("type").asText();
+        ObjectNode normalized = JSON.createObjectNode();
+        if ("text".equals(type)) {
+            normalized.put("type", "text");
+            return normalized;
+        }
+        if ("grammar".equals(type)) {
+            JsonNode grammar = format.get("grammar");
+            if (grammar == null || !grammar.isObject()) return null;
+            String syntax = normalizeCustomToolGrammarSyntax(grammar.get("syntax"));
+            if (syntax == null || isBlankText(grammar.get("definition"))) return null;
+            normalized.put("type", "grammar");
+            normalized.put("syntax", syntax);
+            normalized.put("definition", grammar.get("definition").asText());
+            return normalized;
+        }
+        return null;
+    }
+
+    private static String normalizeCustomToolGrammarSyntax(JsonNode syntax) {
+        if (syntax == null || !syntax.isTextual()) return null;
+        return switch (syntax.asText()) {
+            case "lark", "regex" -> syntax.asText();
+            default -> null;
+        };
+    }
+
     /**
      * 检测 base64 data URI 是否为空载荷。
      */
@@ -1228,13 +1270,65 @@ public class ChatCompletionsToResponsesConverter {
 
     private static JsonNode normalizeStopSequences(JsonNode stop) {
         if (stop == null || stop.isNull()) return null;
-        if (stop.isArray()) return stop;
+        ArrayNode arr = JSON.createArrayNode();
+        if (stop.isArray()) {
+            for (JsonNode item : stop) {
+                if (item.isTextual() && !item.asText().isBlank()) {
+                    arr.add(item.asText());
+                }
+            }
+            return arr.isEmpty() ? null : arr;
+        }
         if (stop.isTextual()) {
-            ArrayNode arr = JSON.createArrayNode();
-            arr.add(stop.asText());
+            String text = stop.asText();
+            if (text.isBlank()) {
+                return null;
+            }
+            arr.add(text);
             return arr;
         }
         return null;
+    }
+
+    private static boolean isPositiveInt(JsonNode node) {
+        return node != null && node.isIntegralNumber() && node.canConvertToInt() && node.asInt() > 0;
+    }
+
+    private static boolean isNonNegativeInt(JsonNode node) {
+        return node != null && node.isIntegralNumber() && node.canConvertToInt() && node.asInt() >= 0;
+    }
+
+    private static boolean isNonNegativeLong(JsonNode node) {
+        return node != null && node.isIntegralNumber() && node.canConvertToLong() && node.asLong() >= 0;
+    }
+
+    private static int nonNegativeIntOrZero(JsonNode node) {
+        return isNonNegativeInt(node) ? node.asInt() : 0;
+    }
+
+    private static int nonNegativeIntOrDefault(JsonNode node, int defaultValue) {
+        return isNonNegativeInt(node) ? node.asInt() : defaultValue;
+    }
+
+    private static boolean isValidTopLogprobs(JsonNode node) {
+        return node != null && node.isIntegralNumber() && node.canConvertToInt()
+                && node.asInt() >= 0 && node.asInt() <= 20;
+    }
+
+    private static String normalizeChatReasoningEffort(JsonNode node) {
+        if (node == null || !node.isTextual()) return null;
+        return switch (node.asText()) {
+            case "minimal", "low", "medium", "high", "xhigh" -> node.asText();
+            default -> null;
+        };
+    }
+
+    private static String normalizeVerbosity(JsonNode node) {
+        if (node == null || !node.isTextual()) return null;
+        return switch (node.asText()) {
+            case "low", "medium", "high" -> node.asText();
+            default -> null;
+        };
     }
 
     private static JsonNode normalizeToolParameters(JsonNode parameters) {
@@ -1248,7 +1342,11 @@ public class ChatCompletionsToResponsesConverter {
     }
 
     private static boolean isBlankText(JsonNode node) {
-        return node == null || node.isNull() || node.asText("").isBlank();
+        return node == null || !node.isTextual() || node.asText().isBlank();
+    }
+
+    private static String textOrDefault(JsonNode node, String defaultValue) {
+        return node != null && node.isTextual() && !node.asText().isBlank() ? node.asText() : defaultValue;
     }
 
     private static JsonNode convertChatResponseFormatToResponses(JsonNode responseFormat) {
@@ -1261,9 +1359,11 @@ public class ChatCompletionsToResponsesConverter {
             ObjectNode format = JSON.createObjectNode();
             format.put("type", "json_schema");
             format.set("name", jsonSchema.get("name"));
-            if (jsonSchema.has("description")) format.set("description", jsonSchema.get("description"));
+            copyTextIfExists(jsonSchema, format, "description");
             format.set("schema", jsonSchema.get("schema"));
-            if (jsonSchema.has("strict")) format.set("strict", jsonSchema.get("strict"));
+            if (jsonSchema.has("strict") && jsonSchema.get("strict").isBoolean()) {
+                format.set("strict", jsonSchema.get("strict"));
+            }
             return format;
         }
         if ("json_object".equals(type) || "text".equals(type)) {
@@ -1278,7 +1378,10 @@ public class ChatCompletionsToResponsesConverter {
         if (webSearchOptions == null || !webSearchOptions.isObject()) return null;
         ObjectNode tool = JSON.createObjectNode();
         tool.put("type", "web_search_preview");
-        copyIfExists(webSearchOptions, tool, "search_context_size");
+        String searchContextSize = normalizeSearchContextSize(webSearchOptions.get("search_context_size"));
+        if (searchContextSize != null) {
+            tool.put("search_context_size", searchContextSize);
+        }
 
         JsonNode userLocation = webSearchOptions.get("user_location");
         if (userLocation != null && userLocation.isObject()) {
@@ -1288,11 +1391,13 @@ public class ChatCompletionsToResponsesConverter {
             if (approximate != null && approximate.isObject()) {
                 ObjectNode location = JSON.createObjectNode();
                 location.put("type", "approximate");
-                copyIfExists(approximate, location, "country");
-                copyIfExists(approximate, location, "region");
-                copyIfExists(approximate, location, "city");
-                copyIfExists(approximate, location, "timezone");
-                tool.set("user_location", location);
+                copyTextIfExists(approximate, location, "country");
+                copyTextIfExists(approximate, location, "region");
+                copyTextIfExists(approximate, location, "city");
+                copyTextIfExists(approximate, location, "timezone");
+                if (location.size() > 1) {
+                    tool.set("user_location", location);
+                }
             }
         }
         return tool;
@@ -1314,6 +1419,35 @@ public class ChatCompletionsToResponsesConverter {
         if (src.has(field) && src.get(field).isTextual() && !src.get(field).asText().isBlank()) {
             dst.set(field, src.get(field));
         }
+    }
+
+    private static void copyBooleanIfExists(JsonNode src, ObjectNode dst, String field) {
+        if (src.has(field) && src.get(field).isBoolean()) dst.set(field, src.get(field));
+    }
+
+    private static void copyNumberIfExists(JsonNode src, ObjectNode dst, String field) {
+        if (src.has(field) && src.get(field).isNumber()) dst.set(field, src.get(field));
+    }
+
+    private static String normalizeSearchContextSize(JsonNode node) {
+        if (node == null || !node.isTextual()) return null;
+        return switch (node.asText()) {
+            case "low", "medium", "high" -> node.asText();
+            default -> null;
+        };
+    }
+
+    private static String normalizeAllowedToolsMode(JsonNode node) {
+        if (node == null || !node.isTextual()) return null;
+        return isSupportedToolChoiceMode(node.asText()) ? node.asText() : null;
+    }
+
+    private static String normalizeImageDetail(JsonNode node) {
+        if (node == null || !node.isTextual()) return null;
+        return switch (node.asText()) {
+            case "auto", "low", "high" -> node.asText();
+            default -> null;
+        };
     }
 
     private static void appendEvent(List<String> output, String event, String data) {

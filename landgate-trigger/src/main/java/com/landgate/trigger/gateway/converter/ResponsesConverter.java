@@ -140,16 +140,16 @@ public class ResponsesConverter implements ProtocolConverter {
                 String json = line.substring(6);
                 try {
                     JsonNode root = JSON.readTree(json);
-                    String type = root.has("type") ? root.get("type").asText() : null;
+                    String type = textOrDefault(root.get("type"), null);
                     if (isTerminalResponseEvent(type)) {
                         JsonNode usage = root.path("response").path("usage");
                         if ((usage.isMissingNode() || usage.isNull()) && root.has("usage")) {
                             usage = root.path("usage");
                         }
                         if (!usage.isMissingNode() && !usage.isNull()) {
-                            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt(0);
-                            inputTokens = Math.max(0, usage.path("input_tokens").asInt(0) - cachedTokens);
-                            outputTokens = usage.path("output_tokens").asInt(0);
+                            int cachedTokens = nonNegativeIntOrZero(usage.path("input_tokens_details").get("cached_tokens"));
+                            inputTokens = Math.max(0, nonNegativeIntOrZero(usage.get("input_tokens")) - cachedTokens);
+                            outputTokens = nonNegativeIntOrZero(usage.get("output_tokens"));
                         }
                         done = true;
                     }
@@ -180,6 +180,16 @@ public class ResponsesConverter implements ProtocolConverter {
                     || "response.done".equals(type)
                     || "response.failed".equals(type)
                     || "response.incomplete".equals(type);
+        }
+
+        private static int nonNegativeIntOrZero(JsonNode node) {
+            return node != null && node.isIntegralNumber() && node.canConvertToInt() && node.asInt() >= 0
+                    ? node.asInt()
+                    : 0;
+        }
+
+        private static String textOrDefault(JsonNode node, String defaultValue) {
+            return node != null && node.isTextual() && !node.asText().isBlank() ? node.asText() : defaultValue;
         }
     }
 }

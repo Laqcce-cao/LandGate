@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("ResponsesConverter 透传转换测试")
@@ -96,6 +97,30 @@ class ResponsesConverterTest {
 
         assertTrue(translator.isDone());
         assertEquals(12, translator.getInputTokens());
+        assertEquals(0, translator.getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("流式非法 usage token 不进入 Responses 直通统计")
+    void invalidUsageTokensIgnoredInPassThroughStats() {
+        StreamTranslator translator = new ResponsesConverter().createStreamToIR("gpt-5.4");
+
+        translator.feed("data: {\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":\"100\",\"output_tokens\":-7,\"input_tokens_details\":{\"cached_tokens\":{\"value\":80}}}}}");
+
+        assertTrue(translator.isDone());
+        assertEquals(0, translator.getInputTokens());
+        assertEquals(0, translator.getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("流式非文本 type 不触发 Responses 直通终止统计")
+    void nonTextStreamTypeIgnoredInPassThroughStats() {
+        StreamTranslator translator = new ResponsesConverter().createStreamToIR("gpt-5.4");
+
+        translator.feed("data: {\"type\":{\"value\":\"response.done\"},\"response\":{\"usage\":{\"input_tokens\":100,\"output_tokens\":7}}}");
+
+        assertFalse(translator.isDone());
+        assertEquals(0, translator.getInputTokens());
         assertEquals(0, translator.getOutputTokens());
     }
 

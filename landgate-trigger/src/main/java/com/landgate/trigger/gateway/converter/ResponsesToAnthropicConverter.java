@@ -41,25 +41,23 @@ public class ResponsesToAnthropicConverter {
         try {
             ObjectNode dst = JSON.createObjectNode();
 
-            copyIfExists(ir, dst, "model");
-            copyIfExists(ir, dst, "stream");
+            copyTextIfExists(ir, dst, "model");
+            copyBooleanIfExists(ir, dst, "stream");
             copyTextIfExists(ir, dst, "service_tier");
-            copyIfExists(ir, dst, "temperature");
-            copyIfExists(ir, dst, "top_p");
+            copyNumberIfExists(ir, dst, "temperature");
+            copyNumberIfExists(ir, dst, "top_p");
             copyObjectIfExists(ir, dst, "metadata");
 
-            // max_output_tokens → max_tokens（无值时默认 8192）
-            if (ir.has("max_output_tokens")) {
-                int maxTokens = ir.get("max_output_tokens").asInt();
-                dst.put("max_tokens", maxTokens > 0 ? maxTokens : 8192);
-            } else {
-                dst.put("max_tokens", 8192);
-            }
+            // Anthropic max_tokens is required; if Responses omits it or sends an invalid value,
+            // use the gateway default instead of forwarding a malformed limit.
+            dst.put("max_tokens", isPositiveInt(ir.get("max_output_tokens"))
+                    ? ir.get("max_output_tokens").asInt()
+                    : 8192);
 
             // 内部 IR stop 扩展 → Anthropic stop_sequences
-            if (ir.has("_landgate_stop_sequences") && ir.get("_landgate_stop_sequences").isArray()
-                    && ir.get("_landgate_stop_sequences").size() > 0) {
-                dst.set("stop_sequences", ir.get("_landgate_stop_sequences"));
+            JsonNode stopSequences = normalizeStopSequences(ir.get("_landgate_stop_sequences"));
+            if (stopSequences != null) {
+                dst.set("stop_sequences", stopSequences);
             }
 
             // input[] → system + messages[]
@@ -72,8 +70,8 @@ public class ResponsesToAnthropicConverter {
                 JsonNode inputNode = ir.get("input");
                 if (inputNode.isArray()) {
                     for (JsonNode item : inputNode) {
-                        String role = item.has("role") ? item.get("role").asText() : null;
-                        String itemType = item.has("type") ? item.get("type").asText() : null;
+                        String role = textOrDefault(item.get("role"), null);
+                        String itemType = textOrDefault(item.get("type"), null);
 
                         // system/developer role → 提取到 Anthropic 顶层 system
                         if ("system".equals(role) || "developer".equals(role)) {
@@ -122,7 +120,7 @@ public class ResponsesToAnthropicConverter {
             // messages 数组构建
             ArrayNode messages = JSON.createArrayNode();
             for (JsonNode item : inputItems) {
-                String role = item.has("role") ? item.get("role").asText() : null;
+                String role = textOrDefault(item.get("role"), null);
                 if (role == null) continue;
 
                 switch (role) {
@@ -182,7 +180,8 @@ public class ResponsesToAnthropicConverter {
 
             // --- tool_choice ---
             boolean disableParallelToolUse = ir.has("parallel_tool_calls")
-                    && !ir.get("parallel_tool_calls").asBoolean(true);
+                    && ir.get("parallel_tool_calls").isBoolean()
+                    && !ir.get("parallel_tool_calls").asBoolean();
             if (ir.has("tool_choice")) {
                 JsonNode toolChoice = convertResponsesToolChoiceToAnthropic(ir.get("tool_choice"));
                 if (toolChoice instanceof ObjectNode objectNode && disableParallelToolUse) {
@@ -205,13 +204,14 @@ public class ResponsesToAnthropicConverter {
 
             // --- reasoning.effort → output_config.effort + thinking ---
             if (ir.has("reasoning") && ir.get("reasoning").has("effort")) {
-                String effort = ir.get("reasoning").get("effort").asText();
-                String anthropicEffort = mapResponsesEffortToAnthropic(effort);
-                ObjectNode outputConfig = JSON.createObjectNode();
-                outputConfig.put("effort", anthropicEffort);
-                dst.set("output_config", outputConfig);
+                String anthropicEffort = mapResponsesEffortToAnthropic(ir.get("reasoning").get("effort"));
+                if (anthropicEffort != null) {
+                    ObjectNode outputConfig = JSON.createObjectNode();
+                    outputConfig.put("effort", anthropicEffort);
+                    dst.set("output_config", outputConfig);
+                }
 
-                if (!"low".equals(anthropicEffort)) {
+                if (anthropicEffort != null && !"low".equals(anthropicEffort)) {
                     ObjectNode thinking = JSON.createObjectNode();
                     thinking.put("type", "enabled");
                     thinking.put("budget_tokens", defaultThinkingBudget(anthropicEffort));
@@ -237,11 +237,11 @@ public class ResponsesToAnthropicConverter {
         try {
             ObjectNode dst = JSON.createObjectNode();
 
-            dst.put("id", ir.has("id") ? ir.get("id").asText()
-                    : "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24));
+            dst.put("id", textOrDefault(ir.get("id"),
+                    "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24)));
             dst.put("type", "message");
             dst.put("role", "assistant");
-            dst.put("model", ir.has("model") ? ir.get("model").asText() : "unknown");
+            dst.put("model", textOrDefault(ir.get("model"), "unknown"));
 
             // output[] → content[]
             ArrayNode content = JSON.createArrayNode();
@@ -249,7 +249,7 @@ public class ResponsesToAnthropicConverter {
 
             if (ir.has("output") && ir.get("output").isArray()) {
                 for (JsonNode item : ir.get("output")) {
-                    String itemType = item.has("type") ? item.get("type").asText() : "";
+                    String itemType = textOrDefault(item.get("type"), "");
 
                     switch (itemType) {
                         case "reasoning" -> {
@@ -259,16 +259,18 @@ public class ResponsesToAnthropicConverter {
                             JsonNode msgContent = item.get("content");
                             if (msgContent != null && msgContent.isArray()) {
                                 for (JsonNode part : msgContent) {
-                                    String partType = part.has("type") ? part.get("type").asText() : "";
-                                    if ("output_text".equals(partType)) {
+                                    String partType = textOrDefault(part.get("type"), "");
+                                    String text = textOrDefault(part.get("text"), "");
+                                    String refusal = textOrDefault(part.get("refusal"), "");
+                                    if ("output_text".equals(partType) && !text.isEmpty()) {
                                         ObjectNode textBlock = JSON.createObjectNode();
                                         textBlock.put("type", "text");
-                                        textBlock.put("text", part.has("text") ? part.get("text").asText() : "");
+                                        textBlock.put("text", text);
                                         content.add(textBlock);
-                                    } else if ("refusal".equals(partType)) {
+                                    } else if ("refusal".equals(partType) && !refusal.isEmpty()) {
                                         ObjectNode textBlock = JSON.createObjectNode();
                                         textBlock.put("type", "text");
-                                        textBlock.put("text", part.has("refusal") ? part.get("refusal").asText() : "");
+                                        textBlock.put("text", refusal);
                                         content.add(textBlock);
                                     }
                                 }
@@ -284,7 +286,7 @@ public class ResponsesToAnthropicConverter {
                             toolUse.put("type", "tool_use");
                             toolUse.put("id", fromResponsesCallID(item.get("call_id").asText()));
                             toolUse.put("name", item.get("name").asText());
-                            String args = item.has("arguments") ? item.get("arguments").asText() : "{}";
+                            String args = textOrDefault(item.get("arguments"), "{}");
                             args = sanitizeAnthropicToolUseInput(item.get("name").asText(), args);
                             try {
                                 toolUse.set("input", JSON.readTree(args));
@@ -306,19 +308,16 @@ public class ResponsesToAnthropicConverter {
             dst.set("content", content);
 
             // stop_reason
-            String status = ir.has("status") ? ir.get("status").asText() : "completed";
+            String status = textOrDefault(ir.get("status"), "completed");
             String stopReason = mapResponsesStatusToAnthropicStopReason(status, ir, hasToolUse);
             dst.put("stop_reason", stopReason);
 
             // usage
             if (ir.has("usage")) {
                 JsonNode usage = ir.get("usage");
-                int inputTokens = usage.has("input_tokens") ? usage.get("input_tokens").asInt() : 0;
-                int outputTokens = usage.has("output_tokens") ? usage.get("output_tokens").asInt() : 0;
-                int cachedTokens = 0;
-                if (usage.has("input_tokens_details") && usage.get("input_tokens_details").has("cached_tokens")) {
-                    cachedTokens = usage.get("input_tokens_details").get("cached_tokens").asInt();
-                }
+                int inputTokens = nonNegativeIntOrZero(usage.get("input_tokens"));
+                int outputTokens = nonNegativeIntOrZero(usage.get("output_tokens"));
+                int cachedTokens = nonNegativeIntOrZero(usage.path("input_tokens_details").get("cached_tokens"));
 
                 // Anthropic input_tokens 不包含缓存 token（减去 cached_tokens，最小为 0）
                 int anthropicInputTokens = Math.max(inputTokens - cachedTokens, 0);
@@ -398,7 +397,7 @@ public class ResponsesToAnthropicConverter {
             String json = line.substring(6);
             try {
                 JsonNode root = JSON.readTree(json);
-                String type = root.has("type") ? root.get("type").asText() : null;
+                String type = textOrDefault(root.get("type"), null);
                 if (type == null) return output;
 
                 switch (type) {
@@ -406,7 +405,7 @@ public class ResponsesToAnthropicConverter {
                         if (!messageStartSent) {
                             if (root.has("response")) {
                                 JsonNode resp = root.get("response");
-                                if (resp.has("model")) model = resp.get("model").asText();
+                                if (!isBlankText(resp.get("model"))) model = resp.get("model").asText();
                             }
                             appendEvent(output, "message_start",
                                     fmt("{\"type\":\"message_start\",\"message\":{\"id\":\"%s\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"%s\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}",
@@ -415,9 +414,10 @@ public class ResponsesToAnthropicConverter {
                         }
                     }
                     case "response.output_item.added" -> {
-                        String itemType = root.has("item") && root.get("item").has("type")
-                                ? root.get("item").get("type").asText() : "";
-                        int outputIndex = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                        String itemType = root.has("item")
+                                ? textOrDefault(root.get("item").get("type"), "")
+                                : "";
+                        int outputIndex = nonNegativeIntOrZero(root.get("output_index"));
 
                         closeCurrentBlock(output);
 
@@ -459,7 +459,7 @@ public class ResponsesToAnthropicConverter {
                         }
                     }
                     case "response.output_text.delta" -> {
-                        String text = root.has("delta") ? root.get("delta").asText() : "";
+                        String text = textOrDefault(root.get("delta"), "");
                         if (!text.isEmpty()) {
                             textDeltasSeen.add(contentKey(root));
                             // 如果没有打开的 text block，自动开始一个
@@ -478,7 +478,7 @@ public class ResponsesToAnthropicConverter {
                         }
                     }
                     case "response.output_text.done" -> {
-                        String text = root.has("text") ? root.get("text").asText() : "";
+                        String text = textOrDefault(root.get("text"), "");
                         int key = contentKey(root);
                         if (!text.isEmpty() && !textDeltasSeen.contains(key)) {
                             if (!contentBlockOpen || !"text".equals(currentBlockType)) {
@@ -499,16 +499,16 @@ public class ResponsesToAnthropicConverter {
                     }
                     case "response.content_part.done" -> {
                         JsonNode part = root.path("part");
-                        String partType = part.path("type").asText("");
+                        String partType = textOrDefault(part.get("type"), "");
                         int key = contentKey(root);
                         if ("output_text".equals(partType) && !textDeltasSeen.contains(key)) {
-                            String text = part.path("text").asText("");
+                            String text = textOrDefault(part.get("text"), "");
                             if (!text.isEmpty()) {
                                 emitTextBlockDelta(output, text);
                                 textDeltasSeen.add(key);
                             }
                         } else if ("refusal".equals(partType) && !refusalDeltasSeen.contains(key)) {
-                            String refusal = part.path("refusal").asText("");
+                            String refusal = textOrDefault(part.get("refusal"), "");
                             if (!refusal.isEmpty()) {
                                 emitTextBlockDelta(output, refusal);
                                 refusalDeltasSeen.add(key);
@@ -517,14 +517,14 @@ public class ResponsesToAnthropicConverter {
                         closeCurrentBlock(output);
                     }
                     case "response.refusal.delta" -> {
-                        String delta = root.has("delta") ? root.get("delta").asText() : "";
+                        String delta = textOrDefault(root.get("delta"), "");
                         if (!delta.isEmpty()) {
                             refusalDeltasSeen.add(contentKey(root));
                             emitTextBlockDelta(output, delta);
                         }
                     }
                     case "response.refusal.done" -> {
-                        String refusal = root.has("refusal") ? root.get("refusal").asText() : "";
+                        String refusal = textOrDefault(root.get("refusal"), "");
                         int key = contentKey(root);
                         if (!refusal.isEmpty() && !refusalDeltasSeen.contains(key)) {
                             emitTextBlockDelta(output, refusal);
@@ -533,9 +533,9 @@ public class ResponsesToAnthropicConverter {
                         closeCurrentBlock(output);
                     }
                     case "response.function_call_arguments.delta" -> {
-                        String delta = root.has("delta") ? root.get("delta").asText() : "";
+                        String delta = textOrDefault(root.get("delta"), "");
                         if (!delta.isEmpty()) {
-                            int outputIdx = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                            int outputIdx = nonNegativeIntOrZero(root.get("output_index"));
                             if (!outputIndexToBlockIdx.containsKey(outputIdx)) {
                                 log.debug("IR→Anthropic stream: function_call arguments delta without valid tool block ignored");
                                 return output;
@@ -554,14 +554,14 @@ public class ResponsesToAnthropicConverter {
                         }
                     }
                     case "response.function_call_arguments.done" -> {
-                        int outputIdx = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                        int outputIdx = nonNegativeIntOrZero(root.get("output_index"));
                         if (!outputIndexToBlockIdx.containsKey(outputIdx)) {
                             log.debug("IR→Anthropic stream: function_call arguments done without valid tool block ignored");
                             return output;
                         }
                         if ("Read".equals(currentToolName) && !currentToolHadDelta) {
                             // Read 工具没有实时 delta：发送完整 arguments
-                            String args = root.has("arguments") ? root.get("arguments").asText() : currentToolArgs;
+                            String args = textOrDefault(root.get("arguments"), currentToolArgs);
                             if (currentToolName != null) {
                                 args = sanitizeAnthropicToolUseInput(currentToolName, args);
                             }
@@ -576,9 +576,9 @@ public class ResponsesToAnthropicConverter {
                         closeCurrentBlock(output);
                     }
                     case "response.reasoning_summary_text.delta", "response.reasoning_text.delta" -> {
-                        String delta = root.has("delta") ? root.get("delta").asText() : "";
+                        String delta = textOrDefault(root.get("delta"), "");
                         if (!delta.isEmpty()) {
-                            int outputIdx = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                            int outputIdx = nonNegativeIntOrZero(root.get("output_index"));
                             reasoningDeltasSeen.add(outputIdx);
                             int idx = findBlockIndex(root);
                             appendEvent(output, "content_block_delta",
@@ -612,7 +612,7 @@ public class ResponsesToAnthropicConverter {
                             appendEvent(output, "content_block_stop",
                                     fmt("{\"type\":\"content_block_stop\",\"index\":%d}", contentBlockIndex));
                         } else if (root.has("item")) {
-                            int outputIndex = root.has("output_index") ? root.get("output_index").asInt() : 0;
+                            int outputIndex = nonNegativeIntOrZero(root.get("output_index"));
                             emitFinalOutputItem(output, outputIndex, root.get("item"));
                         }
                     }
@@ -630,16 +630,18 @@ public class ResponsesToAnthropicConverter {
                         int usageInput = 0, usageOutput = 0, usageCached = 0;
                         if (root.has("usage")) {
                             JsonNode u = root.get("usage");
-                            if (u.has("input_tokens")) usageInput = u.get("input_tokens").asInt();
-                            if (u.has("output_tokens")) usageOutput = u.get("output_tokens").asInt();
-                            if (u.has("input_tokens_details") && u.get("input_tokens_details").has("cached_tokens")) {
+                            if (isNonNegativeInt(u.get("input_tokens"))) usageInput = u.get("input_tokens").asInt();
+                            if (isNonNegativeInt(u.get("output_tokens"))) usageOutput = u.get("output_tokens").asInt();
+                            if (u.has("input_tokens_details")
+                                    && isNonNegativeInt(u.get("input_tokens_details").get("cached_tokens"))) {
                                 usageCached = u.get("input_tokens_details").get("cached_tokens").asInt();
                             }
                         } else if (root.has("response") && root.get("response").has("usage")) {
                             JsonNode u = root.get("response").get("usage");
-                            if (u.has("input_tokens")) usageInput = u.get("input_tokens").asInt();
-                            if (u.has("output_tokens")) usageOutput = u.get("output_tokens").asInt();
-                            if (u.has("input_tokens_details") && u.get("input_tokens_details").has("cached_tokens")) {
+                            if (isNonNegativeInt(u.get("input_tokens"))) usageInput = u.get("input_tokens").asInt();
+                            if (isNonNegativeInt(u.get("output_tokens"))) usageOutput = u.get("output_tokens").asInt();
+                            if (u.has("input_tokens_details")
+                                    && isNonNegativeInt(u.get("input_tokens_details").get("cached_tokens"))) {
                                 usageCached = u.get("input_tokens_details").get("cached_tokens").asInt();
                             }
                         }
@@ -653,11 +655,9 @@ public class ResponsesToAnthropicConverter {
                         if (("response.incomplete".equals(type) || "response.done".equals(type))
                                 && root.has("response")) {
                             JsonNode resp = root.get("response");
-                            String respStatus = resp.has("status") ? resp.get("status").asText() : "";
+                            String respStatus = textOrDefault(resp.get("status"), "");
                             if ("incomplete".equals(respStatus)) {
-                                String incompleteReason = resp.has("incomplete_details")
-                                        && resp.get("incomplete_details").has("reason")
-                                        ? resp.get("incomplete_details").get("reason").asText() : "";
+                                String incompleteReason = textOrDefault(resp.path("incomplete_details").get("reason"), "");
                                 stopReason = "max_output_tokens".equals(incompleteReason) ? "max_tokens" : "end_turn";
                             } else {
                                 stopReason = hasToolCall ? "tool_use" : "end_turn";
@@ -683,20 +683,20 @@ public class ResponsesToAnthropicConverter {
         }
 
         private void emitFinalOutputItem(List<String> output, int outputIndex, JsonNode item) {
-            String itemType = item.path("type").asText("");
+            String itemType = textOrDefault(item.get("type"), "");
             if ("message".equals(itemType) && item.has("content") && item.get("content").isArray()) {
                 for (int contentIndex = 0; contentIndex < item.get("content").size(); contentIndex++) {
                     JsonNode part = item.get("content").get(contentIndex);
-                    String partType = part.path("type").asText("");
+                    String partType = textOrDefault(part.get("type"), "");
                     int key = outputIndex * 10_000 + contentIndex;
                     if ("output_text".equals(partType) && !textDeltasSeen.contains(key)) {
-                        String text = part.path("text").asText("");
+                        String text = textOrDefault(part.get("text"), "");
                         if (!text.isEmpty()) {
                             emitTextBlockDelta(output, text);
                             textDeltasSeen.add(key);
                         }
                     } else if ("refusal".equals(partType) && !refusalDeltasSeen.contains(key)) {
-                        String refusal = part.path("refusal").asText("");
+                        String refusal = textOrDefault(part.get("refusal"), "");
                         if (!refusal.isEmpty()) {
                             emitTextBlockDelta(output, refusal);
                             refusalDeltasSeen.add(key);
@@ -723,7 +723,7 @@ public class ResponsesToAnthropicConverter {
                             fmt("{\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"tool_use\",\"id\":\"%s\",\"name\":\"%s\",\"input\":{}}}",
                                     blockIndex, escapeJsonValue(callId), escapeJsonValue(currentToolName)));
                 }
-                String arguments = item.path("arguments").asText("");
+                String arguments = textOrDefault(item.get("arguments"), "");
                 if (!arguments.isEmpty() && !toolArgumentDeltasSeen.contains(outputIndex)) {
                     if (currentToolName != null) {
                         arguments = sanitizeAnthropicToolUseInput(currentToolName, arguments);
@@ -767,7 +767,7 @@ public class ResponsesToAnthropicConverter {
         }
 
         private int findBlockIndex(JsonNode root) {
-            if (root.has("output_index")) {
+            if (isNonNegativeInt(root.get("output_index"))) {
                 int oi = root.get("output_index").asInt();
                 return outputIndexToBlockIdx.getOrDefault(oi, contentBlockIndex);
             }
@@ -790,8 +790,8 @@ public class ResponsesToAnthropicConverter {
         }
 
         private int contentKey(JsonNode root) {
-            int outputIdx = root.has("output_index") ? root.get("output_index").asInt() : 0;
-            int contentIdx = root.has("content_index") ? root.get("content_index").asInt() : 0;
+            int outputIdx = nonNegativeIntOrZero(root.get("output_index"));
+            int contentIdx = nonNegativeIntOrZero(root.get("content_index"));
             return outputIdx * 10_000 + contentIdx;
         }
 
@@ -860,7 +860,7 @@ public class ResponsesToAnthropicConverter {
         toolResult.put("type", "tool_result");
         toolResult.put("tool_use_id", fromResponsesCallIDToAnthropic(item.get("call_id").asText()));
         // output 字段 → tool_result content
-        String output = item.has("output") ? item.get("output").asText() : "";
+        String output = textOrDefault(item.get("output"), "");
         ArrayNode trContent = JSON.createArrayNode();
         ObjectNode trText = JSON.createObjectNode();
         trText.put("type", "text");
@@ -882,7 +882,7 @@ public class ResponsesToAnthropicConverter {
         if (content.isArray()) {
             ArrayNode blocks = JSON.createArrayNode();
             for (JsonNode part : content) {
-                String partType = part.has("type") ? part.get("type").asText() : "";
+                String partType = textOrDefault(part.get("type"), "");
                 switch (partType) {
                     case "input_text", "text" -> {
                         if (isBlankText(part.get("text"))) {
@@ -894,7 +894,7 @@ public class ResponsesToAnthropicConverter {
                         blocks.add(textBlock);
                     }
                     case "input_image" -> {
-                        String imageUrl = part.has("image_url") ? part.get("image_url").asText() : "";
+                        String imageUrl = textOrDefault(part.get("image_url"), "");
                         ObjectNode source = dataURIToAnthropicImageSource(imageUrl);
                         if (source != null) {
                             ObjectNode imageBlock = JSON.createObjectNode();
@@ -909,7 +909,12 @@ public class ResponsesToAnthropicConverter {
                             blocks.add(documentBlock);
                         }
                     }
-                    case "tool_result" -> blocks.add(part);
+                    case "tool_result" -> {
+                        JsonNode toolResult = sanitizeAnthropicToolResultBlock(part);
+                        if (toolResult != null) {
+                            blocks.add(toolResult);
+                        }
+                    }
                     default ->
                         log.debug("Responses→Anthropic: unknown user content part type '{}'", partType);
                 }
@@ -917,7 +922,7 @@ public class ResponsesToAnthropicConverter {
             if (blocks.size() == 0) return null;
             return blocks;
         }
-        return content;
+        return null;
     }
 
     /**
@@ -929,10 +934,10 @@ public class ResponsesToAnthropicConverter {
         if (part == null || !part.isObject()) return null;
 
         ObjectNode source = JSON.createObjectNode();
-        if (part.has("file_url") && !part.get("file_url").asText().isBlank()) {
+        if (!isBlankText(part.get("file_url"))) {
             source.put("type", "url");
             source.put("url", part.get("file_url").asText());
-        } else if (part.has("file_data") && !part.get("file_data").asText().isBlank()) {
+        } else if (!isBlankText(part.get("file_data"))) {
             String fileData = part.get("file_data").asText();
             String mediaType = "application/pdf";
             String data = fileData;
@@ -949,7 +954,7 @@ public class ResponsesToAnthropicConverter {
             source.put("type", "base64");
             source.put("media_type", mediaType);
             source.put("data", data);
-        } else if (part.has("file_id") && !part.get("file_id").asText().isBlank()) {
+        } else if (!isBlankText(part.get("file_id"))) {
             source.put("type", "file");
             source.put("file_id", part.get("file_id").asText());
         } else {
@@ -958,7 +963,7 @@ public class ResponsesToAnthropicConverter {
 
         ObjectNode documentBlock = JSON.createObjectNode();
         documentBlock.put("type", "document");
-        if (part.has("filename") && !part.get("filename").asText().isBlank()) {
+        if (!isBlankText(part.get("filename"))) {
             documentBlock.put("title", part.get("filename").asText());
         }
         documentBlock.set("source", source);
@@ -982,9 +987,9 @@ public class ResponsesToAnthropicConverter {
         if (content.isArray()) {
             ArrayNode blocks = JSON.createArrayNode();
             for (JsonNode part : content) {
-                String partType = part.has("type") ? part.get("type").asText() : "";
+                String partType = textOrDefault(part.get("type"), "");
                 if ("output_text".equals(partType) || "text".equals(partType)) {
-                    String text = part.has("text") ? part.get("text").asText() : "";
+                    String text = textOrDefault(part.get("text"), "");
                     if (text.isEmpty()) {
                         continue;
                     }
@@ -992,17 +997,88 @@ public class ResponsesToAnthropicConverter {
                     textBlock.put("type", "text");
                     textBlock.put("text", text);
                     blocks.add(textBlock);
-                } else if ("thinking".equals(partType) || "redacted_thinking".equals(partType)) {
-                    blocks.add(part);
+                } else if ("thinking".equals(partType)) {
+                    JsonNode thinking = sanitizeAnthropicThinkingBlock(part);
+                    if (thinking != null) {
+                        blocks.add(thinking);
+                    }
+                } else if ("redacted_thinking".equals(partType)) {
+                    JsonNode redacted = sanitizeAnthropicRedactedThinkingBlock(part);
+                    if (redacted != null) {
+                        blocks.add(redacted);
+                    }
                 } else if ("tool_use".equals(partType)) {
-                    // tool_use 块透传
-                    blocks.add(part);
+                    JsonNode toolUse = sanitizeAnthropicToolUseBlock(part);
+                    if (toolUse != null) {
+                        blocks.add(toolUse);
+                    }
                 }
             }
             if (blocks.size() == 0) return null;
             return blocks;
         }
-        return content;
+        return null;
+    }
+
+    private static JsonNode sanitizeAnthropicToolResultBlock(JsonNode part) {
+        if (part == null || !part.isObject() || isBlankText(part.get("tool_use_id"))) return null;
+        ObjectNode toolResult = JSON.createObjectNode();
+        toolResult.put("type", "tool_result");
+        toolResult.put("tool_use_id", part.get("tool_use_id").asText());
+        JsonNode content = part.get("content");
+        if (content == null || content.isNull()) {
+            toolResult.set("content", JSON.createArrayNode());
+        } else if (content.isTextual()) {
+            toolResult.put("content", content.asText());
+        } else if (content.isArray()) {
+            ArrayNode blocks = JSON.createArrayNode();
+            for (JsonNode block : content) {
+                String type = textOrDefault(block.get("type"), "");
+                if ("text".equals(type) && block.has("text") && block.get("text").isTextual()) {
+                    ObjectNode textBlock = JSON.createObjectNode();
+                    textBlock.put("type", "text");
+                    textBlock.put("text", block.get("text").asText());
+                    blocks.add(textBlock);
+                }
+            }
+            toolResult.set("content", blocks);
+        } else {
+            toolResult.set("content", JSON.createArrayNode());
+        }
+        return toolResult;
+    }
+
+    private static JsonNode sanitizeAnthropicThinkingBlock(JsonNode part) {
+        String thinking = textOrDefault(part.get("thinking"), "");
+        if (thinking.isEmpty()) return null;
+        ObjectNode block = JSON.createObjectNode();
+        block.put("type", "thinking");
+        block.put("thinking", thinking);
+        copyTextIfExists(part, block, "signature");
+        return block;
+    }
+
+    private static JsonNode sanitizeAnthropicRedactedThinkingBlock(JsonNode part) {
+        String data = textOrDefault(part.get("data"), "");
+        if (data.isEmpty()) return null;
+        ObjectNode block = JSON.createObjectNode();
+        block.put("type", "redacted_thinking");
+        block.put("data", data);
+        return block;
+    }
+
+    private static JsonNode sanitizeAnthropicToolUseBlock(JsonNode part) {
+        if (part == null || !part.isObject() || isBlankText(part.get("id")) || isBlankText(part.get("name"))) {
+            return null;
+        }
+        ObjectNode block = JSON.createObjectNode();
+        block.put("type", "tool_use");
+        block.put("id", part.get("id").asText());
+        block.put("name", part.get("name").asText());
+        block.set("input", part.has("input") && part.get("input").isObject()
+                ? part.get("input")
+                : JSON.createObjectNode());
+        return block;
     }
 
     /**
@@ -1101,7 +1177,10 @@ public class ResponsesToAnthropicConverter {
             ObjectNode ws = JSON.createObjectNode();
             ws.put("type", "web_search_20250305");
             ws.put("name", "web_search");
-            copyObjectIfExists(tool, ws, "user_location");
+            ObjectNode userLocation = normalizeWebSearchUserLocation(tool.get("user_location"));
+            if (userLocation != null) {
+                ws.set("user_location", userLocation);
+            }
             return ws;
         }
         // function tool → Anthropic tool
@@ -1109,7 +1188,7 @@ public class ResponsesToAnthropicConverter {
             if (isBlankText(tool.get("name"))) return null;
             ObjectNode func = JSON.createObjectNode();
             func.put("name", tool.get("name").asText());
-            if (tool.has("description")) func.put("description", tool.get("description").asText());
+            copyTextIfExists(tool, func, "description");
             JsonNode params = tool.has("parameters") ? tool.get("parameters") : null;
             func.set("input_schema", normalizeInputSchema(params));
             return func;
@@ -1183,10 +1262,28 @@ public class ResponsesToAnthropicConverter {
 
     /**
      * Responses effort → Anthropic effort。
-     * xhigh→max，其余透传。
+     * minimal→low，low/medium/high 保持同名，xhigh→max；none/未知值不透传。
      */
-    private static String mapResponsesEffortToAnthropic(String effort) {
-        return "xhigh".equals(effort) ? "max" : effort;
+    private static String mapResponsesEffortToAnthropic(JsonNode effort) {
+        if (effort == null || !effort.isTextual()) return null;
+        return switch (effort.asText()) {
+            case "minimal", "low" -> "low";
+            case "medium" -> "medium";
+            case "high" -> "high";
+            case "xhigh" -> "max";
+            default -> null;
+        };
+    }
+
+    private static ObjectNode normalizeWebSearchUserLocation(JsonNode userLocation) {
+        if (userLocation == null || !userLocation.isObject()) return null;
+        ObjectNode normalized = JSON.createObjectNode();
+        copyTextIfExists(userLocation, normalized, "type");
+        copyTextIfExists(userLocation, normalized, "country");
+        copyTextIfExists(userLocation, normalized, "region");
+        copyTextIfExists(userLocation, normalized, "city");
+        copyTextIfExists(userLocation, normalized, "timezone");
+        return normalized.isEmpty() ? null : normalized;
     }
 
     /**
@@ -1211,8 +1308,7 @@ public class ResponsesToAnthropicConverter {
      */
     private static String mapResponsesStatusToAnthropicStopReason(String status, JsonNode ir, boolean hasToolUse) {
         if ("incomplete".equals(status)) {
-            if (ir.has("incomplete_details") && ir.get("incomplete_details").has("reason")
-                    && "max_output_tokens".equals(ir.get("incomplete_details").get("reason").asText())) {
+            if ("max_output_tokens".equals(textOrDefault(ir.path("incomplete_details").get("reason"), ""))) {
                 return "max_tokens";
             }
             return "end_turn";
@@ -1227,10 +1323,11 @@ public class ResponsesToAnthropicConverter {
         StringBuilder text = new StringBuilder();
         if (item.has("content") && item.get("content").isArray()) {
             for (JsonNode part : item.get("content")) {
-                String type = part.path("type").asText("");
-                if (("reasoning_text".equals(type) || "text".equals(type)) && part.has("text")) {
+                String type = textOrDefault(part.get("type"), "");
+                String partText = textOrDefault(part.get("text"), "");
+                if (("reasoning_text".equals(type) || "text".equals(type)) && !partText.isEmpty()) {
                     if (text.length() > 0) text.append("\n");
-                    text.append(part.get("text").asText());
+                    text.append(partText);
                 }
             }
         }
@@ -1238,9 +1335,10 @@ public class ResponsesToAnthropicConverter {
 
         if (item.has("summary") && item.get("summary").isArray()) {
             for (JsonNode summary : item.get("summary")) {
-                if (!"summary_text".equals(summary.path("type").asText("")) || !summary.has("text")) continue;
+                String summaryText = textOrDefault(summary.get("text"), "");
+                if (!"summary_text".equals(textOrDefault(summary.get("type"), "")) || summaryText.isEmpty()) continue;
                 if (text.length() > 0) text.append("\n");
-                text.append(summary.get("text").asText());
+                text.append(summaryText);
             }
         }
         return text.toString();
@@ -1248,7 +1346,7 @@ public class ResponsesToAnthropicConverter {
 
     private static void addReasoningBlocks(ArrayNode content, JsonNode item) {
         String text = extractReasoningText(item);
-        String encryptedContent = item.path("encrypted_content").asText("");
+        String encryptedContent = textOrDefault(item.get("encrypted_content"), "");
 
         if (!text.isEmpty() || item.has("content") || item.has("summary")) {
             ObjectNode thinkingBlock = JSON.createObjectNode();
@@ -1367,8 +1465,43 @@ public class ResponsesToAnthropicConverter {
         }
     }
 
+    private static void copyBooleanIfExists(JsonNode src, ObjectNode dst, String field) {
+        if (src.has(field) && src.get(field).isBoolean()) dst.set(field, src.get(field));
+    }
+
+    private static void copyNumberIfExists(JsonNode src, ObjectNode dst, String field) {
+        if (src.has(field) && src.get(field).isNumber()) dst.set(field, src.get(field));
+    }
+
     private static boolean isBlankText(JsonNode node) {
-        return node == null || node.isNull() || node.asText("").isBlank();
+        return node == null || !node.isTextual() || node.asText().isBlank();
+    }
+
+    private static String textOrDefault(JsonNode node, String defaultValue) {
+        return node != null && node.isTextual() && !node.asText().isBlank() ? node.asText() : defaultValue;
+    }
+
+    private static boolean isPositiveInt(JsonNode node) {
+        return node != null && node.isIntegralNumber() && node.canConvertToInt() && node.asInt() > 0;
+    }
+
+    private static boolean isNonNegativeInt(JsonNode node) {
+        return node != null && node.isIntegralNumber() && node.canConvertToInt() && node.asInt() >= 0;
+    }
+
+    private static int nonNegativeIntOrZero(JsonNode node) {
+        return isNonNegativeInt(node) ? node.asInt() : 0;
+    }
+
+    private static JsonNode normalizeStopSequences(JsonNode stop) {
+        if (stop == null || !stop.isArray()) return null;
+        ArrayNode arr = JSON.createArrayNode();
+        for (JsonNode item : stop) {
+            if (item.isTextual() && !item.asText().isBlank()) {
+                arr.add(item.asText());
+            }
+        }
+        return arr.isEmpty() ? null : arr;
     }
 
     private static void appendEvent(List<String> output, String event, String data) {

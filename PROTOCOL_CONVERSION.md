@@ -75,11 +75,11 @@ OpenAI OAuth 账号在本项目中不同于公共 API Key 账号：
 | hosted tools：`file_search`/`computer_use_preview`/`mcp`/`image_generation`/`code_interpreter`/`local_shell` | 只透传 | 不支持 | 不支持 | 保留但不保证内部端点能力 |
 | `tool_choice`：function/custom/allowed_tools | 保真转换 | 保真转换到 Chat 对应嵌套形状 | function/web search 子集保真，其余不支持 | 保留 |
 | `parallel_tool_calls` | 保真转换 | 保真转换 | `false` 转为 Anthropic `tool_choice.disable_parallel_tool_use=true`；无显式 `tool_choice` 时补 `{"type":"auto"}` 承载该字段 | 内部端点剥离 |
-| `max_output_tokens` | 保真转换 | 保真转换到 `max_completion_tokens` | 保真转换到 `max_tokens` | 内部端点剥离 |
+| `max_output_tokens` | 保真转换 | 保真转换到 `max_completion_tokens` | 正整数时转换到 `max_tokens`；缺失或非法时使用 Anthropic 必填字段默认值 | 内部端点剥离 |
 | `temperature` / `top_p` | 保真转换 | 保真转换 | 保真转换 | 内部端点剥离 |
 | `text.format` | 保真转换 | 保真转换到 `response_format` | 不支持 | 保留但不保证内部端点能力 |
-| `text.verbosity` | 保真转换 | 保真转换到 Chat `verbosity` | 不支持 | 保留但不保证内部端点能力 |
-| `reasoning.effort` | 保真转换 | 保真转换到 `reasoning_effort` | 有损转换为 Anthropic `thinking`/`output_config` | 保留但不保证内部端点能力 |
+| `text.verbosity` | 保真转换；仅接受 `low`/`medium`/`high` | 保真转换到 Chat `verbosity` | 不支持 | 保留但不保证内部端点能力 |
+| `reasoning.effort` | 保真转换；内部 IR 仅接受 `none`/`minimal`/`low`/`medium`/`high`/`xhigh` | 可表达子集转换到 `reasoning_effort` | 有损转换为 Anthropic `thinking`/`output_config` | 保留但不保证内部端点能力 |
 | `include` | 只透传 | 仅 `message.output_text.logprobs` 可转为 Chat `logprobs=true` | 不支持 | 内部端点剥离 |
 | `previous_response_id` / `truncation` / `prompt` / `background` / `conversation` / `context_management` | 只透传 | 不支持 | 不支持 | 内部端点剥离 |
 | `metadata` / `user` / `safety_identifier` / `prompt_cache_key` / `prompt_cache_retention` | 保真转换 | Chat 支持子集保真 | Anthropic 仅 `metadata` 子集 | 内部端点剥离 |
@@ -132,8 +132,8 @@ OpenAI OAuth 账号在本项目中不同于公共 API Key 账号：
 | `tool_choice` function/custom/allowed_tools | 保真转换到 Responses 扁平形状 | function 子集保真 |
 | `web_search_options` | 有损转换到 Responses web search hosted tool | 有损转换到 Anthropic web search tool |
 | `response_format` | 保真转换到 `text.format` | 不支持 |
-| `reasoning_effort` | 保真转换到 `reasoning.effort` | 有损转换到 thinking |
-| `verbosity` | 保真转换到 `text.verbosity` | 不支持 |
+| `reasoning_effort` | 仅官方可表达枚举转换到 `reasoning.effort` | 有损转换到 thinking |
+| `verbosity` | 仅 `low`/`medium`/`high` 转换到 `text.verbosity` | 不支持 |
 | `logprobs` / `top_logprobs` | 有损转换为 Responses include/request intent | 不支持 |
 | `store` | 保真转换到 Responses；未传默认 `false` | 不支持 |
 | `stop` | 内部扩展 `_landgate_stop_sequences` | 保真转换到 Anthropic `stop_sequences` |
@@ -210,6 +210,34 @@ Responses `status=incomplete` 反向转 Chat 时，`incomplete_details.reason=co
 | Anthropic API Key | Anthropic Messages 官方 headers/body | Messages 协议转换保真 |
 | Anthropic OAuth/Claude Code mimicry | Claude Code 兼容行为 | 只作用于 Anthropic OAuth 请求规范化，不进入 OpenAI/Gemini 转换 |
 
+## 响应 usage 约束
+
+OpenAI Chat/Responses 与 Anthropic Messages 的 usage token 字段都按整数计数字段处理。LandGate 在响应和流式终止事件转换中只接受 JSON 非负整数；字符串、对象、数组、浮点数或负数不会被强制解析为 token。缺失或非法的 token 字段在必须输出目标协议 usage envelope 时按 0 处理，且不会生成 cached/reasoning token 明细。
+
+Anthropic → Responses 时，Responses `usage.input_tokens` 仍按 Anthropic 官方语义汇总为 `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`，但三者都必须是非负整数才参与计算。Responses → Anthropic 时，`input_tokens_details.cached_tokens` 只有在非负整数时才用于扣减 Anthropic `input_tokens`，只有正整数时才输出 `cache_read_input_tokens`。
+
+## 终止状态与错误字段约束
+
+跨协议终止语义必须按官方字段类型读取。Chat `finish_reason`、Responses `status`、Responses `incomplete_details.reason`、Anthropic `stop_reason`、Anthropic stream `error.type/message` 以及 Responses stream event `type` 都只接受非空 JSON 字符串；数字、对象、数组、布尔值或空白字符串不会被强制转成有效枚举。
+
+这条规则直接影响终止状态映射：非文本 `finish_reason` 不会触发 Responses `incomplete/max_output_tokens/content_filter`；非文本 Responses `status` 或 `incomplete_details.reason` 不会降级为 Chat `length/content_filter` 或 Anthropic `max_tokens`；非文本 Anthropic `stop_reason` 不会触发 Responses incomplete；非文本 stream `type` 不会触发终止事件、错误事件或 usage 统计提取。Anthropic stream error 的 `type/message` 若不是非空文本，则使用兼容默认值 `api_error` 和 `Anthropic stream error`。
+
+## 文本字段约束
+
+本文档中的“非空字符串”均指 JSON string 类型且 `trim` 后非空；不能用 Jackson `asText()` 语义把数字、布尔、对象或数组强制转换为协议文本字段。该规则适用于 `model`、`id`、`call_id`、`name`、`tool_call_id`、`tool_use_id`、`function.name`、`custom.name`、`input_text/text/refusal/reasoning_text/summary_text`、文件和图片 URL/data/id/name 等字段。
+
+因此，工具调用归属字段只接受真实文本：Chat `tool_calls[].id` / `function.name` / `custom.name`、Chat `tool.tool_call_id`、legacy `function.name`、Responses `function_call.call_id/name`、Responses `function_call_output.call_id`、Anthropic `tool_use.id/name`、Anthropic `tool_result.tool_use_id` 若为数字、布尔、对象或数组，均视为缺失，不构造 tool call/tool_use/tool_result。
+
+可见内容和文件载荷也遵守同一规则：消息 `text/refusal/output`、reasoning 明文、Anthropic document `title/source.url/source.data/source.file_id/source.filename`、Responses `input_file.file_url/file_data/file_id/filename`、image URL/data 等字段若不是 JSON string，不会被转换为用户可见文本、tool result 文本、Anthropic document 或 Responses `input_file`。
+
+Chat ↔ Responses 非流式转换同样不能用类型强制兜底：Chat `message.content/refusal/reasoning_content`、content part `text/refusal/thinking`、`image_url.url`、tool/custom `arguments/input`、tool/function message `content`，以及 Responses `input/output` message content part `text/refusal`、`function_call.arguments`、`custom_tool_call.input`、`function_call_output.output` 只有在源字段为 JSON string 时才转换。字段缺失或类型非法时，工具参数按目标协议默认空字符串或 `{}` 表达，用户可见文本和 reasoning 明文则不生成。
+
+Anthropic ↔ Responses 非流式响应也遵守同一规则：Anthropic response `id/model`、content block `type/text/thinking/signature/data` 以及 Responses response `id/model`、output message `text/refusal`、reasoning 明文和 `encrypted_content` 只接受 JSON string。Anthropic `thinking` 或 `redacted_thinking` 若没有有效明文、summary 或 encrypted payload，不生成空 Responses `reasoning` item；Responses 非文本 `function_call.arguments` 降级到 Anthropic `tool_use.input` 时使用空对象语义，不把对象/数字/布尔强制编码成字符串参数。
+
+Anthropic 请求侧的 image/document/thinking 也必须遵守真实字符串边界：image `source.type/url/media_type/data`、document source 字段、assistant `thinking/signature` 和 `redacted_thinking.data` 若不是 JSON string，不会生成 Responses `input_image/input_file/reasoning`。其中 image `media_type` 缺失或空白时才使用 `image/png` 默认值，非文本 `media_type` 不会被对象/布尔字符串化。
+
+Responses → Anthropic 请求侧不原样透传不可转换的 message content。Responses input message 的 `role/type` 只接受 JSON string；`content` 只接受 JSON string 或可转换的 content part 数组，对象、数字、布尔等非法形状会跳过该消息。数组中仅保留可表达为 Anthropic `text/image/document/tool_result/thinking/redacted_thinking/tool_use` 的有效 block；非文本 `parallel_tool_calls` 不会生成 Anthropic `disable_parallel_tool_use`。
+
 ## 请求转换矩阵
 
 ### Chat Completions 到 Responses IR
@@ -227,23 +255,24 @@ Responses `status=incomplete` 反向转 Chat 时，`incomplete_details.reason=co
 - `prompt_cache_key`
 - `prompt_cache_retention`
 - `parallel_tool_calls`
-- `top_logprobs`
+- `top_logprobs` 仅保留 0 到 20 的整数值
 - `max_completion_tokens` 或 `max_tokens` 映射到 `max_output_tokens`，不做截断
-- `reasoning_effort` 映射到 `reasoning.effort`
-- `response_format` 映射到 `text.format`；`json_schema` 必须有非空 `json_schema.name` 和 `schema`，缺失则不构造不完整的 Responses `text.format`
-- `verbosity` 映射到 `text.verbosity`
-- `logprobs=true` 映射为 Responses `include=["message.output_text.logprobs"]`
+- `reasoning_effort` 仅在值为 `minimal`/`low`/`medium`/`high`/`xhigh` 时映射到 `reasoning.effort`，并请求 `include=["reasoning.encrypted_content"]`
+- `response_format` 映射到 `text.format`；`json_schema` 必须有非空 `json_schema.name` 和 `schema`，缺失则不构造不完整的 Responses `text.format`；`description` 只保留非空文本，`strict` 只在 JSON boolean 时保留
+- `verbosity` 仅在值为 `low`/`medium`/`high` 时映射到 `text.verbosity`
+- `logprobs` 只在 JSON boolean `true` 时映射为 Responses `include=["message.output_text.logprobs"]`
 - 显式 `store` 保留到 Responses；未传 `store` 时默认写入 `store=false`
-- `stop` 映射到内部 `_landgate_stop_sequences`
+- `stop` 映射到内部 `_landgate_stop_sequences`；只保留非空字符串，数组里的非字符串/空白项会被过滤，过滤后为空则不生成内部字段
 
 `metadata` 只保留对象形态；字符串、数组等非对象 metadata 不透传，避免向 Responses 发送非法 metadata envelope。
-`instructions`、`service_tier`、`user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention` 只保留非空字符串形态；对象/数组等非文本形态不透传。
+`model`、`instructions`、`service_tier`、`user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention` 只保留非空字符串形态；对象/数组等非文本形态不透传。
+`stream`、`store`、`parallel_tool_calls` 只保留 JSON boolean；`temperature`、`top_p` 只保留 JSON number。转换器不把字符串、对象或数组强制转换成目标协议字段。`reasoning_effort`、`verbosity` 只接受官方枚举值，未知字符串不会跨协议透传。
 
 消息映射：
 
 - `system` 和 `developer` 消息转换为相同角色的 input message；数组 content 只抽取非空文本 part，数组里没有有效文本或 content 是不支持对象时，不生成空 Responses instruction/message item。
 - `user` 的文本、图片、音频和文件分片分别转换为 `input_text`、`input_image`、`input_audio` 和 `input_file`。
-- Chat `image_url.detail` 会保留到 Responses `input_image.detail`；空 URL 和空载荷 base64 data URL 会被跳过。
+- Chat `image_url.detail` 仅在值为 `auto`/`low`/`high` 时保留到 Responses `input_image.detail`；空 URL 和空载荷 base64 data URL 会被跳过。
 - Chat 数组 content 中的空 text part 不生成 Responses `input_text`；`input_audio` 只有同时包含非空 `data` 和 `format` 时才转换为 Responses `input_audio`。数组 content 只包含无效、空或不支持 part 时，不生成空 Responses message item。
 - `assistant` 文本转换为 assistant `message` item。
 - Chat 兼容字段 `assistant.reasoning_content` 转换为独立 Responses `reasoning` input item，写入 `content[].reasoning_text.text` 和 summary；不会混入 assistant `output_text`。
@@ -254,20 +283,20 @@ Responses `status=incomplete` 反向转 Chat 时，`incomplete_details.reason=co
 - `tool` 消息转换为 `function_call_output` input item。
 - 旧版 `function` 消息使用 `name` 作为 call id，转换为 `function_call_output` input item。
 - Chat tool/function 消息内容为空或缺少可拍平文本时，Responses `function_call_output.output` 使用空字符串，不写入人工占位文本。
-- Chat `tool_calls[]` 进入 Responses IR 时必须有非空 `id` 和 function/custom `name`；Chat `tool` 消息必须有非空 `tool_call_id`；旧版 `function` 消息和旧版 `assistant.function_call` 必须有非空 `name`。缺失时不构造空 `call_id/name` 的 Responses tool item。旧版 `assistant.function_call` 没有独立 id，只有在 `name` 有效时才沿用 `name` 作为 `call_id`。
+- Chat `tool_calls[]` 进入 Responses IR 时必须有非空文本 `id` 和 function/custom `name`；Chat `tool` 消息必须有非空文本 `tool_call_id`；旧版 `function` 消息和旧版 `assistant.function_call` 必须有非空文本 `name`。缺失或非文本时不构造空 `call_id/name` 的 Responses tool item。旧版 `assistant.function_call` 没有独立 id，只有在 `name` 有效时才沿用 `name` 作为 `call_id`。
 - Chat function tool 和旧版 `functions[]` 的 `parameters` 只有对象 schema 会保留；客户端传入非对象 `parameters` 时归一化为空 object schema，不把非法 schema 类型写入 Responses tool。
 
 工具映射：
 
 - Chat function tool 转换为 Responses function tool。
-- 保留 `function.strict`。
+- function/custom tool 的 `description` 只保留非空文本；`function.strict` 只在 JSON boolean 时保留，字符串、数字等非布尔值不会按 true/false 解析。
 - Chat 嵌套形式的 `tool_choice: {"type":"function","function":{"name":"..."}}` 转换为 Responses 扁平形式的 `{"type":"function","name":"..."}`。
-- Chat custom tool 转换为 Responses custom tool，保留 `name`、`description` 和 `format`。
+- Chat custom tool 转换为 Responses custom tool，保留 `name`、文本 `description` 和官方 `format` 子集；Chat grammar format 的 `grammar.syntax/definition` 会转换为 Responses 扁平 `syntax/definition`，非对象、未知 `type`、未知 `syntax` 或缺少 `definition` 的 format 不透传。
 - Chat 嵌套形式的 `tool_choice: {"type":"custom","custom":{"name":"..."}}` 转换为 Responses 扁平形式的 `{"type":"custom","name":"..."}`。
 - Chat 文本 `tool_choice` 只保留 `auto`、`none` 和 `required`；旧式 `function_call` 文本只保留 `auto` 和 `none`，`required` 不套用到 legacy 字段。
-- Chat `allowed_tools` 形式的 `tool_choice` 会转换为 Responses 扁平 `allowed_tools`，其中 function/custom 工具名从 `function.name` / `custom.name` 提升到顶层 `name`，并保留 `mode`。
+- Chat `allowed_tools` 形式的 `tool_choice` 会转换为 Responses 扁平 `allowed_tools`，其中 function/custom 工具名从 `function.name` / `custom.name` 提升到顶层 `name`，`mode` 只保留 `auto`/`none`/`required`。
 - Chat assistant `tool_calls[]` 中的 custom call 转换为 Responses `custom_tool_call` input/output item，保留 `call_id`、`name` 和 `input`。
-- Chat `web_search_options` 转换为 Responses `web_search_preview` tool；`search_context_size` 和 approximate `user_location` 会保留。
+- Chat `web_search_options` 转换为 Responses `web_search_preview` tool；`search_context_size` 只保留 `low`/`medium`/`high`，approximate `user_location` 只保留非空字符串形态的 `country`/`region`/`city`/`timezone`。
 
 ### Responses IR 到 Chat Completions
 
@@ -284,16 +313,17 @@ Responses `status=incomplete` 反向转 Chat 时，`incomplete_details.reason=co
 - `prompt_cache_key`
 - `prompt_cache_retention`
 - `parallel_tool_calls`
-- `top_logprobs`，同时打开 Chat `logprobs=true`
+- `top_logprobs` 仅保留 0 到 20 的整数值，并同时打开 Chat `logprobs=true`
 - `max_output_tokens` 映射到 `max_completion_tokens`
-- 内部 `_landgate_stop_sequences` 映射到 `stop`
-- `reasoning.effort` 映射到 `reasoning_effort`
-- `text.format` 映射到 `response_format`；`json_schema` 降级到 Chat 时必须有非空 `name` 和 `schema`，缺失则不构造非法 `response_format`
-- `text.verbosity` 映射到 Chat `verbosity`
+- 内部 `_landgate_stop_sequences` 映射到 `stop`；只保留非空字符串，过滤后为空则不生成 `stop`
+- `reasoning.effort` 在值为 `minimal`/`low`/`medium`/`high`/`xhigh` 时映射到 `reasoning_effort`；`none` 或未知值不降级到 Chat
+- `text.format` 映射到 `response_format`；`json_schema` 降级到 Chat 时必须有非空 `name` 和 `schema`，缺失则不构造非法 `response_format`；`description` 只保留非空文本，`strict` 只在 JSON boolean 时保留
+- `text.verbosity` 仅在值为 `low`/`medium`/`high` 时映射到 Chat `verbosity`
 - `include` 中存在 `message.output_text.logprobs` 时映射为 Chat `logprobs=true`
 
 `metadata` 只保留对象形态；非对象 metadata 不降级到 Chat。
-`service_tier`、`user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention` 只保留非空字符串形态；对象/数组等非文本形态不降级到 Chat。
+`model`、`service_tier`、`user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention` 只保留非空字符串形态；对象/数组等非文本形态不降级到 Chat。
+`stream`、`store`、`parallel_tool_calls` 只保留 JSON boolean；`temperature`、`top_p` 只保留 JSON number；`max_output_tokens` 只在正整数时映射到 `max_completion_tokens`。`reasoning.effort`、`text.verbosity` 只接受可降级到 Chat 的官方枚举值，未知字符串不会透传。
 
 输入映射：
 
@@ -305,17 +335,17 @@ Responses `status=incomplete` 反向转 Chat 时，`incomplete_details.reason=co
 - Responses `function_call_output.output` 缺失时，Chat tool message `content` 使用空字符串，不写入人工占位文本。
 - input message content 中的 `refusal` 降级为 Chat 文本兼容内容，不构造非官方 content part。
 - Responses input message 数组 content 中的空 `input_text`/`output_text`/`text`/`refusal` part 会被跳过；content 不是字符串或数组、或数组只包含空文本/无效 part 时，不生成 Chat 空消息。
-- `input_image` 转换为 Chat 的 `image_url` content part，并保留 `detail`。
+- `input_image` 转换为 Chat 的 `image_url` content part；`detail` 只在值为 `auto`/`low`/`high` 时保留。
 - `input_audio` 只有同时包含非空 `data` 和 `format` 时才转换为 Chat 的 `input_audio` content part。
-- `input_file` 转换为 Chat 的 `file` content part，保留 `file_data`、`file_id` 和 `filename`。
+- `input_file` 转换为 Chat 的 `file` content part，只保留非空文本 `file_data`、`file_id` 和 `filename`。
 - Responses `input_file.file_url` 没有 Chat `file` content part 的同义字段，降级到 Chat 时不会伪造成 `file_data`。
 - Responses message content 如果只包含 Chat 不支持或无效的 part（例如 `input_file.file_url`、缺 payload 的 `input_audio`、空 `input_image`），该 message 会被丢弃，不伪造成空字符串消息。
-- Responses `web_search_preview` / `web_search` tool 转换为 Chat `web_search_options`；其他非 function tool 不塞进 Chat `tools`。
-- Responses custom tool 转换为 Chat custom tool，保留 `name`、`description` 和 `format`。
-- Responses 输入或输出里的 `function_call`/`custom_tool_call` 降级到 Chat assistant `tool_calls` 时，必须同时有非空 `call_id` 和 `name`；缺失时不构造空 id/name 的非法 Chat tool call。`function_call_output` 缺少 `call_id` 时也不构造无归属 tool message。
+- Responses `web_search_preview` / `web_search` tool 转换为 Chat `web_search_options`；`search_context_size` 只保留 `low`/`medium`/`high`，`user_location` 只保留非空字符串形态的 `country`/`region`/`city`/`timezone`；其他非 function tool 不塞进 Chat `tools`。
+- Responses custom tool 转换为 Chat custom tool，保留 `name`、文本 `description` 和官方 `format` 子集；Responses grammar format 的扁平 `syntax/definition` 会转换为 Chat 嵌套 `grammar.syntax/definition`，非对象、未知 `type`、未知 `syntax` 或缺少 `definition` 的 format 不透传。
+- Responses 输入或输出里的 `function_call`/`custom_tool_call` 降级到 Chat assistant `tool_calls` 时，必须同时有非空文本 `call_id` 和 `name`；缺失或非文本时不构造空 id/name 的非法 Chat tool call。`function_call_output` 缺少非空文本 `call_id` 时也不构造无归属 tool message。
 - Responses function tool 的 `parameters` 只有对象 schema 会保留到 Chat `function.parameters`；非对象 `parameters` 归一化为空 object schema。
 - Responses 扁平 custom `tool_choice` 转换为 Chat 嵌套形式的 `{"type":"custom","custom":{"name":"..."}}`。
-- Responses 扁平 `allowed_tools` 形式的 `tool_choice` 转换为 Chat 嵌套 `allowed_tools`，function/custom 工具名分别进入 `function.name` / `custom.name`，并保留 `mode`。
+- Responses 扁平 `allowed_tools` 形式的 `tool_choice` 转换为 Chat 嵌套 `allowed_tools`，function/custom 工具名分别进入 `function.name` / `custom.name`，`mode` 只保留 `auto`/`none`/`required`。
 
 ### Responses 到 Responses IR
 
@@ -378,28 +408,29 @@ Responses 本身就是内部 IR，所以公共 API Key 直连 Responses 时应�
 - `top_p`
 - `metadata`
 - `max_tokens` 映射到 `max_output_tokens`，不做截断
-- `stop_sequences` 映射到内部 `_landgate_stop_sequences`
+- `stop_sequences` 映射到内部 `_landgate_stop_sequences`；只保留非空字符串，数组里的非字符串/空白项会被过滤，过滤后为空则不生成内部字段
 - `tool_choice.disable_parallel_tool_use=true` 映射到 `parallel_tool_calls=false`
 
 `metadata` 只保留对象形态；非对象 metadata 不写入 Responses IR。
-`service_tier` 只保留非空字符串形态；对象/数组等非文本形态不写入 Responses IR。
+`model`、`service_tier` 只保留非空字符串形态；对象/数组等非文本形态不写入 Responses IR。
+`stream` 只保留 JSON boolean；`temperature`、`top_p` 只保留 JSON number；`max_tokens` 只在正整数时映射到 `max_output_tokens`。
 
 消息映射：
 
 - 顶层 `system` 转换为 `developer` input message。
 - `user` 的 text、image、document、tool_result 分片转换为 user input item 或 `function_call_output`。
 - `tool_result` 中的文本进入 `function_call_output.output`；图片和可保真 document 子集延迟为单独 user content，分别转换为 Responses `input_image` 和 `input_file`，避免把二进制/文件内容伪造成工具输出字符串。没有文本时 `output` 使用空字符串，不写入人工占位文本。
-- Anthropic `tool_result` 进入 Responses IR 时必须有非空 `tool_use_id`；缺失时不生成 `function_call_output`。
+- Anthropic `tool_result` 进入 Responses IR 时必须有非空文本 `tool_use_id`；缺失或非文本时不生成 `function_call_output`。
 - Anthropic 普通 tool 的 `input_schema` 只有对象 schema 会保留；缺失、`null` 或非对象 schema 统一归一化为 `{"type":"object","properties":{}}`，避免把非法 schema 类型写入 OpenAI tool `parameters`。
 - Anthropic base64 image source 转换为 Responses data URL；Anthropic URL image source 转换为 Responses `image_url`。
 - Anthropic `document` content block 的可保真子集转换为 Responses `input_file`：URL source 转 `file_url`，base64 source 转 data URI `file_data`，file source 转 `file_id`，`title` 转 `filename`。
-- Anthropic image/document source 必须有非空 URL、base64 data 或 file_id；数组 content 只包含无效/不支持 part 时，不生成空 Responses message item。
+- Anthropic image/document source 必须有非空文本 URL、base64 data 或 file_id；`title`/`filename` 只保留非空文本；数组 content 只包含无效/不支持 part 时，不生成空 Responses message item。
 - `assistant` 文本转换为 assistant message content。
 - `assistant` 的 tool_use block 转换为 `function_call` item。
-- Anthropic `tool_use` 进入 Responses IR 时必须有非空 `id` 和 `name`；缺失时不生成 `function_call`，也不随机补 `call_id`。
+- Anthropic `tool_use` 进入 Responses IR 时必须有非空文本 `id` 和 `name`；缺失或非文本时不生成 `function_call`，也不随机补 `call_id`。
 - 多轮请求中的 `assistant` thinking block 转换为 Responses reasoning input item；`thinking` 文本写入 `content[].reasoning_text.text` 和 summary，`signature` 写入 `encrypted_content`。
 - 多轮请求中的 `assistant` redacted_thinking block 转换为只有 `encrypted_content` 的 Responses reasoning input item。
-- Anthropic `web_search_*` tool 转换为 Responses web search tool，并保留共同支持的对象形态 `user_location`；非对象 `user_location` 不透传。
+- Anthropic `web_search_*` tool 转换为 Responses web search tool，并保留共同支持的对象形态 `user_location`；非对象或没有有效文本子字段的 `user_location` 不透传。
 - 响应中的 `thinking` block 转换为 reasoning output item。
 - 响应中的 `thinking.signature` 保留为 reasoning item 的 `encrypted_content`。
 - 响应中的 `redacted_thinking.data` 保留为 reasoning item 的 `encrypted_content`，不伪造成明文 thinking。
@@ -409,7 +440,9 @@ Responses 本身就是内部 IR，所以公共 API Key 直连 Responses 时应�
 
 推理映射：
 
-- `thinking` 或 `output_config` 表示启用 Responses `reasoning`。
+- `thinking` 表示启用 Responses `reasoning`；无有效 `output_config.effort` 时默认映射为 `medium`。
+- `output_config.effort` 仅接受 `low`/`medium`/`high`/`xhigh`/`max`；`max` 映射为 Responses `xhigh`，`xhigh` 保持为 `xhigh`，未知值不启用 reasoning。
+- `thinking` 或有效 `output_config.effort` 存在时请求 `include=["reasoning.encrypted_content"]`；普通 Anthropic Messages 请求不额外请求 encrypted reasoning。
 - 普通 Anthropic Messages 请求不会被隐式转换为 reasoning 请求。
 - Anthropic extended thinking 的 `signature` 和 `redacted_thinking.data` 都是不透明数据；转换器只搬运，不解析、不展示。
 
@@ -429,35 +462,43 @@ Responses 本身就是内部 IR，所以公共 API Key 直连 Responses 时应�
 - `temperature`
 - `top_p`
 - `metadata`
-- `max_output_tokens` 映射到 `max_tokens`
-- 内部 `_landgate_stop_sequences` 映射到 `stop_sequences`
+- `max_output_tokens` 正整数映射到 `max_tokens`
+- 内部 `_landgate_stop_sequences` 映射到 `stop_sequences`；只保留非空字符串，过滤后为空则不生成 `stop_sequences`
 - `parallel_tool_calls=false` 映射到 Anthropic `tool_choice.disable_parallel_tool_use=true`；如果 IR 没有显式 `tool_choice`，或显式 `tool_choice` 不是 Anthropic 可表达的 function/web search 子集，则生成 `{"type":"auto","disable_parallel_tool_use":true}`，因为 Anthropic 的禁用并行工具开关只能挂在 `tool_choice` 对象上。
 
 `metadata` 只保留对象形态；非对象 metadata 不写入 Anthropic 请求。
-`service_tier` 只保留非空字符串形态；对象/数组等非文本形态不写入 Anthropic 请求。
+`model`、`service_tier` 只保留非空字符串形态；对象/数组等非文本形态不写入 Anthropic 请求。
+`stream` 只保留 JSON boolean；`temperature`、`top_p` 只保留 JSON number。
+Anthropic 官方 Messages 请求要求 `max_tokens`，而 OpenAI Responses 的 `max_output_tokens` 可以缺失。因此 Responses 降级到 Anthropic 时，若 `max_output_tokens` 缺失、非数字、为 0 或负数，LandGate 会写入当前网关默认 `max_tokens=8192`。这是协议必填字段的兼容补齐，不是保真转换；如果未来要避免隐式上限，应把该默认值提升为可配置策略或在转换前拒绝缺失上限的请求。
 
 输入映射：
 
 - `instructions`、`system` 和 `developer` input 合并到 Anthropic 顶层 `system`；空白 `instructions`、空白文本和只含空白文本 part 的 instruction input 会被忽略，不生成空白 `system`。
 - `user` input item 转换为 Anthropic user message。
 - Responses data URL 图片转换为 Anthropic base64 image source；HTTP(S) 图片 URL 转换为 Anthropic URL image source。
-- Responses `input_file` 的可保真子集转换为 Anthropic `document`：`file_url` 转 URL source，data URI `file_data` 转 base64 source，`file_id` 转 file source，`filename` 转 `title`。
+- Responses `input_file` 的可保真子集转换为 Anthropic `document`：非空文本 `file_url` 转 URL source，非空文本 data URI `file_data` 转 base64 source，非空文本 `file_id` 转 file source，非空文本 `filename` 转 `title`。
 - Responses message content 如果只包含 Anthropic 不支持的 part（例如 `input_audio` 或 custom tool call content part）或空 `input_text`/`text` part，该 message 会被丢弃，不伪造成空字符串或空 `text` block。
 - Responses reasoning input item 转换为 assistant thinking 或 redacted_thinking block。存在 `content`/`summary` 时输出 thinking，并在有 `encrypted_content` 时作为 `signature`；只有 `encrypted_content` 时输出 redacted_thinking。
 - `function_call` 转换为 assistant `tool_use`。
 - `function_call_output` 转换为 user `tool_result`。
 - Responses `function_call_output.output` 缺失时，Anthropic `tool_result` 使用空文本内容，不写入人工占位文本。
-- 降级到 Anthropic `tool_use` 时必须有非空 `call_id` 和 `name`；降级到 Anthropic `tool_result` 时必须有非空 `call_id`。缺失时不构造空 `id/name/tool_use_id`。
+- 降级到 Anthropic `tool_use` 时必须有非空文本 `call_id` 和 `name`；降级到 Anthropic `tool_result` 时必须有非空文本 `call_id`。缺失或非文本时不构造空 `id/name/tool_use_id`。
 - Responses function tool 的 `parameters` 只有对象 schema 会保留为 Anthropic `input_schema`；缺失、`null` 或非对象 schema 统一归一化为空 object schema。
-- Responses `web_search` / `web_search_preview` / `google_search` tool 转换为 Anthropic `web_search_20250305`，并保留共同支持的对象形态 `user_location`；非对象 `user_location` 不透传。
+- Responses `web_search` / `web_search_preview` / `google_search` tool 转换为 Anthropic `web_search_20250305`，并保留共同支持的对象形态 `user_location`；非对象或没有有效文本子字段的 `user_location` 不透传。
 - Responses web search hosted tool 的 `tool_choice` 转换为 Anthropic `{"type":"tool","name":"web_search"}`。
 - 连续的同角色消息会被合并，以满足 Anthropic 的角色交替约束。
+
+推理映射：
+
+- Responses `reasoning.effort=minimal` 有损降级为 Anthropic `output_config.effort=low`；`low`/`medium`/`high` 保持同名；`xhigh` 映射为 Anthropic `max`。
+- Responses `reasoning.effort=none` 或未知字符串不生成 Anthropic `output_config`/`thinking`，避免伪造 extended thinking 请求。
+- Anthropic `thinking` 仅在 effort 不是 `low` 时补 `{"type":"enabled","budget_tokens":...}`；`low` 只写 `output_config.effort=low`。
 
 输出映射：
 
 - `output_text` 和 `refusal` 都转换为 Anthropic text block。
 - `function_call` 转换为 `tool_use`。
-- Responses 输出 `function_call` 缺少非空 `call_id` 或 `name` 时不构造 Anthropic `tool_use`，也不把 `stop_reason` 判为 `tool_use`。
+- Responses 输出 `function_call` 缺少非空文本 `call_id` 或 `name` 时不构造 Anthropic `tool_use`，也不把 `stop_reason` 判为 `tool_use`。
 - reasoning item 优先使用 `content[].reasoning_text.text` 转换为 Anthropic `thinking` block；没有 reasoning content 时使用 `summary[].summary_text.text` 兜底。
 - reasoning item 同时有明文 reasoning 和 `encrypted_content` 时，`encrypted_content` 转为 Anthropic `thinking.signature`。
 - reasoning item 只有 `encrypted_content` 时，转为 Anthropic `redacted_thinking.data`。
@@ -467,54 +508,65 @@ Responses 本身就是内部 IR，所以公共 API Key 直连 Responses 时应�
 
 流式转换基于事件，而不是逐行复制。
 
+流式事件 envelope 字段按官方类型读取：`model` 只接受非空字符串，`created`/`created_at` 只接受非负整数时间戳，`output_index`/`content_index`/Chat `tool_calls[].index` 只接受非负整数。字符串数字、对象、数组、浮点数或负数不会被强制解析；非法索引只走该事件类型的默认归属逻辑，不能建立或命中已有工具调用映射。
+
+流式内容载荷同样只接受 JSON string：Chat stream `delta.content/refusal/reasoning_content/tool_calls[].function.arguments/function_call.arguments`，Responses stream `delta/text/refusal/arguments/item.arguments/item.input`，Anthropic stream `delta.text/thinking/partial_json/signature` 若为数字、布尔、对象或数组，不会被强制转换成文本 delta、reasoning delta 或工具参数 delta。
+
 Chat stream 到 Responses stream：
 
 - role chunk 创建 `response.created`，Chat chunk 的 `created` 映射为 Responses `created_at`。
 - content chunk 生成 `response.output_text.delta`。
 - refusal chunk 生成 `response.refusal.delta`。
 - reasoning chunk 生成独立的 reasoning item。
-- tool call chunk 按 Chat tool index 追踪，使交错的调用可以分别累积。
+- tool call chunk 按 Chat tool index 追踪，使交错的调用可以分别累积；非法 index 不按字符串数字解析。
 - Chat stream `tool_calls[]` 必须先提供非空 `id` 和 function `name` 才会创建 Responses `function_call` item；只有 arguments delta 而没有已建立的有效 tool state 时，不输出孤立的 `response.function_call_arguments.delta`。旧式 stream `delta.function_call` 没有独立 id，只有在先看到非空 `name` 后才使用该 `name` 作为 `call_id` 并接收后续 arguments。
-- 最终 `[DONE]` 关闭打开的 item；`finish_reason=length/content_filter` 发出 `response.incomplete`，其他可完成状态发出 `response.completed`。
+- 最终 `[DONE]` 关闭打开的 item；文本 `finish_reason=length/content_filter` 发出 `response.incomplete`，其他可完成状态发出 `response.completed`；非文本 `finish_reason` 忽略并按默认完成路径处理。
 - finish reason 之后、`[DONE]` 之前的 usage-only chunk 可以被接受。
 - usage-only chunk 中的 `completion_tokens_details.reasoning_tokens` 映射到 Responses `output_tokens_details.reasoning_tokens`；Chat 特有的 prediction/audio token 明细没有 Responses 稳定同义字段时不伪造。
+- 非文本 `delta.content/refusal/reasoning_content` 不产生 Responses content/refusal/reasoning delta；非文本工具 arguments 不产生 `response.function_call_arguments.delta`。
 
 Responses stream 到 Chat stream：
 
-- `response.created.created_at` 映射为 Chat chunk 的 `created`。
+- `response.created.created_at` 映射为 Chat chunk 的 `created`；非法类型不覆盖默认时间戳，非文本 `model` 不覆盖当前模型。
 - `response.output_text.delta` 转换为 Chat `delta.content`。
 - 如果没有看到 delta，最终的 `output_text.done`、`content_part.done` 或 `response.completed.output` 可以提供兜底文本。
 - function call item 转换为 Chat function `tool_calls` delta；custom tool call item 在 `response.output_item.added/done` 或 `response.completed.output` 兜底中转换为 Chat custom `tool_calls` delta。
-- function/custom tool call item 在 `response.output_item.added/done` 中缺少非空 `call_id` 或 `name` 时，不建立 `output_index` 映射，也不输出 Chat `tool_calls` delta。
+- function/custom tool call item 在 `response.output_item.added/done` 中缺少非空 `call_id` 或 `name` 时，不建立 `output_index` 映射，也不输出 Chat `tool_calls` delta；非法 `output_index` 不按字符串数字解析。
 - `response.reasoning_summary_text.delta` 和 `response.reasoning_text.delta` 都转换为 Chat `delta.reasoning_content`。
 - cached token 明细转换为最终 usage 中的 `prompt_tokens_details.cached_tokens`。
 - reasoning token 明细转换为最终 usage 中的 `completion_tokens_details.reasoning_tokens`。
-- `response.completed`、`response.done`、`response.incomplete` 和 `response.failed` 都视为 Responses 终止事件。
+- 文本 `type=response.completed/response.done/response.incomplete/response.failed` 都视为 Responses 终止事件；非文本 `type` 不触发事件分派或终止状态。
 - 终止事件中的 usage 可以位于 `response.usage` 或顶层 `usage`；两种位置都要解析。
+- 终止事件中非文本 `status` 或 `incomplete_details.reason` 按缺省完成语义处理，不降级为 Chat `length` 或 `content_filter`。
+- 非文本 `delta`、`text`、`refusal`、`item.arguments` 或 `item.input` 不降级为 Chat content/reasoning/tool-call delta。
 - custom tool call 的最终 item 可以流式降级为 Chat custom `tool_calls`；但官方 Responses 流式 custom tool 增量事件没有像 `response.function_call_arguments.delta` 一样在本项目中稳定落地前，不伪造增量事件。
 - `file_search_call`、`computer_call`、`code_interpreter_call`、`mcp_call`、`image_generation_call`、`local_shell_call` 等 hosted tool call 的 `response.output_item.added/done` 和 completed output 不会被降级为 Chat `delta.content` 或 `delta.tool_calls`。
 
 Anthropic stream 到 Responses stream：
 
 - `message_start` 创建 Responses response。
+- `message_start.message.model` 只在非空字符串时覆盖当前 Responses model。
 - `content_block_start` 打开 message、reasoning 或 function_call output item。
 - `text_delta`、`thinking_delta` 和 `input_json_delta` 映射到对应的 Responses delta。
 - `signature_delta` 累积到 reasoning item 的 `encrypted_content`。
-- `message_delta.stop_reason=max_tokens` 映射为 `response.incomplete` + `max_output_tokens`；`model_context_window_exceeded` 映射为 `response.incomplete` 但不伪造 OpenAI reason；其他可完成 stop_reason 映射为 `response.completed`。
+- 文本 `message_delta.stop_reason=max_tokens` 映射为 `response.incomplete` + `max_output_tokens`；`model_context_window_exceeded` 映射为 `response.incomplete` 但不伪造 OpenAI reason；其他可完成 stop_reason 映射为 `response.completed`；非文本 `stop_reason` 按默认 `end_turn` 处理。
 - 流式 usage 同非流式一样：`input_tokens + cache_creation_input_tokens + cache_read_input_tokens` 汇总到 Responses `input_tokens`，`cache_read_input_tokens` 映射到 `cached_tokens`。
-- Anthropic stream error event 转换为 `response.failed`。
+- 文本 `type=error` 的 Anthropic stream error event 转换为 `response.failed`；非文本 event `type` 不触发错误转换，非文本 `error.type/message` 使用兼容默认值。
+- 非文本 `text_delta.text`、`thinking_delta.thinking`、`input_json_delta.partial_json` 或 `signature_delta.signature` 不产生 Responses content/reasoning/tool-arguments/encrypted-content delta。
 
 Responses stream 到 Anthropic stream：
 
 - text/refusal delta 转换为 text content block delta。
 - `response.reasoning_summary_text.delta` 和 `response.reasoning_text.delta` 都转换为 Anthropic `thinking_delta`。
 - function call item 转换为 tool_use content block。
-- function call item 在 `response.output_item.added/done` 中缺少非空 `call_id` 或 `name` 时，不建立 `output_index` 到 Anthropic content block 的映射；后续 arguments delta/done 若没有匹配到有效 tool block，也不输出孤立的 `input_json_delta`。
+- function call item 在 `response.output_item.added/done` 中缺少非空 `call_id` 或 `name` 时，不建立 `output_index` 到 Anthropic content block 的映射；后续 arguments delta/done 若没有匹配到有效 tool block，也不输出孤立的 `input_json_delta`；非法 `output_index` 不按字符串数字解析。
 - 当上游流只发送 completed output 时，使用最终 output 作为兜底。
 - completed output 兜底中的 reasoning item 和非流式一致：优先使用 `content[].reasoning_text.text`，没有时才使用 `summary[].summary_text.text`。
 - Responses cached tokens 转换回 Anthropic `cache_read_input_tokens`。
-- `response.completed`、`response.done`、`response.incomplete` 和 `response.failed` 都视为 Responses 终止事件。
+- 文本 `type=response.completed/response.done/response.incomplete/response.failed` 都视为 Responses 终止事件；非文本 `type` 不触发事件分派或终止状态。
 - 终止事件中的 usage 可以位于 `response.usage` 或顶层 `usage`；两种位置都要解析。
+- 终止事件中非文本 `status` 或 `incomplete_details.reason` 按缺省 `end_turn` 语义处理，不降级为 Anthropic `max_tokens`。
+- 非文本 `delta`、`text`、`refusal` 或 `arguments` 不降级为 Anthropic `text_delta`、`thinking_delta` 或 `input_json_delta`。
 - `file_search_call`、`computer_call`、`code_interpreter_call`、`mcp_call`、`image_generation_call`、`local_shell_call` 等 hosted tool call 的 `response.output_item.added/done` 和 completed output 不会被降级为 Anthropic `text_delta` 或 `tool_use`；`web_search_call` 是单独兼容路径，可输出 Anthropic `server_tool_use` 和 `web_search_tool_result`。
 
 ## 矩阵驱动测试状态
@@ -522,8 +574,8 @@ Responses stream 到 Anthropic stream：
 已经有明确测试覆盖的字段族：
 
 - Chat ↔ Responses 基础 message、image、audio、file、function tool、custom tool、allowed_tools、web_search_options；Chat/Responses 文件 part 缺少非空 `file_data`/`file_id` 时不构造空 `input_file`/`file`，Responses `input_file.file_url` 降级到 Chat 时不伪造成 `file_data` 或空 file part，音频 part 缺少非空 `data`/`format` 时不构造空 `input_audio`，unsupported `tool_choice` / `allowed_tools` 项双向不透传，未知文本 `tool_choice` 模式不透传，缺名 tools/tool_choice 不构造空名结构。
-- Chat `response_format` ↔ Responses `text.format`，覆盖 `json_schema`（含 `name`、`description`、`schema`、`strict`）、`json_object` 和 `text`。
-- Chat `verbosity`、`reasoning_effort`、`logprobs/top_logprobs`、`prompt_cache_key`、`prompt_cache_retention`、`safety_identifier`。
+- Chat `response_format` ↔ Responses `text.format`，覆盖 `json_schema`（含 `name`、文本 `description`、`schema`、布尔 `strict`）、`json_object` 和 `text`。
+- Chat `verbosity`、`reasoning_effort`、布尔 `logprobs`、`top_logprobs`、`prompt_cache_key`、`prompt_cache_retention`、`safety_identifier`。
 - Chat 专有且无 Responses 等价物的 `n`、`seed`、`modalities`、`audio`、`prediction`、`presence_penalty`、`frequency_penalty`、`logit_bias` 不写入 IR。
 - Chat 兼容扩展 `reasoning_content` 和非官方 assistant `thinking/reasoning` content part 拆分为 Responses reasoning item。
 - Responses 公共直通保留 `previous_response_id`、`truncation`、`prompt`、`background`、`conversation`、`context_management`、`include`、hosted tools，并移除 LandGate 内部字段；hosted tools 子字段覆盖 file search `ranking_options/filters`、MCP `authorization/headers`、computer dimensions、code interpreter `container`。
@@ -531,9 +583,9 @@ Responses stream 到 Anthropic stream：
 - Anthropic ↔ Responses text、image、document 安全子集、tool_use/tool_result、thinking/redacted_thinking、cache usage、web search tool 子集；Responses hosted tools、unsupported/custom `tool_choice`、Anthropic 未知对象或文本 `tool_choice` 和缺名普通 tool/tool_choice 不透传。
 - Anthropic `top_k` 不透传到 Responses；`search_result`、`server_tool_use`、`web_search_tool_result` 非流式响应不伪造成 OpenAI 通用 message/tool。
 - Anthropic `stop_reason=max_tokens` 精确转为 Responses incomplete/max_output_tokens；`model_context_window_exceeded` 只转为 incomplete，不把 Anthropic 专有原因写成 OpenAI 公共 reason。
-- Responses/Chat/Anthropic 终止事件、usage、cached token、`response.failed` 和 Anthropic error event 的基础路径。
+- Responses/Chat/Anthropic 终止事件、usage、cached token、`response.failed` 和 Anthropic error event 的基础路径；非法 usage token 类型或负数不会被强制解析，非文本 `finish_reason/status/stop_reason/error/type` 不触发对应终止或错误语义，非文本流式内容和工具参数不产生文本/工具 delta。
 - OpenAI/Anthropic HTTP 错误 envelope：OpenAI 使用顶层 `error` 对象，Anthropic 使用顶层 `type:"error"` + `error.type/message`；Responses `response.failed` 降级到 Chat/Anthropic stream 时只输出目标协议终止事件，不把 error message 伪造成普通内容。
-- Chat/Responses/Anthropic tool call 异常形状：进入 Responses IR 或降级到 Chat/Anthropic 时，缺必需 id/name 不构造 tool call/tool_use/function_call，缺 tool result id 不构造 tool output/tool_result/function_call_output；空 arguments 按方向分别保留为 `""` 或规范化为 `"{}"`，非 JSON arguments 作为官方字符串边界原样保留，tool result 顺序不重排。
+- Chat/Responses/Anthropic tool call 异常形状：进入 Responses IR 或降级到 Chat/Anthropic 时，缺必需 id/name 或 id/name 不是 JSON string 时不构造 tool call/tool_use/function_call，缺 tool result id 或 id 非文本时不构造 tool output/tool_result/function_call_output；空 arguments 按方向分别保留为 `""` 或规范化为 `"{}"`，非 JSON arguments 作为官方字符串边界原样保留，tool result 顺序不重排。
 - OpenAI API Key 公共 Responses 字段保留；覆盖状态字段（`previous_response_id`、`truncation`、`prompt`、`background`、`conversation`、`context_management`）、身份/缓存字段（`metadata`、`user`、`safety_identifier`、`prompt_cache_key`、`prompt_cache_retention`）、工具控制字段（`parallel_tool_calls`、`max_tool_calls`）和 `include/store/stream`。
 - OpenAI OAuth Codex 内部端点字段剥离、`store/stream` 规范化和 system/developer 抽取；普通路径强制 `store=false/stream=true`，compact 路径移除 `store/stream`，且同样剥离公共 Responses 状态、身份、缓存和工具控制字段。
 
@@ -549,6 +601,8 @@ Responses stream 到 Anthropic stream：
 - 转换到 Chat Completions 时，function、custom 和可降级为 `web_search_options` 的 web search tool 会保留；其他 Responses hosted tools 或专有 tool 类型不会塞进 Chat `tools`。
 - Responses web search output 不会在 Anthropic 或 Chat 输出中表示。
 - Chat `logprobs` 请求只能通过 Responses `include` 和 `top_logprobs` 表示请求意图；具体 token logprob 输出能否完整往返取决于上游响应形状。
+- `logprobs` 不做类型转换；只有 JSON boolean `true` 会请求 Responses logprobs include。
+- `top_logprobs` 不做截断或类型转换；非整数、负数或大于 20 的值不透传，避免向目标协议发送非法字段。
 - Chat `n`、`seed`、`modalities`、`audio`、`prediction`、`presence_penalty`、`frequency_penalty`、`logit_bias` 等没有稳定 Responses 等价字段的参数不会被强行写入 IR；若后续官方 Responses 暴露同义字段，应按字段语义补映射和测试。
 - Responses `previous_response_id`、`truncation`、`prompt`、`background`、`conversation`、`context_management` 等状态型或 Responses 专有请求字段不会被降级到 Chat/Anthropic；只有直连 Responses 上游时应原样保留。
 - Responses hosted tools 中，当前只有 function、custom 和 web search 能转换到 Chat/Anthropic；file search、computer use、MCP、image generation、code interpreter、local shell 等 Responses 专有 hosted tools 只在 Responses 直连场景透传。
@@ -558,7 +612,7 @@ Responses stream 到 Anthropic stream：
 - Anthropic `search_result`、`server_tool_use`、`web_search_tool_result` 等专用内容块没有完全等价的 OpenAI Chat/Responses 通用结构；除已实现的 web search 流式兼容输出外，当前不伪造跨协议结构。
 - Responses reasoning 的 `encrypted_content` 只按 opaque 数据搬运；转换为 Chat 时不暴露为普通文本，转换为 Anthropic 时仅进入 `thinking.signature` 或 `redacted_thinking.data`。
 - Chat 官方协议没有 assistant `thinking`/`reasoning` content part；LandGate 仅把这类兼容扩展作为 reasoning item 保留，不把它们降级成普通输出文本。
-- Chat `file` content part 只有 `file_data` 或 `file_id` 是可转换为 Responses `input_file` 的有效载荷；只有 `filename`、空白 `file_id` 或空 `file_data` 的 part 会被跳过，避免构造无文件来源的 `input_file`。
+- Chat `file` content part 只有非空文本 `file_data` 或 `file_id` 是可转换为 Responses `input_file` 的有效载荷；`filename` 只保留非空文本；只有 `filename`、空白 `file_id` 或空 `file_data` 的 part 会被跳过，避免构造无文件来源的 `input_file`。
 - OpenAI OAuth Codex 端点兼容性要求移除内部端点不接受的公共 Responses 字段。
 - Anthropic 专有的 `top_k` 没有 OpenAI Responses 等价物，不会透传到 OpenAI 上游请求。
 
@@ -566,5 +620,6 @@ Responses stream 到 Anthropic stream：
 
 - 不要在转换器中根据模型名称推断模型能力。
 - 不要在转换器中截断 token 限制。
+- OpenAI → Anthropic 请求如果没有有效 `max_output_tokens`，必须显式处理 Anthropic 必填 `max_tokens`：当前策略是默认补齐 `8192`，后续可改为配置项或请求校验错误，但不能发送缺失/非法 `max_tokens`。
 - 除非客户端或路由明确要求，否则不要强制流式响应。
 - 内部专用字段，例如 `_landgate_stop_sequences`，不得出现在直接发送给 Responses 上游的请求中。

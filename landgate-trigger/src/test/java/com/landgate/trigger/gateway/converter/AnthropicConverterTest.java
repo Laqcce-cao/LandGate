@@ -51,6 +51,7 @@ class AnthropicConverterTest {
             assertFalse(resp.get("store").asBoolean());
             assertFalse(resp.has("reasoning"));
             assertFalse(resp.has("text"));
+            assertFalse(resp.has("include"));
 
             JsonNode input = resp.get("input");
             assertEquals(1, input.size());
@@ -68,7 +69,7 @@ class AnthropicConverterTest {
         void nonObjectMetadataDroppedToResponses() throws Exception {
             String body = """
                     {
-                        "model": "gpt-5.2",
+                        "model": {"id": "gpt-5.2"},
                         "max_tokens": 1024,
                         "metadata": "trace_id=req_123",
                         "messages": [{"role": "user", "content": "Hello"}]
@@ -183,21 +184,39 @@ class AnthropicConverterTest {
                     {
                         "model": "gpt-5.2",
                         "max_tokens": 100,
-                        "stop_sequences": ["</end>", "DONE"],
+                        "stop_sequences": ["</end>", "", 123, {"bad": true}, "DONE"],
                         "messages": [{"role": "user", "content": "Hi"}]
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
             assertEquals("</end>", resp.get("_landgate_stop_sequences").get(0).asText());
             assertEquals("DONE", resp.get("_landgate_stop_sequences").get(1).asText());
+            assertEquals(2, resp.get("_landgate_stop_sequences").size());
 
             String anthropicBody = fromIR.requestFromIR(resp);
             JsonNode anthropic = JSON.readTree(anthropicBody);
             assertEquals("</end>", anthropic.get("stop_sequences").get(0).asText());
             assertEquals("DONE", anthropic.get("stop_sequences").get(1).asText());
+            assertEquals(2, anthropic.get("stop_sequences").size());
 
             String responsesBody = new ResponsesConverter().requestFromIR(resp);
             assertFalse(JSON.readTree(responsesBody).has("_landgate_stop_sequences"));
+        }
+
+        @Test
+        @DisplayName("非法 stop_sequences 不生成内部 stop 扩展")
+        void invalidStopSequencesDoNotCreateInternalExtension() {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 100,
+                        "stop_sequences": ["", 123, {"bad": true}],
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertFalse(resp.has("_landgate_stop_sequences"));
         }
 
         @Test
@@ -227,6 +246,7 @@ class AnthropicConverterTest {
             assertEquals(1, tools.size());
             assertEquals("function", tools.get(0).get("type").asText());
             assertEquals("get_weather", tools.get(0).get("name").asText());
+            assertEquals("Get weather", tools.get(0).get("description").asText());
             assertFalse(tools.get(0).get("strict").asBoolean());
 
             // input items: user + assistant + function_call + function_call_output = 4
@@ -239,6 +259,22 @@ class AnthropicConverterTest {
             assertEquals("function_call_output", input.get(3).get("type").asText());
             assertEquals("call_1", input.get(3).get("call_id").asText());
             assertEquals("Sunny, 72°F", input.get(3).get("output").asText());
+        }
+
+        @Test
+        @DisplayName("非文本 Anthropic tool description 不写入 Responses tool")
+        void nonTextAnthropicToolDescriptionIgnored() {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "tools": [{"name":"get_weather","description":{"text":"Get weather"},"input_schema":{"type":"object"}}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertFalse(resp.get("tools").get(0).has("description"));
         }
 
         @Test
@@ -272,6 +308,34 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("非文本 assistant thinking payload 不生成空 Responses reasoning input item")
+        void nonTextAssistantThinkingPayloadIgnored() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [
+                            {"role": "user", "content": "Hello"},
+                            {"role": "assistant", "content": [
+                                {"type":"thinking","thinking":123,"signature":{"value":"sig"}},
+                                {"type":"redacted_thinking","data":false},
+                                {"type":"text","text":"Hi!"}
+                            ]}
+                        ]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode input = resp.get("input");
+
+            assertEquals(2, input.size());
+            assertEquals("user", input.get(0).get("role").asText());
+            assertEquals("assistant", input.get(1).get("role").asText());
+            assertEquals("Hi!", input.get(1).get("content").get(0).get("text").asText());
+            assertFalse(input.toString().contains("reasoning"));
+            assertFalse(input.toString().contains("123"));
+        }
+
+        @Test
         @DisplayName("max_tokens 精确映射")
         void maxTokensPreserved() throws Exception {
             String body = """
@@ -286,11 +350,51 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("非法 max_tokens 不写入 Responses IR")
+        void invalidMaxTokensIgnored() {
+            String zero = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 0,
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+            String nonNumeric = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": "many",
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            assertFalse(toIR.requestToIR(zero).has("max_output_tokens"));
+            assertFalse(toIR.requestToIR(nonNumeric).has("max_output_tokens"));
+        }
+
+        @Test
+        @DisplayName("非法 boolean/numeric 基础字段不写入 Responses IR")
+        void invalidScalarFieldsIgnoredInResponsesIR() {
+            String body = """
+                    {
+                        "model": {"id": "gpt-5.2"},
+                        "stream": "yes",
+                        "temperature": "hot",
+                        "top_p": {"value": 1},
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertFalse(resp.has("model"));
+            assertFalse(resp.has("stream"));
+            assertFalse(resp.has("temperature"));
+            assertFalse(resp.has("top_p"));
+        }
+
+        @Test
         @DisplayName("thinking enabled → reasoning effort=medium")
         void thinkingEnabled() throws Exception {
             String body = """
                     {
-                        "model": "gpt-5.2",
+                        "model": {"id": "gpt-5.2"},
                         "max_tokens": 1024,
                         "messages": [{"role": "user", "content": "Hello"}],
                         "thinking": {"type": "enabled", "budget_tokens": 10000}
@@ -300,6 +404,7 @@ class AnthropicConverterTest {
             assertNotNull(resp.get("reasoning"));
             assertEquals("medium", resp.get("reasoning").get("effort").asText());
             assertEquals("auto", resp.get("reasoning").get("summary").asText());
+            assertTrue(resp.get("include").toString().contains("reasoning.encrypted_content"));
         }
 
         @Test
@@ -346,6 +451,56 @@ class AnthropicConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
             assertEquals("xhigh", resp.get("reasoning").get("effort").asText());
+        }
+
+        @Test
+        @DisplayName("output_config effort=xhigh → xhigh")
+        void outputConfigXhigh() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "output_config": {"effort": "xhigh"}
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            assertEquals("xhigh", resp.get("reasoning").get("effort").asText());
+        }
+
+        @Test
+        @DisplayName("非法 output_config.effort 不写入 Responses reasoning")
+        void invalidOutputConfigEffortIgnored() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "output_config": {"effort": "extreme"}
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertFalse(resp.has("reasoning"));
+            assertFalse(resp.has("include"));
+        }
+
+        @Test
+        @DisplayName("thinking 存在但 output_config.effort 非法时使用 medium")
+        void thinkingWithInvalidOutputConfigEffortUsesDefault() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "thinking": {"type": "enabled", "budget_tokens": 10000},
+                        "output_config": {"effort": "extreme"}
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("medium", resp.get("reasoning").get("effort").asText());
+            assertTrue(resp.get("include").toString().contains("reasoning.encrypted_content"));
         }
 
         @Test
@@ -410,6 +565,23 @@ class AnthropicConverterTest {
 
             assertEquals("auto", resp.get("tool_choice").asText());
             assertFalse(resp.get("parallel_tool_calls").asBoolean());
+        }
+
+        @Test
+        @DisplayName("非 boolean disable_parallel_tool_use 不映射 Responses parallel_tool_calls")
+        void nonBooleanDisableParallelToolUseIgnored() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "tool_choice": {"type":"auto","disable_parallel_tool_use":"true"}
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("auto", resp.get("tool_choice").asText());
+            assertFalse(resp.has("parallel_tool_calls"));
         }
 
         @Test
@@ -557,7 +729,11 @@ class AnthropicConverterTest {
                                 {"type":"image","source":{"type":"base64","media_type":"image/png","data":"   "}},
                                 {"type":"document","title":"blank.pdf","source":{"type":"url","url":" "}},
                                 {"type":"document","title":"empty.pdf","source":{"type":"base64","media_type":"application/pdf","data":""}},
-                                {"type":"document","title":"missing.pdf","source":{"type":"file","file_id":" "}}
+                                {"type":"document","title":"missing.pdf","source":{"type":"file","file_id":" "}},
+                                {"type":"text","text":{"value":"object text"}},
+                                {"type":"document","title":{"name":"remote.pdf"},"source":{"type":"url","url":{"href":"https://example.com/remote.pdf"}}},
+                                {"type":"document","title":"inline.pdf","source":{"type":"base64","media_type":{"type":"application/pdf"},"data":true}},
+                                {"type":"document","title":"uploaded.pdf","source":{"type":"file","file_id":123}}
                             ]},
                             {"role": "user", "content": [
                                 {"type":"text","text":"visible"},
@@ -575,6 +751,33 @@ class AnthropicConverterTest {
             assertEquals(1, content.size());
             assertEquals("input_text", content.get(0).get("type").asText());
             assertEquals("visible", content.get(0).get("text").asText());
+        }
+
+        @Test
+        @DisplayName("非文本 Anthropic image source 字段不生成 Responses input_image")
+        void nonTextAnthropicImageSourceFieldsIgnored() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": [
+                            {"type":"text","text":"visible"},
+                            {"type":"image","source":{"type":{"value":"url"},"url":"https://example.com/a.png"}},
+                            {"type":"image","source":{"type":"url","url":{"href":"https://example.com/a.png"}}},
+                            {"type":"image","source":{"type":"base64","media_type":{"value":"image/png"},"data":"iVBOR"}},
+                            {"type":"image","source":{"type":"base64","media_type":"image/png","data":true}}
+                        ]}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode content = resp.get("input").get(0).get("content");
+
+            assertEquals(2, content.size());
+            assertEquals("input_text", content.get(0).get("type").asText());
+            assertEquals("input_image", content.get(1).get("type").asText());
+            assertEquals("data:image/png;base64,iVBOR", content.get(1).get("image_url").asText());
+            assertFalse(content.toString().contains("https://example.com/a.png"));
+            assertFalse(content.toString().contains("{\"value\":\"image/png\"}"));
         }
 
         @Test
@@ -700,9 +903,12 @@ class AnthropicConverterTest {
                             {"role": "user", "content": "Check weather"},
                             {"role": "assistant", "content": [
                                 {"type":"tool_use","name":"missing_id","input":{}},
-                                {"type":"tool_use","id":"toolu_missing_name","input":{}}
+                                {"type":"tool_use","id":"toolu_missing_name","input":{}},
+                                {"type":"tool_use","id":true,"name":"boolean_id","input":{}},
+                                {"type":"tool_use","id":"toolu_boolean_name","name":false,"input":{}}
                             ]},
                             {"role": "user", "content": [
+                                {"type":"tool_result","tool_use_id":123,"content":"numeric id result"},
                                 {"type":"tool_result","content":"orphan result"}
                             ]}
                         ]
@@ -817,6 +1023,25 @@ class AnthropicConverterTest {
                         "messages": [{"role": "user", "content": "search"}],
                         "tools": [{"type":"web_search_20250305","name":"web_search",
                             "user_location":"Seattle"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode tool = resp.get("tools").get(0);
+
+            assertEquals("web_search", tool.get("type").asText());
+            assertFalse(tool.has("user_location"));
+        }
+
+        @Test
+        @DisplayName("Anthropic web_search user_location 无有效文本子字段不透传")
+        void webSearchToolWithInvalidUserLocationFieldsDropsLocation() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 1024,
+                        "messages": [{"role": "user", "content": "search"}],
+                        "tools": [{"type":"web_search_20250305","name":"web_search",
+                            "user_location":{"country":123,"city":"","timezone":{"name":"America/Los_Angeles"}}}]
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
@@ -950,6 +1175,30 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("非法 Responses usage token 不降级到 Anthropic usage")
+        void invalidResponsesUsageTokensIgnoredInAnthropicUsage() throws Exception {
+            String body = """
+                    {
+                        "id": "resp_bad_usage",
+                        "model": "gpt-5.2",
+                        "status": "completed",
+                        "output": [{"type":"message","content":[{"type":"output_text","text":"Hello"}]}],
+                        "usage": {
+                            "input_tokens": "100",
+                            "output_tokens": -5,
+                            "input_tokens_details": {"cached_tokens": {"value": 80}}
+                        }
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.responseFromIR(JSON.readTree(body)));
+            JsonNode usage = anth.get("usage");
+
+            assertEquals(0, usage.get("input_tokens").asInt());
+            assertEquals(0, usage.get("output_tokens").asInt());
+            assertFalse(usage.has("cache_read_input_tokens"));
+        }
+
+        @Test
         @DisplayName("tool_use 响应")
         void toolUse() throws Exception {
             String body = """
@@ -986,6 +1235,8 @@ class AnthropicConverterTest {
                         "output": [
                             {"type":"function_call","name":"missing_call_id","arguments":"{}"},
                             {"type":"function_call","call_id":"call_missing_name","arguments":"{}"},
+                            {"type":"function_call","call_id":true,"name":"boolean_call_id","arguments":"{}"},
+                            {"type":"function_call","call_id":"call_boolean_name","name":false,"arguments":"{}"},
                             {"type":"message","content":[{"type":"output_text","text":"visible"}]}
                         ]
                     }""";
@@ -998,6 +1249,35 @@ class AnthropicConverterTest {
             assertEquals("text", content.get(0).get("type").asText());
             assertEquals("visible", content.get(0).get("text").asText());
             assertFalse(content.toString().contains("tool_use"));
+        }
+
+        @Test
+        @DisplayName("Responses 响应非文本 envelope/content/tool payload 不降级到 Anthropic")
+        void nonTextResponsesResponsePayloadIgnoredInAnthropic() throws Exception {
+            String body = """
+                    {
+                        "id": {"value": "resp_non_text"},
+                        "model": {"id": "gpt-5.2"},
+                        "status": "completed",
+                        "output": [
+                            {"type":"message","content":[
+                                {"type":"output_text","text":123},
+                                {"type":"refusal","refusal":false}
+                            ]},
+                            {"type":"function_call","call_id":"call_1","name":"get_weather","arguments":{"city":"NYC"}}
+                        ]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.responseFromIR(JSON.readTree(body)));
+            JsonNode content = anth.get("content");
+
+            assertTrue(anth.get("id").asText().startsWith("msg_"));
+            assertEquals("unknown", anth.get("model").asText());
+            assertEquals(1, content.size());
+            assertEquals("tool_use", content.get(0).get("type").asText());
+            assertEquals(0, content.get(0).get("input").size());
+            assertFalse(content.toString().contains("123"));
+            assertFalse(content.toString().contains("false"));
         }
 
         @Test
@@ -1238,6 +1518,23 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("非文本 Responses status/reason 不降级为 Anthropic max_tokens")
+        void nonTextResponsesStatusAndReasonIgnoredInAnthropicStopReason() throws Exception {
+            String body = """
+                    {
+                        "id": "resp_non_text_status",
+                        "model": "gpt-5.2",
+                        "status": {"value": "incomplete"},
+                        "incomplete_details": {"reason": {"value": "max_output_tokens"}},
+                        "output": [{"type":"message","content":[{"type":"output_text","text":"Partial..."}]}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.responseFromIR(JSON.readTree(body)));
+
+            assertEquals("end_turn", anth.get("stop_reason").asText());
+        }
+
+        @Test
         @DisplayName("空 output → 空 content，不伪造 text")
         void emptyOutput() throws Exception {
             String body = """
@@ -1282,6 +1579,46 @@ class AnthropicConverterTest {
             JsonNode anth = JSON.readTree(result);
 
             // requestFromIR 中未提供 max_output_tokens 时默认 8192
+            assertEquals(8192, anth.get("max_tokens").asInt());
+        }
+
+        @Test
+        @DisplayName("非法 max_output_tokens 时默认 8192")
+        void invalidMaxOutputTokensDefault() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_output_tokens": "many",
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode ir = JSON.readTree(body);
+            String result = fromIR.requestFromIR(ir);
+            JsonNode anth = JSON.readTree(result);
+
+            assertEquals(8192, anth.get("max_tokens").asInt());
+        }
+
+        @Test
+        @DisplayName("非法 boolean/numeric 基础字段不写入 Anthropic 请求")
+        void invalidScalarFieldsIgnoredInAnthropic() throws Exception {
+            String body = """
+                    {
+                        "model": {"id": "gpt-5.2"},
+                        "stream": "yes",
+                        "temperature": "hot",
+                        "top_p": {"value": 1},
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode ir = JSON.readTree(body);
+            String result = fromIR.requestFromIR(ir);
+            JsonNode anth = JSON.readTree(result);
+
+            assertFalse(anth.has("model"));
+            assertFalse(anth.has("stream"));
+            assertFalse(anth.has("temperature"));
+            assertFalse(anth.has("top_p"));
             assertEquals(8192, anth.get("max_tokens").asInt());
         }
     }
@@ -1404,6 +1741,35 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("Anthropic 响应非文本 envelope/thinking payload 不进入 Responses")
+        void nonTextAnthropicResponsePayloadIgnoredInResponses() throws Exception {
+            String body = """
+                    {
+                        "id": {"value": "msg_non_text"},
+                        "type": "message",
+                        "role": "assistant",
+                        "model": {"id": "claude-opus-4-6"},
+                        "stop_reason": "end_turn",
+                        "content": [
+                            {"type":"thinking","thinking":123,"signature":{"value":"sig"}},
+                            {"type":"redacted_thinking","data":false},
+                            {"type":"text","text":"visible"}
+                        ],
+                        "usage": {"input_tokens":10,"output_tokens":20}
+                    }""";
+
+            JsonNode result = toIR.responseToIR(body);
+            JsonNode output = result.get("output");
+
+            assertTrue(result.get("id").asText().startsWith("resp_"));
+            assertEquals("unknown", result.get("model").asText());
+            assertEquals(1, output.size());
+            assertEquals("message", output.get(0).get("type").asText());
+            assertEquals("visible", output.get(0).get("content").get(0).get("text").asText());
+            assertFalse(output.toString().contains("123"));
+        }
+
+        @Test
         @DisplayName("tool_use → function_call output")
         void toolUseToFunctionCall() throws Exception {
             String body = """
@@ -1439,6 +1805,8 @@ class AnthropicConverterTest {
                         "content": [
                             {"type":"tool_use","name":"missing_id","input":{}},
                             {"type":"tool_use","id":"toolu_missing_name","input":{}},
+                            {"type":"tool_use","id":true,"name":"boolean_id","input":{}},
+                            {"type":"tool_use","id":"toolu_boolean_name","name":false,"input":{}},
                             {"type":"text","text":"visible"}
                         ],
                         "usage": {"input_tokens":10,"output_tokens":5}
@@ -1524,6 +1892,26 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("非文本 Anthropic stop_reason 不写成 Responses incomplete")
+        void nonTextAnthropicStopReasonIgnoredInResponsesStatus() throws Exception {
+            String body = """
+                    {
+                        "id": "msg_non_text_stop",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-opus-4-6",
+                        "stop_reason": {"value": "max_tokens"},
+                        "content": [{"type":"text","text":"Done"}],
+                        "usage": {"input_tokens":10,"output_tokens":5}
+                    }""";
+
+            JsonNode result = toIR.responseToIR(body);
+
+            assertEquals("completed", result.get("status").asText());
+            assertFalse(result.has("incomplete_details"));
+        }
+
+        @Test
         @DisplayName("cache creation/read tokens → Responses input_tokens；cached_tokens 只表示 read")
         void cacheReadTokensToResponsesUsage() throws Exception {
             String body = """
@@ -1544,6 +1932,34 @@ class AnthropicConverterTest {
             assertEquals(80, usage.get("input_tokens_details").get("cached_tokens").asInt());
             assertEquals(4, usage.get("output_tokens").asInt());
             assertEquals(104, usage.get("total_tokens").asInt());
+        }
+
+        @Test
+        @DisplayName("非法 Anthropic usage token 不写入 Responses usage")
+        void invalidAnthropicUsageTokensIgnoredInResponsesUsage() throws Exception {
+            String body = """
+                    {
+                        "id": "msg_bad_usage",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "claude-opus-4-6",
+                        "stop_reason": "end_turn",
+                        "content": [{"type":"text","text":"Bad usage"}],
+                        "usage": {
+                            "input_tokens": "12",
+                            "cache_creation_input_tokens": -8,
+                            "cache_read_input_tokens": {"value": 80},
+                            "output_tokens": -4
+                        }
+                    }""";
+
+            JsonNode result = toIR.responseToIR(body);
+            JsonNode usage = result.get("usage");
+
+            assertEquals(0, usage.get("input_tokens").asInt());
+            assertEquals(0, usage.get("output_tokens").asInt());
+            assertEquals(0, usage.get("total_tokens").asInt());
+            assertFalse(usage.has("input_tokens_details"));
         }
 
         @Test
@@ -1628,6 +2044,55 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("Responses reasoning minimal 有损降级为 Anthropic effort=low")
+        void responsesReasoningMinimalToAnthropicLow() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "reasoning": {"effort": "minimal"},
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+
+            assertEquals("low", anth.get("output_config").get("effort").asText());
+            assertFalse(anth.has("thinking"));
+        }
+
+        @Test
+        @DisplayName("Responses reasoning xhigh 转为 Anthropic effort=max")
+        void responsesReasoningXhighToAnthropicMax() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "reasoning": {"effort": "xhigh"},
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+
+            assertEquals("max", anth.get("output_config").get("effort").asText());
+            assertEquals("enabled", anth.get("thinking").get("type").asText());
+            assertEquals(32768, anth.get("thinking").get("budget_tokens").asInt());
+        }
+
+        @Test
+        @DisplayName("非法 Responses reasoning.effort 不降级到 Anthropic")
+        void invalidResponsesReasoningEffortIgnoredInAnthropic() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "reasoning": {"effort": "extreme"},
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+
+            assertFalse(anth.has("output_config"));
+            assertFalse(anth.has("thinking"));
+        }
+
+        @Test
         @DisplayName("Responses web_search_preview tool → Anthropic web_search")
         void responsesWebSearchPreviewToAnthropic() throws Exception {
             String body = """
@@ -1653,6 +2118,23 @@ class AnthropicConverterTest {
                     {
                         "model": "gpt-5.2",
                         "tools": [{"type":"web_search_preview","user_location":"Seattle"}],
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode tool = anth.get("tools").get(0);
+
+            assertEquals("web_search_20250305", tool.get("type").asText());
+            assertFalse(tool.has("user_location"));
+        }
+
+        @Test
+        @DisplayName("Responses web_search user_location 无有效文本子字段不透传到 Anthropic")
+        void responsesWebSearchWithInvalidUserLocationFieldsDropsLocation() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "tools": [{"type":"web_search_preview","user_location":{"country":123,"city":"","timezone":{"name":"America/Los_Angeles"}}}],
                         "input": [{"role":"user","content":"Hello"}]
                     }""";
 
@@ -1730,6 +2212,21 @@ class AnthropicConverterTest {
 
             assertEquals("object", schema.get("type").asText());
             assertTrue(schema.get("properties").isObject());
+        }
+
+        @Test
+        @DisplayName("非文本 Responses function description 不降级到 Anthropic")
+        void nonTextResponsesFunctionDescriptionIgnoredInAnthropic() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "tools": [{"type":"function","name":"simple_tool","description":{"text":"A tool"},"parameters":{"type":"object"}}],
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+
+            assertFalse(anth.get("tools").get(0).has("description"));
         }
 
         @Test
@@ -1822,6 +2319,25 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("非 boolean parallel_tool_calls 不生成 Anthropic disable_parallel_tool_use")
+        void nonBooleanParallelToolCallsDoesNotDisableAnthropicParallelism() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "input": [{"role":"user","content":"Hello"}],
+                        "parallel_tool_calls": "false",
+                        "tool_choice": {"type":"function","name":"get_weather"}
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode tc = anth.get("tool_choice");
+
+            assertEquals("tool", tc.get("type").asText());
+            assertEquals("get_weather", tc.get("name").asText());
+            assertFalse(tc.has("disable_parallel_tool_use"));
+        }
+
+        @Test
         @DisplayName("unsupported tool_choice 且 parallel_tool_calls=false 时保留并行禁用")
         void unsupportedToolChoiceWithParallelFalseFallsBackToAuto() throws Exception {
             String body = """
@@ -1894,6 +2410,9 @@ class AnthropicConverterTest {
                             {"role":"user","content":"Hello"},
                             {"type":"function_call","name":"missing_call_id","arguments":"{}"},
                             {"type":"function_call","call_id":"call_missing_name","arguments":"{}"},
+                            {"type":"function_call","call_id":true,"name":"boolean_call_id","arguments":"{}"},
+                            {"type":"function_call","call_id":"call_boolean_name","name":false,"arguments":"{}"},
+                            {"type":"function_call_output","call_id":123,"output":"numeric id result"},
                             {"type":"function_call_output","output":"orphan result"}
                         ]
                     }""";
@@ -1925,6 +2444,24 @@ class AnthropicConverterTest {
 
             assertEquals("tool_result", toolResult.get("type").asText());
             assertEquals("call_1", toolResult.get("tool_use_id").asText());
+            assertEquals("", toolResult.get("content").get(0).get("text").asText());
+        }
+
+        @Test
+        @DisplayName("非文本 function_call_output output 不降级为 Anthropic 文本")
+        void nonTextFunctionCallOutputContentStaysEmpty() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "input": [
+                            {"type":"function_call_output","call_id":"call_1","output":{"value":"Sunny"}}
+                        ]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode toolResult = anth.get("messages").get(0).get("content").get(0);
+
+            assertEquals("tool_result", toolResult.get("type").asText());
             assertEquals("", toolResult.get("content").get(0).get("text").asText());
         }
 
@@ -1998,11 +2535,18 @@ class AnthropicConverterTest {
                     {
                         "model": "gpt-5.2",
                         "input": [
+                            {"role":"user","content":{"text":"hidden object"}},
+                            {"role":123,"content":[{"type":"input_text","text":"numeric role"}]},
                             {"role":"user","content":[
-                                {"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}
+                                {"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}},
+                                {"type":123,"text":"numeric type"},
+                                {"type":"tool_result","tool_use_id":123,"content":"bad id"}
                             ]},
                             {"role":"assistant","content":[
-                                {"type":"custom_tool_call","call_id":"call_custom","name":"grammar","input":"start: expr"}
+                                {"type":"custom_tool_call","call_id":"call_custom","name":"grammar","input":"start: expr"},
+                                {"type":"thinking","thinking":123,"signature":{"value":"sig"}},
+                                {"type":"tool_use","id":true,"name":"bad","input":{"x":1}},
+                                {"type":"redacted_thinking","data":false}
                             ]},
                             {"role":"user","content":[{"type":"input_text","text":"visible"}]}
                         ]
@@ -2016,6 +2560,11 @@ class AnthropicConverterTest {
             assertEquals("visible", messages.get(0).get("content").get(0).get("text").asText());
             assertFalse(messages.toString().contains("input_audio"));
             assertFalse(messages.toString().contains("custom_tool_call"));
+            assertFalse(messages.toString().contains("hidden object"));
+            assertFalse(messages.toString().contains("numeric role"));
+            assertFalse(messages.toString().contains("numeric type"));
+            assertFalse(messages.toString().contains("tool_result"));
+            assertFalse(messages.toString().contains("thinking"));
         }
 
         @Test
@@ -2095,6 +2644,29 @@ class AnthropicConverterTest {
             assertEquals("JVBERi0x", content.get(1).get("source").get("data").asText());
             assertEquals("file", content.get(2).get("source").get("type").asText());
             assertEquals("file_123", content.get(2).get("source").get("file_id").asText());
+        }
+
+        @Test
+        @DisplayName("非文本 Responses input_file 字段不降级到 Anthropic document")
+        void nonTextInputFileFieldsDroppedInAnthropic() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "input": [{"role":"user","content":[
+                            {"type":"input_text","text":"visible"},
+                            {"type":"input_file","filename":{"name":"remote.pdf"},"file_url":{"href":"https://example.com/remote.pdf"}},
+                            {"type":"input_file","filename":"inline.pdf","file_data":true},
+                            {"type":"input_file","filename":"uploaded.pdf","file_id":123}
+                        ]}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode content = anth.get("messages").get(0).get("content");
+
+            assertEquals(1, content.size());
+            assertEquals("text", content.get(0).get("type").asText());
+            assertEquals("visible", content.get(0).get("text").asText());
+            assertFalse(content.toString().contains("document"));
         }
 
         @Test
@@ -2216,6 +2788,36 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("Anthropic stream 非文本 model 不覆盖 Responses model")
+        void invalidAnthropicStreamModelIgnoredInResponses() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":{\"id\":\"bad\"},\"usage\":{\"input_tokens\":10}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.created")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"model\":\"gpt-5.2\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"model\":\"\"")));
+        }
+
+        @Test
+        @DisplayName("Anthropic stream 非文本内容和参数不写入 Responses delta")
+        void nonTextAnthropicStreamPayloadsIgnoredInResponses() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            t.feed("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}");
+            List<String> out = t.feed("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":123}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("response.output_text.delta")));
+
+            t.feed("data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}");
+            out = t.feed("data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":true}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("response.reasoning_summary_text.delta")));
+
+            t.feed("data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_1\",\"name\":\"get_weather\"}}");
+            out = t.feed("data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":{\"city\":\"NYC\"}}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("response.function_call_arguments.delta")));
+        }
+
+        @Test
         @DisplayName("流式 cache creation/read tokens → Responses usage")
         void streamingCacheReadTokens() {
             StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
@@ -2227,6 +2829,19 @@ class AnthropicConverterTest {
             assertTrue(out.stream().anyMatch(s -> s.contains("\"input_tokens\":56")));
             assertTrue(out.stream().anyMatch(s -> s.contains("\"cached_tokens\":40")));
             assertTrue(out.stream().anyMatch(s -> s.contains("\"total_tokens\":61")));
+        }
+
+        @Test
+        @DisplayName("Anthropic stream 非法 usage token 不写入 Responses usage")
+        void invalidAnthropicStreamUsageTokensIgnored() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            t.feed("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"gpt-5.2\",\"usage\":{\"input_tokens\":\"10\",\"cache_creation_input_tokens\":-6,\"cache_read_input_tokens\":{\"value\":40}}}}");
+            t.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":-5}}");
+            List<String> out = t.feed("data: {\"type\":\"message_stop\"}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0}")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("input_tokens_details")));
         }
 
         @Test
@@ -2359,6 +2974,30 @@ class AnthropicConverterTest {
             assertTrue(out.stream().anyMatch(s -> s.contains("overloaded_error")));
             assertTrue(t.isDone());
         }
+
+        @Test
+        @DisplayName("Anthropic stream 非文本 error 字段使用默认 Responses error")
+        void nonTextAnthropicStreamErrorFieldsUseDefaults() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":\"error\",\"error\":{\"type\":{\"value\":\"overloaded_error\"},\"message\":{\"text\":\"Overloaded\"}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.failed")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"code\":\"api_error\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("Anthropic stream error")));
+            assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("Anthropic stream 非文本 type 不触发 error 终止")
+        void nonTextAnthropicStreamTypeIgnored() {
+            StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":{\"value\":\"error\"},\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}");
+
+            assertTrue(out.isEmpty());
+            assertFalse(t.isDone());
+        }
     }
 
     // ========================
@@ -2392,6 +3031,37 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("Responses stream 非文本 model 不覆盖 Anthropic message_start")
+        void invalidResponsesStreamModelIgnoredInAnthropic() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":{\"id\":\"bad\"}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("message_start")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"model\":\"gpt-5.2\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"model\":\"\"")));
+        }
+
+        @Test
+        @DisplayName("Responses stream 非文本内容和参数不降级到 Anthropic delta")
+        void nonTextResponsesStreamPayloadsIgnoredInAnthropic() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":\"response.output_text.delta\",\"delta\":123}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("text_delta")));
+
+            out = t.feed("data: {\"type\":\"response.refusal.delta\",\"delta\":{\"text\":\"No\"}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("text_delta")));
+
+            out = t.feed("data: {\"type\":\"response.content_part.done\",\"part\":{\"type\":\"output_text\",\"text\":true}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("text_delta")));
+
+            t.feed("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_weather\"}}");
+            out = t.feed("data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":{\"city\":\"NYC\"}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("input_json_delta")));
+        }
+
+        @Test
         @DisplayName("response.done incomplete → max_tokens")
         void responseDoneIncomplete() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
@@ -2400,6 +3070,30 @@ class AnthropicConverterTest {
             List<String> out = t.feed("data: {\"type\":\"response.done\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":4}}}");
             assertTrue(out.stream().anyMatch(s -> s.contains("max_tokens")));
             assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("Responses stream 非文本 status/reason 不降级为 Anthropic max_tokens")
+        void nonTextResponsesStreamStatusIgnoredInAnthropicStopReason() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_non_text_status\",\"model\":\"gpt-5.2\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.done\",\"response\":{\"status\":{\"value\":\"incomplete\"},\"incomplete_details\":{\"reason\":{\"value\":\"max_output_tokens\"}},\"usage\":{\"input_tokens\":12,\"output_tokens\":4}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"stop_reason\":\"end_turn\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"stop_reason\":\"max_tokens\"")));
+            assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("Responses stream 非文本 type 不触发 Anthropic 终止")
+        void nonTextResponsesStreamTypeIgnoredInAnthropic() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+
+            List<String> out = t.feed("data: {\"type\":{\"value\":\"response.done\"},\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":4}}}");
+
+            assertTrue(out.isEmpty());
+            assertFalse(t.isDone());
         }
 
         @Test
@@ -2453,10 +3147,29 @@ class AnthropicConverterTest {
             out = t.feed("data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_missing_name\",\"arguments\":\"{}\",\"status\":\"completed\"}}");
             assertTrue(out.stream().noneMatch(s -> s.contains("\"tool_use\"")));
 
+            out = t.feed("data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":true,\"name\":\"boolean_call_id\"}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"tool_use\"")));
+
+            out = t.feed("data: {\"type\":\"response.output_item.added\",\"output_index\":3,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_boolean_name\",\"name\":false}}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"tool_use\"")));
+
             out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10}}}");
             assertTrue(out.stream().anyMatch(s -> s.contains("\"stop_reason\":\"end_turn\"")));
             assertTrue(out.stream().noneMatch(s -> s.contains("\"stop_reason\":\"tool_use\"")));
             assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("Responses stream 非法 output_index 不按字符串数字绑定 Anthropic tool_use")
+        void invalidResponsesStreamOutputIndexNotCoercedInAnthropic() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_invalid_index\",\"model\":\"gpt-5.2\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.output_item.added\",\"output_index\":\"7\",\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"get_weather\"}}");
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"tool_use\"")));
+
+            out = t.feed("data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":7,\"delta\":\"{\\\"city\\\":\\\"NYC\\\"}\"}");
+            assertTrue(out.stream().noneMatch(s -> s.contains("input_json_delta")));
         }
 
         @Test
@@ -2505,6 +3218,19 @@ class AnthropicConverterTest {
             assertTrue(out.stream().anyMatch(s -> s.contains("final only")));
             assertTrue(out.stream().anyMatch(s -> s.contains("\"cache_read_input_tokens\":80")));
             assertTrue(out.stream().anyMatch(s -> s.contains("message_stop")));
+            assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("Responses stream 非法 usage token 不降级到 Anthropic usage")
+        void invalidResponsesStreamUsageTokensIgnoredInAnthropic() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bad_usage\",\"model\":\"gpt-5.2\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":\"100\",\"output_tokens\":-5,\"input_tokens_details\":{\"cached_tokens\":{\"value\":80}}}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"usage\":{\"output_tokens\":0}")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("cache_read_input_tokens")));
             assertTrue(t.isDone());
         }
 
