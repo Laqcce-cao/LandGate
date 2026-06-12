@@ -11,6 +11,7 @@ import java.util.Map;
  * This keeps transformers from reaching into {@link GatewayRequestContext}'s ThreadLocal state.
  */
 public record UpstreamRequestContext(
+        String requestId,
         String body,
         AccountEntity account,
         String accessToken,
@@ -23,9 +24,26 @@ public record UpstreamRequestContext(
         Map<String, String> requestHeaders
 ) {
 
+    public UpstreamRequestContext(
+            String body,
+            AccountEntity account,
+            String accessToken,
+            UpstreamRoute upstreamRoute,
+            String metadataUserId,
+            String upstreamPath,
+            String requestedModel,
+            boolean stream,
+            boolean shouldMimicClaudeCode,
+            Map<String, String> requestHeaders
+    ) {
+        this(null, body, account, accessToken, upstreamRoute, metadataUserId, upstreamPath,
+                requestedModel, stream, shouldMimicClaudeCode, requestHeaders);
+    }
+
     public static UpstreamRequestContext fromLegacy(String body, AccountEntity account, String accessToken) {
         GatewayRequestContext ctx = GatewayRequestContext.get();
         return new UpstreamRequestContext(
+                ctx != null ? ctx.getRequestId() : null,
                 body,
                 account,
                 accessToken,

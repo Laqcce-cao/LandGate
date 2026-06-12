@@ -238,8 +238,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         // Step 4: Session 粘滞（IP + UA + API Key）
         String sessionHash = sessionHashService.generateHash(request, apiKeyId);
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
+        Long initialStickyAccountId = stickyAccountId;
         if (stickyAccountId != null) {
-            log.info("[{}] 粘滞会话命中: account_id={}", requestId, stickyAccountId);
+            log.info("[{}] 粘滞会话命中: session_hash={}, account_id={}",
+                    requestId, sessionHash, stickyAccountId);
+        } else {
+            log.info("[{}] 粘滞会话未命中: session_hash={}", requestId, sessionHash);
         }
 
         // Step 6: Failover 循环
@@ -396,6 +400,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 HttpRequest upstreamReq;
                 try {
                     upstreamReq = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                            requestId,
                             upstreamBody,
                             account,
                             accessToken,
@@ -462,9 +467,15 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     }
 
                     if (usage != null && usage.hasUsage()) {
-                        log.info("[{}] 用量统计: input={}, output={}, cache_write={}, cache_read={}",
-                                requestId, usage.getInputTokens(), usage.getOutputTokens(),
-                                usage.getCacheCreationTokens(), usage.getCacheReadTokens());
+                        long cacheEligibleInput = (long) usage.getInputTokens() + usage.getCacheReadTokens();
+                        double cacheHitRate = cacheEligibleInput > 0
+                                ? (double) usage.getCacheReadTokens() * 100.0 / cacheEligibleInput
+                                : 0.0;
+                        log.info("[{}] 用量统计: account_id={}, sticky_initial={}, sticky_hash={}, model={}, input={}, output={}, cache_write={}, cache_read={}, cache_hit_rate={}%, client_stream={}, upstream_stream={}",
+                                requestId, account.getId(), initialStickyAccountId, sessionHash, model,
+                                usage.getInputTokens(), usage.getOutputTokens(),
+                                usage.getCacheCreationTokens(), usage.getCacheReadTokens(),
+                                String.format("%.2f", cacheHitRate), clientStream, upstreamStream);
                         billingSettlementService.settleUsageLog(usage, model, accountPlatform.name(), userId, apiKeyId, account, group, user,
                                 clientStream, streamingResult != null && streamingResult.clientDisconnected(), durationMs,
                                 request, requestId);

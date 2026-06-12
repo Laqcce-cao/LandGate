@@ -9,6 +9,7 @@ import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
@@ -186,6 +187,34 @@ class OpenAiTransformerTest {
         assertEquals("Project rules", root.get("instructions").asText());
         assertEquals(1, root.get("input").size());
         assertEquals("user", root.get("input").get(0).get("role").asText());
+    }
+
+    @Test
+    @DisplayName("OAuth Codex 开关打开时保留 prompt_cache_key")
+    void codexOAuthCanPreservePromptCacheKeyForExperiment() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        ReflectionTestUtils.setField(transformer, "preservePromptCacheKey", true);
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .build();
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "prompt_cache_key":"tenant:thread",
+                  "prompt_cache_retention":"24h",
+                  "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]}]
+                }""";
+
+        Method method = OpenAiTransformer.class.getDeclaredMethod(
+                "normalizeCodexOAuthRequestBody", String.class, AccountEntity.class);
+        method.setAccessible(true);
+        String normalized = (String) method.invoke(transformer, body, account);
+        JsonNode root = JSON.readTree(normalized);
+
+        assertEquals("tenant:thread", root.get("prompt_cache_key").asText());
+        assertFalse(root.has("prompt_cache_retention"));
     }
 
     @Test

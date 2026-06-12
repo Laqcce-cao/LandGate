@@ -10,11 +10,14 @@ import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.AccountType;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -45,6 +48,9 @@ public class OpenAiTransformer implements IRequestTransformer {
             "background", "conversation", "context_management",
             "parallel_tool_calls", "max_tool_calls");
 
+    @Value("${landgate.gateway.codex.preserve-prompt-cache-key:false}")
+    private boolean preservePromptCacheKey;
+
     public OpenAiTransformer() {
     }
 
@@ -60,7 +66,7 @@ public class OpenAiTransformer implements IRequestTransformer {
         if (route != null) {
             targetUrl = route.targetUrl();
             if (route.normalizeCodexOAuthBody()) {
-                body = normalizeCodexOAuthRequestBody(body, account, route);
+                body = normalizeCodexOAuthRequestBody(body, account, route, context.requestId());
             } else if (route.endpointKind() == EndpointKind.OPENAI_CHAT_COMPLETIONS) {
                 body = ensureChatCompletionsStreamUsage(body);
             }
@@ -116,15 +122,19 @@ public class OpenAiTransformer implements IRequestTransformer {
      * 路由层执行，避免影响普通 OpenAI API Key 的 Responses 请求。
      */
     private String normalizeCodexOAuthRequestBody(String body, AccountEntity account) {
-        return normalizeCodexOAuthRequestBody(body, account, null);
+        return normalizeCodexOAuthRequestBody(body, account, null, null);
     }
 
-    private String normalizeCodexOAuthRequestBody(String body, AccountEntity account, UpstreamRoute route) {
+    private String normalizeCodexOAuthRequestBody(String body, AccountEntity account,
+                                                  UpstreamRoute route, String requestId) {
         try {
             ObjectNode root = (ObjectNode) JSON.readTree(body);
+            CodexRequestShape beforeShape = CodexRequestShape.from(root, body);
 
             for (String field : CODEX_UNSUPPORTED_FIELDS) {
-                root.remove(field);
+                if (shouldRemoveCodexField(field)) {
+                    root.remove(field);
+                }
             }
             if (isCodexCompactEndpoint(route)) {
                 root.remove("store");
@@ -142,7 +152,10 @@ public class OpenAiTransformer implements IRequestTransformer {
                 root.put("instructions", "You are a helpful coding assistant.");
             }
 
-            return JSON.writeValueAsString(root);
+            String normalized = JSON.writeValueAsString(root);
+            CodexRequestShape afterShape = CodexRequestShape.from(root, normalized);
+            logCodexNormalizationDiagnostics(requestId, account, route, beforeShape, afterShape);
+            return normalized;
         } catch (Exception e) {
             log.warn("Failed to normalize Codex OAuth request body: account_id={}", account.getId(), e);
             return body;
@@ -223,6 +236,194 @@ public class OpenAiTransformer implements IRequestTransformer {
     /** 判断 instructions 是否缺失或为空白。 */
     private static boolean isBlankText(JsonNode node) {
         return node == null || node.isNull() || !node.isTextual() || node.asText().isBlank();
+    }
+
+    private boolean shouldRemoveCodexField(String field) {
+        return !("prompt_cache_key".equals(field) && preservePromptCacheKey);
+    }
+
+    private static void logCodexNormalizationDiagnostics(String requestId,
+                                                         AccountEntity account,
+                                                         UpstreamRoute route,
+                                                         CodexRequestShape before,
+                                                         CodexRequestShape after) {
+        if (!log.isInfoEnabled()) return;
+        GatewayRequestContext ctx = GatewayRequestContext.get();
+        String effectiveRequestId = requestId != null && !requestId.isBlank()
+                ? requestId
+                : (ctx != null ? ctx.getRequestId() : "-");
+        String endpoint = route != null && route.endpointKind() != null ? route.endpointKind().name() : "unknown";
+        log.info("[{}] Codex OAuth 请求规范化诊断: account_id={}, endpoint={}, preserve_prompt_cache_key={}, body_bytes={}->{}, body_hash={}->{}, "
+                        + "prefix64k_hash={}->{}, prefix128k_hash={}->{}, prefix192k_hash={}->{}, prefix256k_hash={}->{}, prefix384k_hash={}->{}, "
+                        + "input_items={}->{}, input_bytes={}->{}, max_input_item={}->{}, tail_input_items={}->{}, "
+                        + "system_or_developer_items={}->{}, instructions={}->{}, tools={}->{}, "
+                        + "prompt_cache_key={}->{}, prompt_cache_retention={}->{}, previous_response_id={}->{}, conversation={}->{}, "
+                        + "metadata={}->{}, store={}->{}, stream={}->{}",
+                effectiveRequestId,
+                account != null ? account.getId() : null,
+                endpoint,
+                after.hasPromptCacheKey,
+                before.bodyBytes, after.bodyBytes,
+                before.bodyHash, after.bodyHash,
+                before.prefix64kHash, after.prefix64kHash,
+                before.prefix128kHash, after.prefix128kHash,
+                before.prefix192kHash, after.prefix192kHash,
+                before.prefix256kHash, after.prefix256kHash,
+                before.prefix384kHash, after.prefix384kHash,
+                before.inputItems, after.inputItems,
+                before.inputBytes, after.inputBytes,
+                before.maxInputItem, after.maxInputItem,
+                before.tailInputItems, after.tailInputItems,
+                before.systemOrDeveloperItems, after.systemOrDeveloperItems,
+                before.hasInstructions, after.hasInstructions,
+                before.toolsItems, after.toolsItems,
+                before.hasPromptCacheKey, after.hasPromptCacheKey,
+                before.hasPromptCacheRetention, after.hasPromptCacheRetention,
+                before.hasPreviousResponseId, after.hasPreviousResponseId,
+                before.hasConversation, after.hasConversation,
+                before.hasMetadata, after.hasMetadata,
+                before.storeValue, after.storeValue,
+                before.streamValue, after.streamValue);
+    }
+
+    private record CodexRequestShape(
+            int bodyBytes,
+            String bodyHash,
+            String prefix64kHash,
+            String prefix128kHash,
+            String prefix192kHash,
+            String prefix256kHash,
+            String prefix384kHash,
+            int inputItems,
+            int inputBytes,
+            String maxInputItem,
+            String tailInputItems,
+            int systemOrDeveloperItems,
+            boolean hasInstructions,
+            int toolsItems,
+            boolean hasPromptCacheKey,
+            boolean hasPromptCacheRetention,
+            boolean hasPreviousResponseId,
+            boolean hasConversation,
+            boolean hasMetadata,
+            String storeValue,
+            String streamValue
+    ) {
+        static CodexRequestShape from(ObjectNode root, String body) {
+            JsonNode input = root.get("input");
+            int inputItems = input != null && input.isArray() ? input.size() : -1;
+            int inputBytes = input == null ? -1 : input.toString().getBytes(StandardCharsets.UTF_8).length;
+            int systemOrDeveloperItems = 0;
+            int maxInputIndex = -1;
+            int maxInputBytes = -1;
+            String maxInputRole = "";
+            String maxInputType = "";
+            if (input != null && input.isArray()) {
+                for (int i = 0; i < input.size(); i++) {
+                    JsonNode item = input.get(i);
+                    String role = item.path("role").asText("");
+                    if ("system".equals(role) || "developer".equals(role)) {
+                        systemOrDeveloperItems++;
+                    }
+                    int itemBytes = item.toString().getBytes(StandardCharsets.UTF_8).length;
+                    if (itemBytes > maxInputBytes) {
+                        maxInputIndex = i;
+                        maxInputBytes = itemBytes;
+                        maxInputRole = role;
+                        maxInputType = inputItemType(item);
+                    }
+                }
+            }
+            JsonNode tools = root.get("tools");
+            String maxInputItem = maxInputIndex >= 0
+                    ? maxInputIndex + ":" + maxInputRole + "/" + maxInputType + "/" + maxInputBytes + "B"
+                    : "none";
+            return new CodexRequestShape(
+                    body == null ? 0 : body.getBytes(StandardCharsets.UTF_8).length,
+                    sha256Hex(body, Integer.MAX_VALUE),
+                    sha256Hex(body, 64 * 1024),
+                    sha256Hex(body, 128 * 1024),
+                    sha256Hex(body, 192 * 1024),
+                    sha256Hex(body, 256 * 1024),
+                    sha256Hex(body, 384 * 1024),
+                    inputItems,
+                    inputBytes,
+                    maxInputItem,
+                    tailInputItems(input),
+                    systemOrDeveloperItems,
+                    !isBlankText(root.get("instructions")),
+                    tools != null && tools.isArray() ? tools.size() : -1,
+                    root.has("prompt_cache_key"),
+                    root.has("prompt_cache_retention"),
+                    root.has("previous_response_id"),
+                    root.has("conversation"),
+                    root.has("metadata"),
+                    scalarValue(root.get("store")),
+                    scalarValue(root.get("stream"))
+            );
+        }
+
+        private static String scalarValue(JsonNode node) {
+            if (node == null || node.isNull()) return "missing";
+            if (node.isBoolean()) return String.valueOf(node.asBoolean());
+            if (node.isTextual()) return "text";
+            if (node.isNumber()) return "number";
+            return node.getNodeType().name().toLowerCase();
+        }
+
+        private static String tailInputItems(JsonNode input) {
+            if (input == null || !input.isArray() || input.isEmpty()) return "[]";
+            int start = Math.max(0, input.size() - 8);
+            List<String> items = new ArrayList<>();
+            for (int i = start; i < input.size(); i++) {
+                JsonNode item = input.get(i);
+                int itemBytes = item.toString().getBytes(StandardCharsets.UTF_8).length;
+                String role = item.path("role").asText("");
+                String type = inputItemType(item);
+                String itemHash = sha256Hex(item.toString(), Integer.MAX_VALUE);
+                items.add(i + ":" + role + "/" + type + "/" + itemBytes + "B/" + itemHash);
+            }
+            return "[" + String.join(",", items) + "]";
+        }
+
+        private static String inputItemType(JsonNode item) {
+            if (item == null || item.isNull()) return "null";
+            String type = item.path("type").asText("");
+            if (!type.isBlank()) return type;
+            JsonNode content = item.get("content");
+            if (content == null || content.isNull()) return "no_content";
+            if (content.isTextual()) return "text";
+            if (content.isArray()) {
+                List<String> partTypes = new ArrayList<>();
+                for (JsonNode part : content) {
+                    String partType = part.path("type").asText("");
+                    if (!partType.isBlank() && !partTypes.contains(partType)) {
+                        partTypes.add(partType);
+                    }
+                    if (partTypes.size() >= 3) break;
+                }
+                return partTypes.isEmpty() ? "content_array" : String.join("+", partTypes);
+            }
+            return content.getNodeType().name().toLowerCase();
+        }
+    }
+
+    private static String sha256Hex(String value, int maxBytes) {
+        if (value == null) return "null";
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        int length = Math.min(bytes.length, maxBytes);
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(bytes, 0, length);
+            byte[] hash = digest.digest();
+            StringBuilder sb = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) {
+                sb.append(String.format("%02x", hash[i]));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return Integer.toHexString(value.hashCode());
+        }
     }
 
     @Override
