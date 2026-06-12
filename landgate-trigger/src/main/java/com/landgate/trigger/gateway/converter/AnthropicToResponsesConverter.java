@@ -41,7 +41,8 @@ public class AnthropicToResponsesConverter {
             // --- 基础字段透传 ---
             copyIfExists(src, dst, "model");
             copyIfExists(src, dst, "stream");
-            copyIfExists(src, dst, "metadata");
+            copyTextIfExists(src, dst, "service_tier");
+            copyObjectIfExists(src, dst, "metadata");
 
             // 协议转换层不根据模型名猜能力；采样参数按客户端显式请求保留。
             copyIfExists(src, dst, "temperature");
@@ -99,9 +100,14 @@ public class AnthropicToResponsesConverter {
             if (src.has("tools") && src.get("tools").isArray()) {
                 ArrayNode responsesTools = JSON.createArrayNode();
                 for (JsonNode tool : src.get("tools")) {
-                    responsesTools.add(convertAnthropicToolToResponses(tool));
+                    JsonNode convertedTool = convertAnthropicToolToResponses(tool);
+                    if (convertedTool != null) {
+                        responsesTools.add(convertedTool);
+                    }
                 }
-                dst.set("tools", responsesTools);
+                if (responsesTools.size() > 0) {
+                    dst.set("tools", responsesTools);
+                }
             }
 
             // --- tool_choice ---
@@ -109,7 +115,10 @@ public class AnthropicToResponsesConverter {
                 if (src.get("tool_choice").path("disable_parallel_tool_use").asBoolean(false)) {
                     parallelToolCalls = false;
                 }
-                dst.set("tool_choice", convertAnthropicToolChoiceToResponses(src.get("tool_choice")));
+                JsonNode toolChoice = convertAnthropicToolChoiceToResponses(src.get("tool_choice"));
+                if (toolChoice != null) {
+                    dst.set("tool_choice", toolChoice);
+                }
             }
 
             // --- thinking/output_config.effort → reasoning.effort ---
@@ -169,27 +178,26 @@ public class AnthropicToResponsesConverter {
                     switch (blockType) {
                         case "text" -> textBlocks.add(block);
                         case "thinking" -> {
-                            // thinking → reasoning output item
-                            ObjectNode reasoningItem = JSON.createObjectNode();
-                            reasoningItem.put("type", "reasoning");
-                            reasoningItem.put("status", "completed");
-                            ArrayNode summary = JSON.createArrayNode();
-                            ObjectNode summaryText = JSON.createObjectNode();
-                            summaryText.put("type", "summary_text");
-                            summaryText.put("text", block.has("thinking") ? block.get("thinking").asText() : "");
-                            summary.add(summaryText);
-                            reasoningItem.set("summary", summary);
-                            output.add(reasoningItem);
+                            flushTextBlocks(output, textBlocks);
+                            output.add(convertAnthropicThinkingToResponsesReasoning(block));
+                        }
+                        case "redacted_thinking" -> {
+                            flushTextBlocks(output, textBlocks);
+                            output.add(convertAnthropicRedactedThinkingToResponsesReasoning(block));
                         }
                         case "tool_use" -> {
-                            ObjectNode funcCall = JSON.createObjectNode();
-                            funcCall.put("type", "function_call");
-                            funcCall.put("call_id", block.has("id") ? block.get("id").asText()
-                                    : "toolu_" + UUID.randomUUID());
-                            funcCall.put("name", block.has("name") ? block.get("name").asText() : "");
-                            funcCall.put("arguments", block.has("input") ? block.get("input").toString() : "{}");
-                            funcCall.put("status", "completed");
-                            output.add(funcCall);
+                            if (isBlankText(block.get("id")) || isBlankText(block.get("name"))) {
+                                log.debug("Anthropic→Responses: tool_use missing id or name, ignored");
+                            } else {
+                                flushTextBlocks(output, textBlocks);
+                                ObjectNode funcCall = JSON.createObjectNode();
+                                funcCall.put("type", "function_call");
+                                funcCall.put("call_id", block.get("id").asText());
+                                funcCall.put("name", block.get("name").asText());
+                                funcCall.put("arguments", block.has("input") ? block.get("input").toString() : "{}");
+                                funcCall.put("status", "completed");
+                                output.add(funcCall);
+                            }
                         }
                         case "server_tool_use" ->
                             log.debug("Anthropic→Responses: server_tool_use block ignored in non-streaming");
@@ -199,44 +207,15 @@ public class AnthropicToResponsesConverter {
                 }
             }
 
-            // 合并 text 块到单个 message output item
-            if (!textBlocks.isEmpty()) {
-                ObjectNode msgItem = JSON.createObjectNode();
-                msgItem.put("type", "message");
-                msgItem.put("role", "assistant");
-                msgItem.put("status", "completed");
-                ArrayNode msgContent = JSON.createArrayNode();
-                for (JsonNode tb : textBlocks) {
-                    ObjectNode part = JSON.createObjectNode();
-                    part.put("type", "output_text");
-                    part.put("text", tb.has("text") ? tb.get("text").asText() : "");
-                    msgContent.add(part);
-                }
-                msgItem.set("content", msgContent);
-                output.add(msgItem);
-            }
+            flushTextBlocks(output, textBlocks);
 
-            if (output.size() == 0) {
-                // 至少保证有一个 message output
-                ObjectNode emptyMsg = JSON.createObjectNode();
-                emptyMsg.put("type", "message");
-                emptyMsg.put("role", "assistant");
-                emptyMsg.put("status", "completed");
-                ArrayNode emptyContent = JSON.createArrayNode();
-                ObjectNode emptyText = JSON.createObjectNode();
-                emptyText.put("type", "output_text");
-                emptyText.put("text", "");
-                emptyContent.add(emptyText);
-                emptyMsg.set("content", emptyContent);
-                output.add(emptyMsg);
-            }
             dst.set("output", output);
 
             // stop_reason → status
             String stopReason = src.has("stop_reason") ? src.get("stop_reason").asText() : "end_turn";
             String status = mapAnthropicStopReasonToResponsesStatus(stopReason);
             dst.put("status", status);
-            if ("incomplete".equals(status)) {
+            if ("max_tokens".equals(stopReason)) {
                 ObjectNode incompleteDetails = JSON.createObjectNode();
                 incompleteDetails.put("reason", "max_output_tokens");
                 dst.set("incomplete_details", incompleteDetails);
@@ -247,12 +226,15 @@ public class AnthropicToResponsesConverter {
                 JsonNode usage = src.get("usage");
                 ObjectNode respUsage = JSON.createObjectNode();
                 int inputTokens = usage.has("input_tokens") ? usage.get("input_tokens").asInt() : 0;
+                int cacheCreationTokens = usage.has("cache_creation_input_tokens")
+                        ? usage.get("cache_creation_input_tokens").asInt() : 0;
                 int outputTokens = usage.has("output_tokens") ? usage.get("output_tokens").asInt() : 0;
                 int cachedTokens = usage.has("cache_read_input_tokens")
                         ? usage.get("cache_read_input_tokens").asInt() : 0;
-                respUsage.put("input_tokens", inputTokens + cachedTokens);
+                int responseInputTokens = inputTokens + cacheCreationTokens + cachedTokens;
+                respUsage.put("input_tokens", responseInputTokens);
                 respUsage.put("output_tokens", outputTokens);
-                respUsage.put("total_tokens", inputTokens + cachedTokens + outputTokens);
+                respUsage.put("total_tokens", responseInputTokens + outputTokens);
                 if (cachedTokens > 0) {
                     ObjectNode details = JSON.createObjectNode();
                     details.put("cached_tokens", cachedTokens);
@@ -277,6 +259,31 @@ public class AnthropicToResponsesConverter {
      */
     public StreamTranslator createStreamToIR(String model) {
         return new AnthropicToIRStreamTranslator(model);
+    }
+
+    private static void flushTextBlocks(ArrayNode output, List<JsonNode> textBlocks) {
+        if (textBlocks.isEmpty()) return;
+
+        ArrayNode msgContent = JSON.createArrayNode();
+        for (JsonNode tb : textBlocks) {
+            String text = tb.has("text") ? tb.get("text").asText() : "";
+            if (text.isEmpty()) {
+                continue;
+            }
+            ObjectNode part = JSON.createObjectNode();
+            part.put("type", "output_text");
+            part.put("text", text);
+            msgContent.add(part);
+        }
+        if (msgContent.size() > 0) {
+            ObjectNode msgItem = JSON.createObjectNode();
+            msgItem.put("type", "message");
+            msgItem.put("role", "assistant");
+            msgItem.put("status", "completed");
+            msgItem.set("content", msgContent);
+            output.add(msgItem);
+        }
+        textBlocks.clear();
     }
 
     // ========================
@@ -306,10 +313,12 @@ public class AnthropicToResponsesConverter {
         private String currentCallId;
         private String currentName;
         private final StringBuilder currentArguments = new StringBuilder();
+        private final StringBuilder currentReasoningSignature = new StringBuilder();
         private int contentIndex = 0;
         private boolean messageItemOpen = false;
 
         private int inputTokens = 0;
+        private int cacheCreationInputTokens = 0;
         private int outputTokens = 0;
         private int cacheReadInputTokens = 0;
         private String stopReason = "end_turn";
@@ -343,6 +352,9 @@ public class AnthropicToResponsesConverter {
                             if (msg.has("usage") && msg.get("usage").has("cache_read_input_tokens")) {
                                 cacheReadInputTokens = msg.get("usage").get("cache_read_input_tokens").asInt();
                             }
+                            if (msg.has("usage") && msg.get("usage").has("cache_creation_input_tokens")) {
+                                cacheCreationInputTokens = msg.get("usage").get("cache_creation_input_tokens").asInt();
+                            }
                         }
                         ensureCreatedSent(output);
                     }
@@ -374,6 +386,10 @@ public class AnthropicToResponsesConverter {
                                 outputIndex++;
                                 currentItemId = "rsn_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
                                 currentItemType = ItemType.REASONING;
+                                currentReasoningSignature.setLength(0);
+                                if (block.has("signature") && !block.get("signature").asText().isEmpty()) {
+                                    currentReasoningSignature.append(block.get("signature").asText());
+                                }
 
                                 ensureCreatedSent(output);
                                 appendEvent(output, "response.output_item.added",
@@ -381,11 +397,20 @@ public class AnthropicToResponsesConverter {
                                                 sequenceNumber++, responseId, outputIndex, currentItemId));
                             }
                             case "tool_use" -> {
+                                if (isBlankText(block.get("id")) || isBlankText(block.get("name"))) {
+                                    log.debug("Anthropic→IR stream: tool_use missing id or name, ignored");
+                                    currentItemType = ItemType.NONE;
+                                    currentItemId = null;
+                                    currentCallId = null;
+                                    currentName = null;
+                                    currentArguments.setLength(0);
+                                    break;
+                                }
                                 outputIndex++;
                                 currentItemId = "item_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
                                 currentItemType = ItemType.FUNCTION_CALL;
-                                currentCallId = block.has("id") ? block.get("id").asText() : "call_" + UUID.randomUUID();
-                                currentName = block.has("name") ? block.get("name").asText() : "";
+                                currentCallId = block.get("id").asText();
+                                currentName = block.get("name").asText();
                                 currentArguments.setLength(0);
                                 if (block.has("input") && !block.get("input").isNull()
                                         && !(block.get("input").isObject() && block.get("input").size() == 0)) {
@@ -429,7 +454,7 @@ public class AnthropicToResponsesConverter {
                             }
                             case "input_json_delta" -> {
                                 String partialJson = delta.has("partial_json") ? delta.get("partial_json").asText() : "";
-                                if (!partialJson.isEmpty()) {
+                                if (!partialJson.isEmpty() && currentItemType == ItemType.FUNCTION_CALL) {
                                     currentArguments.append(partialJson);
                                     appendEvent(output, "response.function_call_arguments.delta",
                                             fmt("{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"delta\":\"%s\"}",
@@ -437,7 +462,11 @@ public class AnthropicToResponsesConverter {
                                                     escapeJsonValue(partialJson)));
                                 }
                             }
-                            case "signature_delta" -> { /* 丢弃：Responses 不使用签名 */ }
+                            case "signature_delta" -> {
+                                if (delta.has("signature")) {
+                                    currentReasoningSignature.append(delta.get("signature").asText());
+                                }
+                            }
                             default -> log.debug("Anthropic→IR stream: unknown delta type '{}'", deltaType);
                         }
                     }
@@ -447,9 +476,13 @@ public class AnthropicToResponsesConverter {
                                     fmt("{\"type\":\"response.reasoning_summary_text.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"summary_index\":0}",
                                             sequenceNumber++, responseId, currentItemId, outputIndex));
                             appendEvent(output, "response.output_item.done",
-                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"completed\"}}",
-                                            sequenceNumber++, responseId, outputIndex, currentItemId));
+                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"completed\"%s}}",
+                                            sequenceNumber++, responseId, outputIndex, currentItemId,
+                                            currentReasoningSignature.length() > 0
+                                                    ? fmt(",\"encrypted_content\":\"%s\"", escapeJsonValue(currentReasoningSignature.toString()))
+                                                    : ""));
                             currentItemType = ItemType.NONE;
+                            currentReasoningSignature.setLength(0);
                         } else if (currentItemType == ItemType.FUNCTION_CALL) {
                             String arguments = currentArguments.length() > 0 ? currentArguments.toString() : "{}";
                             appendEvent(output, "response.function_call_arguments.done",
@@ -474,6 +507,12 @@ public class AnthropicToResponsesConverter {
                         if (root.has("usage") && root.get("usage").has("output_tokens")) {
                             outputTokens = root.get("usage").get("output_tokens").asInt();
                         }
+                        if (root.has("usage") && root.get("usage").has("cache_read_input_tokens")) {
+                            cacheReadInputTokens = root.get("usage").get("cache_read_input_tokens").asInt();
+                        }
+                        if (root.has("usage") && root.get("usage").has("cache_creation_input_tokens")) {
+                            cacheCreationInputTokens = root.get("usage").get("cache_creation_input_tokens").asInt();
+                        }
                         if (root.has("delta") && root.get("delta").has("stop_reason")
                                 && !root.get("delta").get("stop_reason").isNull()) {
                             stopReason = root.get("delta").get("stop_reason").asText("end_turn");
@@ -481,18 +520,19 @@ public class AnthropicToResponsesConverter {
                     }
                     case "message_stop" -> {
                         closeCurrentItem(output);
-                        // response.completed
-                        String status = "max_tokens".equals(stopReason) ? "incomplete" : "completed";
+                        // Responses terminal event mirrors the terminal status.
+                        String status = mapAnthropicStopReasonToResponsesStatus(stopReason);
                         String incompleteDetails = "max_tokens".equals(stopReason)
                                 ? ",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}"
                                 : "";
                         String cacheDetails = cacheReadInputTokens > 0
                                 ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
                                 : "";
-                        int responseInputTokens = inputTokens + cacheReadInputTokens;
-                        appendEvent(output, "response.completed",
-                                fmt("{\"type\":\"response.completed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"%s\"%s,\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
-                                        sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
+                        int responseInputTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
+                        String eventType = "incomplete".equals(status) ? "response.incomplete" : "response.completed";
+                        appendEvent(output, eventType,
+                                fmt("{\"type\":\"%s\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"%s\"%s,\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
+                                        eventType, sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
                                         status, incompleteDetails,
                                         responseInputTokens, outputTokens, responseInputTokens + outputTokens, cacheDetails));
                         done = true;
@@ -505,7 +545,7 @@ public class AnthropicToResponsesConverter {
                         String cacheDetails = cacheReadInputTokens > 0
                                 ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
                                 : "";
-                        int responseInputTokens = inputTokens + cacheReadInputTokens;
+                        int responseInputTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
                         appendEvent(output, "response.failed",
                                 fmt("{\"type\":\"response.failed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"failed\",\"error\":{\"code\":\"%s\",\"message\":\"%s\"},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
                                         sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
@@ -582,7 +622,7 @@ public class AnthropicToResponsesConverter {
      * 转换 Anthropic user 消息到 Responses input items。
      * <p>
      * tool_result 块独立产出 function_call_output items；
-     * text + image 块产出 user message item。
+         * text + image + document 块产出 user message item。
      */
     private static void convertUserMessage(JsonNode contentNode, ArrayNode input) {
         if (contentNode == null) return;
@@ -607,6 +647,7 @@ public class AnthropicToResponsesConverter {
         List<JsonNode> toolResults = new ArrayList<>();
         List<JsonNode> textBlocks = new ArrayList<>();
         List<JsonNode> imageBlocks = new ArrayList<>();
+        List<JsonNode> documentBlocks = new ArrayList<>();
 
         for (JsonNode block : contentNode) {
             String blockType = block.has("type") ? block.get("type").asText() : "text";
@@ -614,18 +655,24 @@ public class AnthropicToResponsesConverter {
                 case "tool_result" -> toolResults.add(block);
                 case "text" -> textBlocks.add(block);
                 case "image" -> imageBlocks.add(block);
+                case "document" -> documentBlocks.add(block);
                 default -> log.debug("Anthropic→Responses: unknown user block type '{}'", blockType);
             }
         }
 
         // tool_result → function_call_output items
         List<JsonNode> deferredImages = new ArrayList<>();
+        List<JsonNode> deferredDocuments = new ArrayList<>();
         for (JsonNode tr : toolResults) {
+            if (isBlankText(tr.get("tool_use_id"))) {
+                log.debug("Anthropic→Responses: tool_result missing tool_use_id, ignored");
+                continue;
+            }
             ObjectNode fco = JSON.createObjectNode();
             fco.put("type", "function_call_output");
-            fco.put("call_id", tr.has("tool_use_id") ? tr.get("tool_use_id").asText() : "");
+            fco.put("call_id", tr.get("tool_use_id").asText());
 
-            // 提取文本和图片
+            // 提取文本，图片和文档作为后续 user content 保留。
             JsonNode trContent = tr.get("content");
             if (trContent != null && trContent.isArray()) {
                 StringBuilder textOutput = new StringBuilder();
@@ -636,13 +683,15 @@ public class AnthropicToResponsesConverter {
                         textOutput.append(c.get("text").asText());
                     } else if ("image".equals(cType)) {
                         deferredImages.add(c);
+                    } else if ("document".equals(cType)) {
+                        deferredDocuments.add(c);
                     }
                 }
-                fco.put("output", textOutput.length() > 0 ? textOutput.toString() : "(empty)");
+                fco.put("output", textOutput.toString());
             } else if (trContent != null && trContent.isTextual()) {
                 fco.put("output", trContent.asText());
             } else {
-                fco.put("output", "(empty)");
+                fco.put("output", "");
             }
             input.add(fco);
         }
@@ -651,7 +700,9 @@ public class AnthropicToResponsesConverter {
         List<JsonNode> allParts = new ArrayList<>();
         allParts.addAll(textBlocks);
         allParts.addAll(imageBlocks);
+        allParts.addAll(documentBlocks);
         allParts.addAll(deferredImages);
+        allParts.addAll(deferredDocuments);
 
         if (!allParts.isEmpty()) {
             ObjectNode item = JSON.createObjectNode();
@@ -673,6 +724,11 @@ public class AnthropicToResponsesConverter {
                         part.put("image_url", dataUri);
                         parts.add(part);
                     }
+                } else if ("document".equals(pType)) {
+                    ObjectNode part = anthropicDocumentToResponsesInputFile(p);
+                    if (part != null) {
+                        parts.add(part);
+                    }
                 }
             }
             if (parts.size() > 0) {
@@ -683,10 +739,51 @@ public class AnthropicToResponsesConverter {
     }
 
     /**
+     * Anthropic document content block → Responses input_file content part.
+     * Only source forms with an OpenAI Responses input_file equivalent are converted.
+     */
+    private static ObjectNode anthropicDocumentToResponsesInputFile(JsonNode block) {
+        if (block == null || !block.has("source") || !block.get("source").isObject()) return null;
+        JsonNode source = block.get("source");
+        String sourceType = source.has("type") ? source.get("type").asText() : "";
+        ObjectNode part = JSON.createObjectNode();
+        part.put("type", "input_file");
+
+        if (block.has("title") && !block.get("title").asText().isBlank()) {
+            part.put("filename", block.get("title").asText());
+        } else if (source.has("filename") && !source.get("filename").asText().isBlank()) {
+            part.put("filename", source.get("filename").asText());
+        }
+
+        switch (sourceType) {
+            case "url" -> {
+                if (!source.has("url") || source.get("url").asText().isBlank()) return null;
+                part.put("file_url", source.get("url").asText());
+            }
+            case "base64" -> {
+                if (!source.has("data") || source.get("data").asText().isBlank()) return null;
+                String mediaType = source.has("media_type") && !source.get("media_type").asText().isBlank()
+                        ? source.get("media_type").asText()
+                        : "application/pdf";
+                part.put("file_data", "data:" + mediaType + ";base64," + source.get("data").asText());
+            }
+            case "file" -> {
+                if (!source.has("file_id") || source.get("file_id").asText().isBlank()) return null;
+                part.put("file_id", source.get("file_id").asText());
+            }
+            default -> {
+                log.debug("Anthropic→Responses: unsupported document source type '{}'", sourceType);
+                return null;
+            }
+        }
+        return part;
+    }
+
+    /**
      * 转换 Anthropic assistant 消息到 Responses input items。
      * <p>
      * text 块 → message item；tool_use 块 → function_call item；
-     * thinking 块被忽略（OpenAI 不接受思考块作为输入）。
+     * thinking/redacted_thinking 块 → reasoning item，保留签名/不透明数据。
      */
     private static void convertAssistantMessage(JsonNode contentNode, ArrayNode input) {
         if (contentNode == null) return;
@@ -710,6 +807,7 @@ public class AnthropicToResponsesConverter {
         // 收集所有 text 块文本
         StringBuilder textBuilder = new StringBuilder();
         List<JsonNode> toolUses = new ArrayList<>();
+        List<JsonNode> reasoningItems = new ArrayList<>();
 
         for (JsonNode block : contentNode) {
             String blockType = block.has("type") ? block.get("type").asText() : "text";
@@ -721,7 +819,8 @@ public class AnthropicToResponsesConverter {
                     }
                 }
                 case "tool_use" -> toolUses.add(block);
-                case "thinking" -> { /* 忽略 */ }
+                case "thinking" -> reasoningItems.add(convertAnthropicThinkingToResponsesReasoning(block));
+                case "redacted_thinking" -> reasoningItems.add(convertAnthropicRedactedThinkingToResponsesReasoning(block));
                 default -> log.debug("Anthropic→Responses: unknown assistant block type '{}'", blockType);
             }
         }
@@ -741,12 +840,20 @@ public class AnthropicToResponsesConverter {
             input.add(item);
         }
 
+        for (JsonNode reasoningItem : reasoningItems) {
+            input.add(reasoningItem);
+        }
+
         // tool_use → function_call items
         for (JsonNode tu : toolUses) {
+            if (isBlankText(tu.get("id")) || isBlankText(tu.get("name"))) {
+                log.debug("Anthropic→Responses: assistant tool_use missing id or name, ignored");
+                continue;
+            }
             ObjectNode fco = JSON.createObjectNode();
             fco.put("type", "function_call");
-            fco.put("call_id", tu.has("id") ? tu.get("id").asText() : "toolu_" + UUID.randomUUID());
-            fco.put("name", tu.has("name") ? tu.get("name").asText() : "");
+            fco.put("call_id", tu.get("id").asText());
+            fco.put("name", tu.get("name").asText());
             fco.put("arguments", tu.has("input") ? tu.get("input").toString() : "{}");
             input.add(fco);
         }
@@ -761,12 +868,16 @@ public class AnthropicToResponsesConverter {
         if (toolType.startsWith("web_search")) {
             ObjectNode ws = JSON.createObjectNode();
             ws.put("type", "web_search");
+            copyObjectIfExists(tool, ws, "user_location");
             return ws;
+        }
+        if (isBlankText(tool.get("name"))) {
+            return null;
         }
         // 普通 function tool
         ObjectNode func = JSON.createObjectNode();
         func.put("type", "function");
-        func.put("name", tool.has("name") ? tool.get("name").asText() : "");
+        func.put("name", tool.get("name").asText());
         if (tool.has("description")) func.put("description", tool.get("description").asText());
         // input_schema → parameters（规范化）
         JsonNode schema = tool.has("input_schema") ? tool.get("input_schema") : null;
@@ -783,13 +894,13 @@ public class AnthropicToResponsesConverter {
             return createEmptySchema();
         }
         if (schema.isObject()) {
-            ObjectNode obj = (ObjectNode) schema;
+            ObjectNode obj = schema.deepCopy();
             if (!obj.has("properties")) {
                 obj.set("properties", JSON.createObjectNode());
             }
             return obj;
         }
-        return schema;
+        return createEmptySchema();
     }
 
     private static ObjectNode createEmptySchema() {
@@ -803,7 +914,14 @@ public class AnthropicToResponsesConverter {
      * 转换 Anthropic tool_choice 到 Responses tool_choice。
      */
     private static JsonNode convertAnthropicToolChoiceToResponses(JsonNode toolChoice) {
-        if (toolChoice.isTextual()) return toolChoice;
+        if (toolChoice.isTextual()) {
+            return switch (toolChoice.asText()) {
+                case "auto" -> JSON.getNodeFactory().textNode("auto");
+                case "any" -> JSON.getNodeFactory().textNode("required");
+                case "none" -> JSON.getNodeFactory().textNode("none");
+                default -> null;
+            };
+        }
 
         if (toolChoice.isObject() && toolChoice.has("type")) {
             String tcType = toolChoice.get("type").asText();
@@ -812,15 +930,57 @@ public class AnthropicToResponsesConverter {
                 case "any" -> JSON.getNodeFactory().textNode("required");
                 case "none" -> JSON.getNodeFactory().textNode("none");
                 case "tool" -> {
+                    if (isBlankText(toolChoice.get("name"))) yield null;
                     ObjectNode obj = JSON.createObjectNode();
                     obj.put("type", "function");
-                    if (toolChoice.has("name")) obj.put("name", toolChoice.get("name").asText());
+                    obj.put("name", toolChoice.get("name").asText());
                     yield obj;
                 }
-                default -> toolChoice; // 未知类型透传
+                default -> null;
             };
         }
-        return toolChoice;
+        return null;
+    }
+
+    private static boolean isBlankText(JsonNode node) {
+        return node == null || node.isNull() || node.asText("").isBlank();
+    }
+
+    private static ObjectNode convertAnthropicThinkingToResponsesReasoning(JsonNode block) {
+        ObjectNode reasoningItem = JSON.createObjectNode();
+        reasoningItem.put("type", "reasoning");
+        reasoningItem.put("status", "completed");
+        String thinking = block.has("thinking") ? block.get("thinking").asText() : "";
+
+        ArrayNode content = JSON.createArrayNode();
+        ObjectNode contentText = JSON.createObjectNode();
+        contentText.put("type", "reasoning_text");
+        contentText.put("text", thinking);
+        content.add(contentText);
+        reasoningItem.set("content", content);
+
+        if (!thinking.isEmpty()) {
+            ArrayNode summary = JSON.createArrayNode();
+            ObjectNode summaryText = JSON.createObjectNode();
+            summaryText.put("type", "summary_text");
+            summaryText.put("text", thinking);
+            summary.add(summaryText);
+            reasoningItem.set("summary", summary);
+        }
+        if (block.has("signature") && !block.get("signature").asText().isEmpty()) {
+            reasoningItem.put("encrypted_content", block.get("signature").asText());
+        }
+        return reasoningItem;
+    }
+
+    private static ObjectNode convertAnthropicRedactedThinkingToResponsesReasoning(JsonNode block) {
+        ObjectNode reasoningItem = JSON.createObjectNode();
+        reasoningItem.put("type", "reasoning");
+        reasoningItem.put("status", "completed");
+        if (block.has("data") && !block.get("data").asText().isEmpty()) {
+            reasoningItem.put("encrypted_content", block.get("data").asText());
+        }
+        return reasoningItem;
     }
 
     /**
@@ -839,11 +999,12 @@ public class AnthropicToResponsesConverter {
 
     /**
      * Anthropic stop_reason → Responses status。
-     * max_tokens→"incomplete", 其他→"completed"
+     * max_tokens/model_context_window_exceeded→"incomplete", 其他→"completed"。
+     * 只有 max_tokens 有 OpenAI Responses 明确等价的 incomplete_details.reason。
      */
     private static String mapAnthropicStopReasonToResponsesStatus(String stopReason) {
         return switch (stopReason) {
-            case "max_tokens" -> "incomplete";
+            case "max_tokens", "model_context_window_exceeded" -> "incomplete";
             default -> "completed";
         };
     }
@@ -854,10 +1015,15 @@ public class AnthropicToResponsesConverter {
     private static String anthropicImageToDataURI(JsonNode imageBlock) {
         if (imageBlock == null || !imageBlock.has("source")) return null;
         JsonNode source = imageBlock.get("source");
+        String sourceType = source.has("type") ? source.get("type").asText() : "";
+        if ("url".equals(sourceType) && source.has("url")) {
+            String url = source.get("url").asText();
+            return url.isBlank() ? null : url;
+        }
         String mediaType = source.has("media_type") ? source.get("media_type").asText() : "image/png";
         if (mediaType.isEmpty()) mediaType = "image/png";
         String data = source.has("data") ? source.get("data").asText() : "";
-        if (data.isEmpty()) return null;
+        if (data.isBlank()) return null;
         return "data:" + mediaType + ";base64," + data;
     }
 
@@ -867,6 +1033,16 @@ public class AnthropicToResponsesConverter {
 
     private static void copyIfExists(JsonNode src, ObjectNode dst, String field) {
         if (src.has(field) && !src.get(field).isNull()) dst.set(field, src.get(field));
+    }
+
+    private static void copyObjectIfExists(JsonNode src, ObjectNode dst, String field) {
+        if (src.has(field) && src.get(field).isObject()) dst.set(field, src.get(field));
+    }
+
+    private static void copyTextIfExists(JsonNode src, ObjectNode dst, String field) {
+        if (src.has(field) && src.get(field).isTextual() && !src.get(field).asText().isBlank()) {
+            dst.set(field, src.get(field));
+        }
     }
 
     private static void appendEvent(List<String> output, String event, String data) {

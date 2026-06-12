@@ -39,7 +39,11 @@ public class OpenAiTransformer implements IRequestTransformer {
     private static final Set<String> CODEX_UNSUPPORTED_FIELDS = Set.of(
             "max_output_tokens", "max_completion_tokens", "temperature", "top_p",
             "frequency_penalty", "presence_penalty", "user", "metadata",
-            "prompt_cache_retention", "safety_identifier", "stream_options");
+            "service_tier", "prompt_cache_key", "prompt_cache_retention",
+            "safety_identifier", "top_logprobs", "stream_options",
+            "include", "previous_response_id", "truncation", "prompt",
+            "background", "conversation", "context_management",
+            "parallel_tool_calls", "max_tool_calls");
 
     public OpenAiTransformer() {
     }

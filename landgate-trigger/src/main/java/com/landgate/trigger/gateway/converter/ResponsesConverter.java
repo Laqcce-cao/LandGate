@@ -15,7 +15,7 @@ import java.util.List;
  * IR 已重锚为 Responses API 格式，故 ResponsesConverter 自身即为 IR 格式，
  * 所有转换方法均为直接透传，无需任何字段映射。
  * <p>
- * 流式翻译器在透传的同时从 {@code response.completed} 事件中提取 usage token 数。
+ * 流式翻译器在透传的同时从 Responses 终止事件中提取 usage token 数。
  */
 @Slf4j
 @Component
@@ -98,7 +98,7 @@ public class ResponsesConverter implements ProtocolConverter {
     // ========================
 
     /**
-     * 上游 Responses SSE → IR SSE（透传，从 response.completed 提取 usage）。
+     * 上游 Responses SSE → IR SSE（透传，从 Responses 终止事件提取 usage）。
      */
     @Override
     public StreamTranslator createStreamToIR(String model) {
@@ -106,7 +106,7 @@ public class ResponsesConverter implements ProtocolConverter {
     }
 
     /**
-     * IR SSE → 客户端 Responses SSE（透传，从 response.completed 提取 usage）。
+     * IR SSE → 客户端 Responses SSE（透传，从 Responses 终止事件提取 usage）。
      */
     @Override
     public StreamTranslator createStreamFromIR(String model) {
@@ -119,7 +119,7 @@ public class ResponsesConverter implements ProtocolConverter {
 
     /**
      * Responses SSE 透传翻译器 —— 逐行原样透传上游 SSE 事件，
-     * 同时在遇到 {@code response.completed} 事件时提取 usage 中的 token 数并标记流结束。
+     * 同时在遇到 Responses 终止事件时提取 usage 中的 token 数并标记流结束。
      */
     static class PassThroughStreamTranslator implements StreamTranslator {
 
@@ -135,17 +135,21 @@ public class ResponsesConverter implements ProtocolConverter {
             // 透传所有 SSE 行（包括 event: 行、data: 行、空行分隔符）
             output.add(line);
 
-            // 从 response.completed 事件中提取 usage token 数
+            // 从 Responses 终止事件中提取 usage token 数
             if (line.startsWith("data: ")) {
                 String json = line.substring(6);
                 try {
                     JsonNode root = JSON.readTree(json);
                     String type = root.has("type") ? root.get("type").asText() : null;
-                    if ("response.completed".equals(type)) {
-                        if (root.has("response") && root.get("response").has("usage")) {
-                            JsonNode usage = root.get("response").get("usage");
-                            if (usage.has("input_tokens")) inputTokens = usage.get("input_tokens").asInt();
-                            if (usage.has("output_tokens")) outputTokens = usage.get("output_tokens").asInt();
+                    if (isTerminalResponseEvent(type)) {
+                        JsonNode usage = root.path("response").path("usage");
+                        if ((usage.isMissingNode() || usage.isNull()) && root.has("usage")) {
+                            usage = root.path("usage");
+                        }
+                        if (!usage.isMissingNode() && !usage.isNull()) {
+                            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt(0);
+                            inputTokens = Math.max(0, usage.path("input_tokens").asInt(0) - cachedTokens);
+                            outputTokens = usage.path("output_tokens").asInt(0);
                         }
                         done = true;
                     }
@@ -169,6 +173,13 @@ public class ResponsesConverter implements ProtocolConverter {
         @Override
         public int getOutputTokens() {
             return outputTokens;
+        }
+
+        private static boolean isTerminalResponseEvent(String type) {
+            return "response.completed".equals(type)
+                    || "response.done".equals(type)
+                    || "response.failed".equals(type)
+                    || "response.incomplete".equals(type);
         }
     }
 }

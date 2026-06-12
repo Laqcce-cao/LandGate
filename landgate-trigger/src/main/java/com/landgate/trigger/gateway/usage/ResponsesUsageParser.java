@@ -12,8 +12,8 @@ import org.springframework.stereotype.Component;
  * <p>
  * 非流式响应：{@code {"usage": {"input_tokens": N, "output_tokens": N, "input_tokens_details": {"cached_tokens": N}, ...}}}
  * <p>
- * 流式（SSE）响应：用量出现在 {@code response.completed} 事件中：
- * {@code data: {"type":"response.completed","response":{"usage":{"input_tokens":N,"output_tokens":N,"input_tokens_details":{"cached_tokens":N},...}}}}
+ * 流式（SSE）响应：用量出现在 Responses 终止事件中：
+ * {@code response.completed}、{@code response.done}、{@code response.incomplete} 或 {@code response.failed}。
  * <p>
  * 注意：Responses API SSE 流没有 Chat Completions 的 {@code [DONE]} 标记，
  * 流结束由 {@code response.completed} 事件表示。
@@ -56,12 +56,14 @@ public class ResponsesUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(sseData);
-            // 仅从 response.completed 事件中提取用量
             String type = root.path("type").asText();
-            if (!"response.completed".equals(type)) {
+            if (!isTerminalResponseEvent(type)) {
                 return null;
             }
             JsonNode usage = root.path("response").path("usage");
+            if ((usage.isMissingNode() || usage.isNull()) && root.has("usage")) {
+                usage = root.path("usage");
+            }
             if (usage.isMissingNode() || usage.isNull()) {
                 return null;
             }
@@ -93,13 +95,17 @@ public class ResponsesUsageParser implements IUsageParser {
         try {
             JsonNode root = JSON.readTree(sseLine.substring(6));
             String type = root.path("type").asText();
-            return "response.completed".equals(type)
-                    || "response.done".equals(type)
-                    || "response.failed".equals(type)
-                    || "response.incomplete".equals(type);
+            return isTerminalResponseEvent(type);
         } catch (Exception e) {
             log.debug("Failed to parse Responses SSE done line", e);
             return false;
         }
+    }
+
+    private static boolean isTerminalResponseEvent(String type) {
+        return "response.completed".equals(type)
+                || "response.done".equals(type)
+                || "response.failed".equals(type)
+                || "response.incomplete".equals(type);
     }
 }

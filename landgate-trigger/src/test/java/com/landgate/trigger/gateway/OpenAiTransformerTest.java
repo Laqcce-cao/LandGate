@@ -122,8 +122,28 @@ class OpenAiTransformerTest {
                 {
                   "model":"gpt-5.5",
                   "max_output_tokens":128,
+                  "max_completion_tokens":256,
                   "temperature":0.7,
+                  "top_p":0.9,
+                  "frequency_penalty":0.2,
+                  "presence_penalty":0.3,
+                  "service_tier":"flex",
+                  "metadata":{"trace_id":"req_1"},
+                  "user":"user_1",
+                  "prompt_cache_key":"tenant:thread",
+                  "prompt_cache_retention":"24h",
+                  "safety_identifier":"safe_user_1",
+                  "top_logprobs":3,
                   "stream_options":{"include_usage":true},
+                  "include":["message.output_text.logprobs","web_search_call.results"],
+                  "previous_response_id":"resp_prev",
+                  "truncation":"auto",
+                  "prompt":{"id":"pmpt_1"},
+                  "background":true,
+                  "conversation":{"id":"conv_1"},
+                  "context_management":[{"type":"auto"}],
+                  "parallel_tool_calls":true,
+                  "max_tool_calls":4,
                   "input":[
                     {"type":"message","role":"developer","content":[{"type":"input_text","text":"Project rules"}]},
                     {"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]}
@@ -139,8 +159,28 @@ class OpenAiTransformerTest {
         JsonNode root = JSON.readTree(normalized);
 
         assertFalse(root.has("max_output_tokens"));
+        assertFalse(root.has("max_completion_tokens"));
         assertFalse(root.has("temperature"));
+        assertFalse(root.has("top_p"));
+        assertFalse(root.has("frequency_penalty"));
+        assertFalse(root.has("presence_penalty"));
+        assertFalse(root.has("service_tier"));
+        assertFalse(root.has("metadata"));
+        assertFalse(root.has("user"));
+        assertFalse(root.has("prompt_cache_key"));
+        assertFalse(root.has("prompt_cache_retention"));
+        assertFalse(root.has("safety_identifier"));
+        assertFalse(root.has("top_logprobs"));
         assertFalse(root.has("stream_options"));
+        assertFalse(root.has("include"));
+        assertFalse(root.has("previous_response_id"));
+        assertFalse(root.has("truncation"));
+        assertFalse(root.has("prompt"));
+        assertFalse(root.has("background"));
+        assertFalse(root.has("conversation"));
+        assertFalse(root.has("context_management"));
+        assertFalse(root.has("parallel_tool_calls"));
+        assertFalse(root.has("max_tool_calls"));
         assertFalse(root.get("store").asBoolean());
         assertTrue(root.get("stream").asBoolean());
         assertEquals("Project rules", root.get("instructions").asText());
@@ -161,6 +201,20 @@ class OpenAiTransformerTest {
                 {
                   "model":"gpt-5.5",
                   "input":[{"role":"user","content":"Hi"}],
+                  "include":["message.output_text.logprobs"],
+                  "previous_response_id":"resp_prev",
+                  "truncation":"auto",
+                  "prompt":{"id":"pmpt_1"},
+                  "background":true,
+                  "conversation":{"id":"conv_1"},
+                  "context_management":[{"type":"auto"}],
+                  "metadata":{"trace_id":"req_1"},
+                  "user":"user_1",
+                  "safety_identifier":"safe_user_1",
+                  "prompt_cache_key":"tenant:thread",
+                  "prompt_cache_retention":"24h",
+                  "parallel_tool_calls":true,
+                  "max_tool_calls":4,
                   "store":true,
                   "stream":false
                 }""";
@@ -191,6 +245,20 @@ class OpenAiTransformerTest {
 
         assertFalse(root.has("store"));
         assertFalse(root.has("stream"));
+        assertFalse(root.has("include"));
+        assertFalse(root.has("previous_response_id"));
+        assertFalse(root.has("truncation"));
+        assertFalse(root.has("prompt"));
+        assertFalse(root.has("background"));
+        assertFalse(root.has("conversation"));
+        assertFalse(root.has("context_management"));
+        assertFalse(root.has("metadata"));
+        assertFalse(root.has("user"));
+        assertFalse(root.has("safety_identifier"));
+        assertFalse(root.has("prompt_cache_key"));
+        assertFalse(root.has("prompt_cache_retention"));
+        assertFalse(root.has("parallel_tool_calls"));
+        assertFalse(root.has("max_tool_calls"));
     }
 
     @Test
@@ -216,6 +284,79 @@ class OpenAiTransformerTest {
         assertTrue(JSON.readTree(streamTrue).get("stream").asBoolean());
         assertTrue(JSON.readTree(streamFalse).get("stream").asBoolean());
         assertTrue(JSON.readTree(streamMissing).get("stream").asBoolean());
+    }
+
+    @Test
+    @DisplayName("API Key Responses 请求保留公共 Responses 状态字段")
+    void apiKeyResponsesRequestPreservesPublicResponsesFields() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(7L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "input":"Hi",
+                  "include":["message.output_text.logprobs","web_search_call.results"],
+                  "previous_response_id":"resp_prev",
+                  "truncation":"auto",
+                  "prompt":{"id":"pmpt_1"},
+                  "background":true,
+                  "conversation":{"id":"conv_1"},
+                  "context_management":[{"type":"auto"}],
+                  "metadata":{"trace_id":"req_1"},
+                  "user":"user_1",
+                  "safety_identifier":"safe_user_1",
+                  "prompt_cache_key":"tenant:thread",
+                  "prompt_cache_retention":"24h",
+                  "parallel_tool_calls":true,
+                  "max_tool_calls":4,
+                  "store":true,
+                  "stream":false
+                }""";
+
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                body,
+                account,
+                "token-1",
+                new UpstreamRoute(
+                        Platform.OPENAI,
+                        "responses",
+                        "responses",
+                        EndpointKind.OPENAI_RESPONSES,
+                        "https://api.openai.com/v1/responses",
+                        true,
+                        false,
+                        false,
+                        "responses",
+                        "openai_api_key_responses"),
+                null,
+                "/v1/responses",
+                "gpt-5.5",
+                false,
+                false,
+                Map.of()));
+
+        JsonNode root = JSON.readTree(readBody(request));
+
+        assertEquals("web_search_call.results", root.get("include").get(1).asText());
+        assertEquals("resp_prev", root.get("previous_response_id").asText());
+        assertEquals("auto", root.get("truncation").asText());
+        assertEquals("pmpt_1", root.get("prompt").get("id").asText());
+        assertTrue(root.get("background").asBoolean());
+        assertEquals("conv_1", root.get("conversation").get("id").asText());
+        assertEquals("auto", root.get("context_management").get(0).get("type").asText());
+        assertEquals("req_1", root.get("metadata").get("trace_id").asText());
+        assertEquals("user_1", root.get("user").asText());
+        assertEquals("safe_user_1", root.get("safety_identifier").asText());
+        assertEquals("tenant:thread", root.get("prompt_cache_key").asText());
+        assertEquals("24h", root.get("prompt_cache_retention").asText());
+        assertTrue(root.get("parallel_tool_calls").asBoolean());
+        assertEquals(4, root.get("max_tool_calls").asInt());
+        assertTrue(root.get("store").asBoolean());
+        assertFalse(root.get("stream").asBoolean());
     }
 
     private static String readBody(HttpRequest request) throws Exception {
