@@ -112,6 +112,42 @@ class UpstreamRouteResolverTest {
     }
 
     @Test
+    @DisplayName("OpenAI API Key 优先使用账户协议字段而不是客户端格式")
+    void openAiApiKeyUsesAccountProtocolAsUpstreamFormat() {
+        AccountEntity chatAccount = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"openai_responses_supported\":true}", "[\"chat_completions\"]");
+        AccountEntity responsesAccount = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"openai_responses_supported\":false}", "[\"responses\"]");
+
+        UpstreamRoute chat = resolver.resolve(request(chatAccount, Platform.OPENAI, "responses"));
+        UpstreamRoute responses = resolver.resolve(request(responsesAccount, Platform.OPENAI, "chat_completions"));
+
+        assertEquals(EndpointKind.OPENAI_CHAT_COMPLETIONS, chat.endpointKind());
+        assertEquals("responses", chat.clientFormat());
+        assertEquals("chat_completions", chat.upstreamFormat());
+        assertFalse(chat.passthrough());
+        assertEquals(EndpointKind.OPENAI_RESPONSES, responses.endpointKind());
+        assertEquals("chat_completions", responses.clientFormat());
+        assertEquals("responses", responses.upstreamFormat());
+        assertFalse(responses.passthrough());
+    }
+
+    @Test
+    @DisplayName("透传由客户端协议和账户上游协议相等决定，忽略账户 passthrough 字段")
+    void passthroughDependsOnClientAndUpstreamFormatOnly() {
+        AccountEntity legacyPassthrough = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"openai_passthrough\":true}", "[\"chat_completions\"]");
+        AccountEntity sameProtocol = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"openai_passthrough\":false}", "[\"responses\"]");
+
+        UpstreamRoute translated = resolver.resolve(request(legacyPassthrough, Platform.OPENAI, "responses"));
+        UpstreamRoute passthrough = resolver.resolve(request(sameProtocol, Platform.OPENAI, "responses"));
+
+        assertFalse(translated.passthrough());
+        assertTrue(passthrough.passthrough());
+    }
+
+    @Test
     @DisplayName("OpenAI API Key 的 base_url 根据目标端点拼接路径")
     void openAiApiKeyBaseUrlUsesResolvedEndpointPath() {
         AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,
@@ -167,6 +203,7 @@ class UpstreamRouteResolverTest {
         assertEquals("https://anthropic-proxy.example.com/v1/messages", anthropic.targetUrl());
         assertEquals(EndpointKind.ANTIGRAVITY_MESSAGES, antigravity.endpointKind());
         assertEquals("messages", antigravity.upstreamFormat());
+        assertTrue(antigravity.passthrough());
     }
 
     @Test
@@ -201,11 +238,16 @@ class UpstreamRouteResolverTest {
     }
 
     private static AccountEntity account(Platform platform, AccountType type, String extra) {
+        return account(platform, type, extra, null);
+    }
+
+    private static AccountEntity account(Platform platform, AccountType type, String extra, String supportedProtocols) {
         return AccountEntity.builder()
                 .id(1L)
                 .platform(platform)
                 .type(type)
                 .extra(extra)
+                .supportedProtocols(supportedProtocols)
                 .build();
     }
 }

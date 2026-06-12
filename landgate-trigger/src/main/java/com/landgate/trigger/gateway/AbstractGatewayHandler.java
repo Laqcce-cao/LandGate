@@ -219,6 +219,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         requestId, group.getName(), resolvedGroup.getName(), isClaudeCode);
             }
             group = resolvedGroup;
+            if (!ProtocolFormatResolver.groupAllowsClientFormat(group, requestFormat)) {
+                log.warn("[{}] Group 不支持客户端协议: group={}, request_format={}, supported_protocols={}",
+                        requestId, group.getName(), requestFormat, group.getSupportedProtocols());
+                getErrorWriter().writeError(response, 403, "permission_error",
+                        "This group does not allow protocol: " + requestFormat);
+                return;
+            }
         } catch (ClaudeCodeOnlyException e) {
             log.warn("[{}] Claude Code 分组降级失败: group={}, reason={}",
                     requestId, group.getName(), e.getMessage());

@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.route;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.trigger.gateway.ProtocolFormatResolver;
 import com.landgate.types.enums.Platform;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -25,16 +26,19 @@ public class GeminiRouteStrategy implements UpstreamRouteStrategy {
 
     @Override
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
+        String upstreamFormat = ProtocolFormatResolver.resolveAccountUpstreamFormat(
+                request.account(), "gemini", java.util.Set.of("gemini"));
+        boolean passthrough = upstreamFormat.equals(ProtocolFormatResolver.normalizeFormat(request.requestFormat()));
         return new UpstreamRoute(
                 Platform.GEMINI,
                 request.requestFormat(),
-                "gemini",
+                upstreamFormat,
                 EndpointKind.GEMINI_GENERATE_CONTENT,
                 resolveTargetUrl(request),
+                passthrough,
                 false,
                 false,
-                false,
-                "gemini",
+                upstreamFormat,
                 "gemini_generate_content"
         );
     }

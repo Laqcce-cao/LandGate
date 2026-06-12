@@ -21,12 +21,12 @@ import java.util.stream.Collectors;
  * 选择流程：
  * <ol>
  *   <li>加载分组关联的全部候选账户（批量查询，避免 N+1）</li>
- *   <li>责任链过滤：删除 → 健康 → Provider → 模型白名单 → 显式路由</li>
+ *   <li>责任链过滤：删除 → 健康 → 模型白名单 → 显式路由</li>
  *   <li>排序：优先级(高→低) → 负载率(低→高) → 最后使用时间(远→近)</li>
  *   <li>返回排序后的第一个账户</li>
  * </ol>
  * <p>
- * 注意：按 Group Provider 过滤账号阵营，mixed_scheduling 标记的账号可跨阵营混入。
+ * 注意：Group provider/platform 是历史展示字段，不参与真实路由；Group 只是账号池。
  */
 @Slf4j
 @Component
@@ -71,27 +71,6 @@ public class AccountSelector {
         public String name() { return "HEALTH"; }
     };
 
-    /** 过滤器：按 Group Provider 过滤账号阵营，mixed_scheduling 标记可跨阵营混入 */
-    private static final AccountFilter PROVIDER_FILTER = new AccountFilter() {
-        @Override
-        public boolean pass(AccountEntity account, GroupEntity group, String model) {
-            String groupProvider = group.getProvider();
-            // 未设置 provider → 不限制，全部放行
-            if (groupProvider == null || groupProvider.isEmpty()) return true;
-            // 账号 platform 匹配 Group provider → 同阵营，放行
-            if (account.getPlatform() != null && groupProvider.equalsIgnoreCase(account.getPlatform().getKey())) {
-                return true;
-            }
-            // mixed_scheduling 标记 → 允许跨阵营混入（如 Antigravity 账号服务于 Anthropic Group）
-            if (account.getMixedScheduling() != null && account.getMixedScheduling()) {
-                return true;
-            }
-            return false;
-        }
-        @Override
-        public String name() { return "PROVIDER"; }
-    };
-
     /** 过滤器：根据账户的 supportedModels 白名单过滤 */
     private final AccountFilter modelWhitelistFilter = new AccountFilter() {
         @Override
@@ -115,11 +94,10 @@ public class AccountSelector {
         public String name() { return "EXPLICIT_ROUTE"; }
     };
 
-    /** 过滤器链，按顺序执行：删除 → 健康 → Provider → 模型白名单 → 显式路由 */
+    /** 过滤器链，按顺序执行：删除 → 健康 → 模型白名单 → 显式路由 */
     private final List<AccountFilter> filterChain = List.of(
             DELETED_FILTER,
             HEALTH_FILTER,
-            PROVIDER_FILTER,
             modelWhitelistFilter,
             explicitRouteFilter
     );
@@ -159,7 +137,7 @@ public class AccountSelector {
     /**
      * 选择最佳账户处理指定模型的请求。
      * <p>
-     * 按 Group Provider 过滤账号阵营。
+     * Group provider/platform 不参与过滤；只在 group 绑定的账号池内按模型与健康状态筛选。
      *
      * @param group 分组实体
      * @param model 请求的模型名称

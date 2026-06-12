@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.route;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.trigger.gateway.ProtocolFormatResolver;
 import com.landgate.trigger.gateway.UpstreamCapabilityService;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
@@ -37,14 +38,20 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
 
     @Override
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
-        boolean useResponses = "responses".equals(request.requestFormat())
-                && upstreamCapabilityService.shouldUseResponsesAPI(request.account());
+        String configuredUpstreamFormat = ProtocolFormatResolver.resolveAccountUpstreamFormat(request.account(), "");
+        boolean useResponses = switch (configuredUpstreamFormat) {
+            case "responses" -> true;
+            case "chat_completions" -> false;
+            default -> "responses".equals(request.requestFormat())
+                    && upstreamCapabilityService.shouldUseResponsesAPI(request.account());
+        };
         String upstreamFormat = useResponses ? "responses" : "chat_completions";
         EndpointKind endpointKind = useResponses
                 ? EndpointKind.OPENAI_RESPONSES
                 : EndpointKind.OPENAI_CHAT_COMPLETIONS;
         String pathSuffix = useResponses ? resolveResponsesPathSuffix(request) : "/v1/chat/completions";
         String defaultUrl = useResponses ? OPENAI_BASE_URL + pathSuffix : OPENAI_CHAT_URL;
+        boolean passthrough = upstreamFormat.equals(ProtocolFormatResolver.normalizeFormat(request.requestFormat()));
 
         return new UpstreamRoute(
                 Platform.OPENAI,
@@ -52,7 +59,7 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
                 upstreamFormat,
                 endpointKind,
                 resolveTargetUrl(request, defaultUrl, pathSuffix),
-                upstreamCapabilityService.isPassthroughEnabled(request.account()),
+                passthrough,
                 false,
                 false,
                 upstreamFormat,
