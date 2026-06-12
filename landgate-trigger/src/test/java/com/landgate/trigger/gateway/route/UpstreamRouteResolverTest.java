@@ -1,7 +1,7 @@
 package com.landgate.trigger.gateway.route;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
-import com.landgate.trigger.gateway.UpstreamCapabilityService;
+import com.landgate.trigger.gateway.transformer.UpstreamCapabilityService;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
@@ -21,9 +21,7 @@ class UpstreamRouteResolverTest {
     private final UpstreamRouteResolver resolver = new UpstreamRouteResolver(List.of(
             new OpenAiOAuthCodexRouteStrategy(),
             new OpenAiApiKeyRouteStrategy(capabilityService),
-            new AnthropicRouteStrategy(),
-            new AntigravityRouteStrategy(),
-            new GeminiRouteStrategy()
+            new AnthropicRouteStrategy()
     ));
 
     @Test
@@ -189,43 +187,16 @@ class UpstreamRouteResolverTest {
     }
 
     @Test
-    @DisplayName("Anthropic 与 Antigravity 都使用 messages 格式但端点类型不同")
-    void anthropicAndAntigravityUseMessagesWithDifferentEndpointKinds() {
+    @DisplayName("Anthropic 使用 messages 上游格式并拼接 base_url")
+    void anthropicUsesMessagesWithBaseUrl() {
         UpstreamRoute anthropic = resolver.resolve(request(
                 account(Platform.ANTHROPIC, AccountType.API_KEY,
                         "{\"base_url\":\"https://anthropic-proxy.example.com\"}"),
                 Platform.OPENAI, "chat_completions"));
-        UpstreamRoute antigravity = resolver.resolve(request(
-                account(Platform.ANTIGRAVITY, AccountType.API_KEY, null), Platform.ANTHROPIC, "messages"));
 
         assertEquals(EndpointKind.ANTHROPIC_MESSAGES, anthropic.endpointKind());
         assertEquals("messages", anthropic.upstreamFormat());
         assertEquals("https://anthropic-proxy.example.com/v1/messages", anthropic.targetUrl());
-        assertEquals(EndpointKind.ANTIGRAVITY_MESSAGES, antigravity.endpointKind());
-        assertEquals("messages", antigravity.upstreamFormat());
-        assertTrue(antigravity.passthrough());
-    }
-
-    @Test
-    @DisplayName("Gemini 账号路由到 Gemini generateContent 路径")
-    void geminiRoutesToGenerateContent() {
-        AccountEntity account = account(Platform.GEMINI, AccountType.API_KEY,
-                "{\"base_url\":\"https://gemini-proxy.example.com\"}");
-
-        UpstreamRoute route = resolver.resolve(UpstreamRouteRequest.builder()
-                .account(account)
-                .requestPlatform(Platform.GEMINI)
-                .requestFormat("gemini")
-                .upstreamPath("/v1beta/models/gemini-pro:generateContent")
-                .requestedModel("gemini-pro")
-                .build());
-
-        assertEquals(EndpointKind.GEMINI_GENERATE_CONTENT, route.endpointKind());
-        assertEquals("gemini", route.clientFormat());
-        assertEquals("gemini", route.upstreamFormat());
-        assertEquals("gemini", route.usageFormat());
-        assertEquals("https://gemini-proxy.example.com/v1beta/models/gemini-pro:generateContent", route.targetUrl());
-        assertFalse(route.forceStreaming());
     }
 
     private static UpstreamRouteRequest request(AccountEntity account, Platform requestPlatform, String requestFormat) {

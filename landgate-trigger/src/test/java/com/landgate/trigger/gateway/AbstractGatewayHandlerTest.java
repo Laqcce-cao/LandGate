@@ -6,6 +6,10 @@ import com.landgate.trigger.gateway.converter.AnthropicConverter;
 import com.landgate.trigger.gateway.converter.ChatCompletionsConverter;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ResponsesConverter;
+import com.landgate.trigger.gateway.error.IErrorWriter;
+import com.landgate.trigger.gateway.AbstractGatewayHandler;
+import com.landgate.trigger.gateway.GatewayRequestContext;
+import com.landgate.trigger.gateway.converter.ProtocolTranslationService;
 import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
@@ -502,6 +506,7 @@ class AbstractGatewayHandlerTest {
         TestGatewayHandler(ConverterRegistry converterRegistry) {
             super(null, null, null, null, null, null, null, null, null, null,
                     new ProtocolTranslationService(converterRegistry), converterRegistry,
+                    new GatewayProtocolPlanner(),
                     null, null, null, null, null, null, null, null, null);
         }
 

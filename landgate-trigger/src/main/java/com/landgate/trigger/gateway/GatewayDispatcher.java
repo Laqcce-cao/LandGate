@@ -1,5 +1,6 @@
 package com.landgate.trigger.gateway;
 
+import com.landgate.trigger.gateway.IGatewayHandler;
 import com.landgate.types.enums.Platform;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -20,12 +21,11 @@ import java.util.Map;
  *   <li>{@code /v1/chat/completions} → OpenAI Chat Completions API（platform=OPENAI, format="chat_completions"）</li>
  *   <li>{@code /v1/responses} → OpenAI Responses API（platform=OPENAI, format="responses"）</li>
  *   <li>{@code /backend-api/codex/responses} → OpenAI Responses API（Codex CLI 兼容，platform=OPENAI, format="responses"）</li>
- *   <li>{@code /v1beta/models/**} → Gemini API（platform=GEMINI, format="gemini"）</li>
  * </ul>
  * <p>
  * Phase 2 改动：删除 {@code Platform.OPENAI_RESPONSES} 枚举值后，客户端格式不再通过 platform 区分；
  * 改用独立的 {@link #ATTR_REQUEST_FORMAT} request attribute 单独存储格式 ID，
- * platform 仅表示 AI 服务提供商（ANTHROPIC/OPENAI/GEMINI/ANTIGRAVITY 四值）。
+ * platform 仅表示当前支持的上游服务提供商（ANTHROPIC/OPENAI）。
  */
 @Slf4j
 @Component
@@ -57,7 +57,6 @@ public class GatewayDispatcher {
         // Codex CLI 兼容路径：实际请求体为 Responses API 格式
         PATH_PLATFORM.put("/backend-api/codex/responses", Platform.OPENAI);
         PATH_PLATFORM.put("/responses", Platform.OPENAI);
-        PATH_PLATFORM.put("/v1beta/models/", Platform.GEMINI);
 
         PATH_FORMAT = new LinkedHashMap<>();
         PATH_FORMAT.put("/v1/messages", "messages");
@@ -65,7 +64,6 @@ public class GatewayDispatcher {
         PATH_FORMAT.put("/v1/responses", "responses");
         PATH_FORMAT.put("/backend-api/codex/responses", "responses");
         PATH_FORMAT.put("/responses", "responses");
-        PATH_FORMAT.put("/v1beta/models/", "gemini");
     }
 
     /** request attribute key：客户端请求平台（URL 路径决定） */
@@ -111,7 +109,6 @@ public class GatewayDispatcher {
 
     /**
      * 根据请求路径匹配平台。
-     * 使用前缀匹配，因为 Gemini 路径包含动态模型名（{@code /v1beta/models/gemini-pro:generateContent}）。
      */
     private Platform resolvePlatform(String path) {
         for (Map.Entry<String, Platform> entry : PATH_PLATFORM.entrySet()) {

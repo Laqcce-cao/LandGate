@@ -3,7 +3,7 @@ package com.landgate.trigger.gateway.billing;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.model.entity.GroupEntity;
-import com.landgate.trigger.gateway.BalanceDomainService;
+import com.landgate.trigger.gateway.billing.BalanceDomainService;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

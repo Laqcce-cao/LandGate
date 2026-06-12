@@ -1,7 +1,9 @@
-package com.landgate.trigger.gateway.converter;
+package com.landgate.trigger.gateway.converter.compat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.trigger.gateway.converter.ResponsesConverter;
+import com.landgate.trigger.gateway.converter.StreamTranslator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;

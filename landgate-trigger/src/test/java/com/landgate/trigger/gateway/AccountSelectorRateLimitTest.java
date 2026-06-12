@@ -5,6 +5,7 @@ import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.group.adapter.repository.IAccountGroupRepository;
 import com.landgate.domain.group.model.entity.AccountGroupEntity;
 import com.landgate.domain.group.model.entity.GroupEntity;
+import com.landgate.trigger.gateway.account.AccountSelector;
 import com.landgate.types.enums.Status;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

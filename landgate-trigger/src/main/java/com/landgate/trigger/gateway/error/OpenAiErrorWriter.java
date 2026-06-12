@@ -1,6 +1,6 @@
 package com.landgate.trigger.gateway.error;
 
-import com.landgate.trigger.gateway.IErrorWriter;
+import com.landgate.trigger.gateway.error.IErrorWriter;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.stereotype.Component;
 

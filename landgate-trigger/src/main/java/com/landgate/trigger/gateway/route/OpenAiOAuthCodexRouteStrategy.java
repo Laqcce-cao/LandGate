@@ -1,6 +1,6 @@
 package com.landgate.trigger.gateway.route;
 
-import com.landgate.trigger.gateway.ProtocolFormatResolver;
+import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.springframework.core.annotation.Order;

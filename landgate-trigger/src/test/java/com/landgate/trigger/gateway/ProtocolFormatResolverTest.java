@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.group.model.entity.GroupEntity;
+import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

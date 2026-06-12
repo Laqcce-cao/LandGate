@@ -6,7 +6,7 @@ import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.model.entity.GroupEntity;
-import com.landgate.trigger.gateway.BalanceDomainService;
+import com.landgate.trigger.gateway.billing.BalanceDomainService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

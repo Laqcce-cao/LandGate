@@ -2,7 +2,7 @@ package com.landgate.trigger.scheduler;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.account.adapter.repository.IAccountRepository;
-import com.landgate.trigger.gateway.OAuthTokenRefreshService;
+import com.landgate.trigger.gateway.oauth.OAuthTokenRefreshService;
 import com.landgate.types.constant.RedisKeys;
 import com.landgate.types.enums.AccountType;
 import lombok.RequiredArgsConstructor;

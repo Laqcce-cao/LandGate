@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
+import com.landgate.trigger.gateway.transformer.OpenAiTransformer;
+import com.landgate.trigger.gateway.transformer.UpstreamRequestContext;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
@@ -151,9 +153,9 @@ class OpenAiTransformerTest {
         assertEquals("openai-sdk-java/1.0", request.headers().firstValue("User-Agent").orElse(""));
         assertEquals("zh-CN", request.headers().firstValue("Accept-Language").orElse(""));
         assertTrue(request.headers().firstValue("OpenAI-Beta").isEmpty());
-        assertTrue(request.headers().firstValue("originator").isEmpty());
-        assertTrue(request.headers().firstValue("session_id").isEmpty());
-        assertTrue(request.headers().firstValue("x-codex-turn-state").isEmpty());
+        assertEquals("codex_cli_rs", request.headers().firstValue("originator").orElse(""));
+        assertEquals("sess_1", request.headers().firstValue("session_id").orElse(""));
+        assertEquals("turn_state", request.headers().firstValue("x-codex-turn-state").orElse(""));
     }
 
     @Test
