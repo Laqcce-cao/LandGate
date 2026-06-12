@@ -124,6 +124,35 @@ class UpstreamRouteResolverTest {
     }
 
     @Test
+    @DisplayName("OpenAI API Key base_url 按 sub2api 规则避免重复 /v1")
+    void openAiApiKeyBaseUrlAvoidsDuplicateV1() {
+        AccountEntity chatAccount = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"base_url\":\"https://proxy.example.com/v1\",\"openai_responses_supported\":false}");
+        AccountEntity chatEndpointAccount = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"base_url\":\"https://proxy.example.com/v1/chat/completions\",\"openai_responses_supported\":false}");
+        AccountEntity responsesAccount = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"base_url\":\"https://proxy.example.com/v1\",\"openai_responses_supported\":true}");
+        AccountEntity responsesEndpointAccount = account(Platform.OPENAI, AccountType.API_KEY,
+                "{\"base_url\":\"https://proxy.example.com/v1/responses\",\"openai_responses_supported\":true}");
+
+        UpstreamRoute chat = resolver.resolve(request(chatAccount, Platform.OPENAI, "responses"));
+        UpstreamRoute chatEndpoint = resolver.resolve(request(chatEndpointAccount, Platform.OPENAI, "responses"));
+        UpstreamRoute responses = resolver.resolve(request(responsesAccount, Platform.OPENAI, "responses"));
+        UpstreamRoute compact = resolver.resolve(UpstreamRouteRequest.builder()
+                .account(responsesEndpointAccount)
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("responses")
+                .upstreamPath("/v1/responses/compact")
+                .requestedModel("test-model")
+                .build());
+
+        assertEquals("https://proxy.example.com/v1/chat/completions", chat.targetUrl());
+        assertEquals("https://proxy.example.com/v1/chat/completions", chatEndpoint.targetUrl());
+        assertEquals("https://proxy.example.com/v1/responses", responses.targetUrl());
+        assertEquals("https://proxy.example.com/v1/responses/compact", compact.targetUrl());
+    }
+
+    @Test
     @DisplayName("Anthropic 与 Antigravity 都使用 messages 格式但端点类型不同")
     void anthropicAndAntigravityUseMessagesWithDifferentEndpointKinds() {
         UpstreamRoute anthropic = resolver.resolve(request(

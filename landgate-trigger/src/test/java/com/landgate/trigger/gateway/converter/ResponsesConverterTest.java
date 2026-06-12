@@ -189,4 +189,39 @@ class ResponsesConverterTest {
         assertEquals("auto", codeInterpreter.get("container").get("type").asText());
         assertEquals("file_123", codeInterpreter.get("container").get("file_ids").get(0).asText());
     }
+
+    @Test
+    @DisplayName("Responses 直通请求按 sub2api 归一化 service_tier")
+    void requestFromIRNormalizesServiceTier() throws Exception {
+        JsonNode fast = JSON.readTree("""
+                {"model":"gpt-4o","service_tier":" fast ","input":"Hi"}""");
+        JsonNode unknown = JSON.readTree("""
+                {"model":"gpt-4o","service_tier":"turbo","input":"Hi"}""");
+
+        assertEquals("priority", JSON.readTree(new ResponsesConverter().requestFromIR(fast))
+                .get("service_tier").asText());
+        assertFalse(JSON.readTree(new ResponsesConverter().requestFromIR(unknown)).has("service_tier"));
+    }
+
+    @Test
+    @DisplayName("Responses 直通请求删除空 base64 input_image")
+    void requestFromIRDropsEmptyBase64InputImages() throws Exception {
+        JsonNode ir = JSON.readTree("""
+                {
+                  "model":"gpt-4o",
+                  "input":[
+                    {"type":"message","role":"user","content":[
+                      {"type":"input_image","image_url":"data:image/png;base64, "},
+                      {"type":"input_text","text":"Describe this"}
+                    ]},
+                    {"type":"input_image","image_url":"data:image/jpeg;base64,"}
+                  ]
+                }""");
+
+        JsonNode out = JSON.readTree(new ResponsesConverter().requestFromIR(ir));
+
+        assertEquals(1, out.get("input").size());
+        assertEquals(1, out.get("input").get(0).get("content").size());
+        assertEquals("input_text", out.get("input").get(0).get("content").get(0).get("type").asText());
+    }
 }

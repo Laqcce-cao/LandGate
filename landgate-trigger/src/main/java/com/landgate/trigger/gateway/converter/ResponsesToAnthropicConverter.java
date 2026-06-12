@@ -43,22 +43,14 @@ public class ResponsesToAnthropicConverter {
 
             copyTextIfExists(ir, dst, "model");
             copyBooleanIfExists(ir, dst, "stream");
-            copyTextIfExists(ir, dst, "service_tier");
             copyNumberIfExists(ir, dst, "temperature");
             copyNumberIfExists(ir, dst, "top_p");
-            copyObjectIfExists(ir, dst, "metadata");
 
             // Anthropic max_tokens is required; if Responses omits it or sends an invalid value,
             // use the gateway default instead of forwarding a malformed limit.
             dst.put("max_tokens", isPositiveInt(ir.get("max_output_tokens"))
                     ? ir.get("max_output_tokens").asInt()
                     : 8192);
-
-            // 内部 IR stop 扩展 → Anthropic stop_sequences
-            JsonNode stopSequences = normalizeStopSequences(ir.get("_landgate_stop_sequences"));
-            if (stopSequences != null) {
-                dst.set("stop_sequences", stopSequences);
-            }
 
             // input[] → system + messages[]
             String systemText = null;
@@ -179,27 +171,11 @@ public class ResponsesToAnthropicConverter {
             }
 
             // --- tool_choice ---
-            boolean disableParallelToolUse = ir.has("parallel_tool_calls")
-                    && ir.get("parallel_tool_calls").isBoolean()
-                    && !ir.get("parallel_tool_calls").asBoolean();
             if (ir.has("tool_choice")) {
                 JsonNode toolChoice = convertResponsesToolChoiceToAnthropic(ir.get("tool_choice"));
-                if (toolChoice instanceof ObjectNode objectNode && disableParallelToolUse) {
-                    objectNode.put("disable_parallel_tool_use", true);
-                }
                 if (toolChoice != null) {
                     dst.set("tool_choice", toolChoice);
-                } else if (disableParallelToolUse) {
-                    ObjectNode fallbackToolChoice = JSON.createObjectNode();
-                    fallbackToolChoice.put("type", "auto");
-                    fallbackToolChoice.put("disable_parallel_tool_use", true);
-                    dst.set("tool_choice", fallbackToolChoice);
                 }
-            } else if (disableParallelToolUse) {
-                ObjectNode toolChoice = JSON.createObjectNode();
-                toolChoice.put("type", "auto");
-                toolChoice.put("disable_parallel_tool_use", true);
-                dst.set("tool_choice", toolChoice);
             }
 
             // --- reasoning.effort → output_config.effort + thinking ---
@@ -253,7 +229,7 @@ public class ResponsesToAnthropicConverter {
 
                     switch (itemType) {
                         case "reasoning" -> {
-                            addReasoningBlocks(content, item);
+                            addResponseReasoningBlocks(content, item);
                         }
                         case "message" -> {
                             JsonNode msgContent = item.get("content");
@@ -296,8 +272,7 @@ public class ResponsesToAnthropicConverter {
                             content.add(toolUse);
                         }
                         case "web_search_call" -> {
-                            // 非流式路径不处理 web_search_call（与 Sub2API 一致）
-                            log.debug("Responses→Anthropic: web_search_call ignored in non-streaming");
+                            addWebSearchBlocks(content, item);
                         }
                         default ->
                             log.debug("Responses→Anthropic: unknown output type '{}'", itemType);
@@ -305,6 +280,12 @@ public class ResponsesToAnthropicConverter {
                 }
             }
 
+            if (content.size() == 0) {
+                ObjectNode emptyText = JSON.createObjectNode();
+                emptyText.put("type", "text");
+                emptyText.put("text", "");
+                content.add(emptyText);
+            }
             dst.set("content", content);
 
             // stop_reason
@@ -559,10 +540,9 @@ public class ResponsesToAnthropicConverter {
                             log.debug("IR→Anthropic stream: function_call arguments done without valid tool block ignored");
                             return output;
                         }
-                        if ("Read".equals(currentToolName) && !currentToolHadDelta) {
-                            // Read 工具没有实时 delta：发送完整 arguments
+                        if (!currentToolHadDelta) {
                             String args = textOrDefault(root.get("arguments"), currentToolArgs);
-                            if (currentToolName != null) {
+                            if ("Read".equals(currentToolName)) {
                                 args = sanitizeAnthropicToolUseInput(currentToolName, args);
                             }
                             if (!args.isEmpty() && !"{}".equals(args)) {
@@ -600,9 +580,14 @@ public class ResponsesToAnthropicConverter {
                             contentBlockIndex++;
                             String srvId = "srvtoolu_" + (root.get("item").has("id")
                                     ? root.get("item").get("id").asText() : UUID.randomUUID());
+                            String query = "";
+                            JsonNode action = root.get("item").get("action");
+                            if (action != null && action.isObject() && !isBlankText(action.get("query"))) {
+                                query = action.get("query").asText();
+                            }
                             appendEvent(output, "content_block_start",
-                                    fmt("{\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"%s\",\"name\":\"web_search\",\"input\":{}}}",
-                                            contentBlockIndex, escapeJsonValue(srvId)));
+                                    fmt("{\"type\":\"content_block_start\",\"index\":%d,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"%s\",\"name\":\"web_search\",\"input\":{\"query\":\"%s\"}}}",
+                                            contentBlockIndex, escapeJsonValue(srvId), escapeJsonValue(query)));
                             appendEvent(output, "content_block_stop",
                                     fmt("{\"type\":\"content_block_stop\",\"index\":%d}", contentBlockIndex));
                             contentBlockIndex++;
@@ -974,9 +959,8 @@ public class ResponsesToAnthropicConverter {
      * Responses assistant content → Anthropic content。
      */
     private static JsonNode convertAssistantContentToAnthropic(JsonNode content) {
-        if (content == null) return null;
+        if (content == null) return emptyAnthropicTextBlocks();
         if (content.isTextual()) {
-            if (content.asText().isEmpty()) return null;
             ArrayNode blocks = JSON.createArrayNode();
             ObjectNode textBlock = JSON.createObjectNode();
             textBlock.put("type", "text");
@@ -1014,10 +998,19 @@ public class ResponsesToAnthropicConverter {
                     }
                 }
             }
-            if (blocks.size() == 0) return null;
+            if (blocks.size() == 0) return emptyAnthropicTextBlocks();
             return blocks;
         }
         return null;
+    }
+
+    private static ArrayNode emptyAnthropicTextBlocks() {
+        ArrayNode blocks = JSON.createArrayNode();
+        ObjectNode textBlock = JSON.createObjectNode();
+        textBlock.put("type", "text");
+        textBlock.put("text", "");
+        blocks.add(textBlock);
+        return blocks;
     }
 
     private static JsonNode sanitizeAnthropicToolResultBlock(JsonNode part) {
@@ -1333,15 +1326,29 @@ public class ResponsesToAnthropicConverter {
         }
         if (text.length() > 0) return text.toString();
 
+        return extractReasoningSummaryText(item);
+    }
+
+    private static String extractReasoningSummaryText(JsonNode item) {
+        StringBuilder text = new StringBuilder();
         if (item.has("summary") && item.get("summary").isArray()) {
             for (JsonNode summary : item.get("summary")) {
                 String summaryText = textOrDefault(summary.get("text"), "");
                 if (!"summary_text".equals(textOrDefault(summary.get("type"), "")) || summaryText.isEmpty()) continue;
-                if (text.length() > 0) text.append("\n");
                 text.append(summaryText);
             }
         }
         return text.toString();
+    }
+
+    private static void addResponseReasoningBlocks(ArrayNode content, JsonNode item) {
+        String text = extractReasoningSummaryText(item);
+        if (!text.isEmpty()) {
+            ObjectNode thinkingBlock = JSON.createObjectNode();
+            thinkingBlock.put("type", "thinking");
+            thinkingBlock.put("thinking", text);
+            content.add(thinkingBlock);
+        }
     }
 
     private static void addReasoningBlocks(ArrayNode content, JsonNode item) {
@@ -1365,6 +1372,34 @@ public class ResponsesToAnthropicConverter {
             redactedBlock.put("data", encryptedContent);
             content.add(redactedBlock);
         }
+    }
+
+    private static void addWebSearchBlocks(ArrayNode content, JsonNode item) {
+        String sourceId = textOrDefault(item.get("id"), null);
+        if (sourceId == null) {
+            sourceId = UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+        }
+        String toolUseId = "srvtoolu_" + sourceId;
+
+        ObjectNode serverToolUse = JSON.createObjectNode();
+        serverToolUse.put("type", "server_tool_use");
+        serverToolUse.put("id", toolUseId);
+        serverToolUse.put("name", "web_search");
+        ObjectNode input = JSON.createObjectNode();
+        JsonNode action = item.get("action");
+        String query = "";
+        if (action != null && action.isObject() && !isBlankText(action.get("query"))) {
+            query = action.get("query").asText();
+        }
+        input.put("query", query);
+        serverToolUse.set("input", input);
+        content.add(serverToolUse);
+
+        ObjectNode toolResult = JSON.createObjectNode();
+        toolResult.put("type", "web_search_tool_result");
+        toolResult.put("tool_use_id", toolUseId);
+        toolResult.set("content", JSON.createArrayNode());
+        content.add(toolResult);
     }
 
     /**

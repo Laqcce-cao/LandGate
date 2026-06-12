@@ -26,7 +26,9 @@ import java.io.InputStreamReader;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Slf4j
@@ -35,6 +37,28 @@ import java.util.UUID;
 public class GatewayResponseService {
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+    private static final Set<String> RESPONSE_HEADER_ALLOWLIST = Set.of(
+            "content-language",
+            "cache-control",
+            "etag",
+            "last-modified",
+            "expires",
+            "vary",
+            "date",
+            "x-request-id",
+            "x-ratelimit-limit-requests",
+            "x-ratelimit-limit-tokens",
+            "x-ratelimit-remaining-requests",
+            "x-ratelimit-remaining-tokens",
+            "x-ratelimit-reset-requests",
+            "x-ratelimit-reset-tokens",
+            "retry-after",
+            "location",
+            "www-authenticate");
+    private static final Set<String> HOP_BY_HOP_RESPONSE_HEADERS = Set.of(
+            "content-length",
+            "transfer-encoding",
+            "connection");
 
     private final ConcurrencyService concurrencyService;
     private final ProtocolTranslationService translationService;
@@ -45,6 +69,8 @@ public class GatewayResponseService {
                                                  GatewayRequestContext ctx,
                                                  IUsageParser usageParser) throws IOException {
         response.setStatus(200);
+        UpstreamRoute route = ctx.getUpstreamRoute();
+        copyUpstreamResponseHeaders(upstreamResp, response, route != null && route.passthrough());
         response.setContentType("text/event-stream");
         response.setCharacterEncoding("UTF-8");
         response.setHeader("Cache-Control", "no-cache");
@@ -56,7 +82,6 @@ public class GatewayResponseService {
         // 判断翻译方向，通过 ConverterRegistry 获取流式翻译器。
         // 优先使用 UpstreamRoute 中的格式，保证请求和响应翻译走同一份路由决策。
         Platform requestPlatform = ctx.getRequestPlatform();
-        UpstreamRoute route = ctx.getUpstreamRoute();
         String clientFormat = route != null && route.clientFormat() != null
                 ? route.clientFormat()
                 : (ctx.getRequestFormat() != null
@@ -66,7 +91,8 @@ public class GatewayResponseService {
                 ? route.upstreamFormat()
                 : ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform());
         boolean needTranslation = clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat);
+                && !clientFormat.equals(upstreamFormat)
+                && (route == null || !route.passthrough());
 
         // Hub-and-Spoke 流式翻译器：上游 SSE → IR SSE，IR SSE → 客户端 SSE
         StreamTranslator upstreamToIR = null;
@@ -191,6 +217,7 @@ public class GatewayResponseService {
                                                      GatewayRequestContext ctx,
                                                      IUsageParser usageParser) throws IOException {
         response.setStatus(200);
+        copyUpstreamResponseHeaders(upstreamResp, response, false);
         response.setContentType("application/json");
         response.setCharacterEncoding("UTF-8");
 
@@ -566,11 +593,45 @@ public class GatewayResponseService {
         return ProtocolTranslationService.platformToFormatId(ctx.getRequestPlatform());
     }
 
+    private static void copyUpstreamResponseHeaders(HttpResponse<?> upstreamResp,
+                                                    HttpServletResponse response,
+                                                    boolean passthrough) {
+        if (upstreamResp == null || response == null || upstreamResp.headers() == null) {
+            return;
+        }
+        for (Map.Entry<String, List<String>> entry : upstreamResp.headers().map().entrySet()) {
+            String name = entry.getKey();
+            if (name == null || name.isBlank()) {
+                continue;
+            }
+            String lower = name.toLowerCase();
+            if (HOP_BY_HOP_RESPONSE_HEADERS.contains(lower) || "content-type".equals(lower)) {
+                continue;
+            }
+            boolean allowed = RESPONSE_HEADER_ALLOWLIST.contains(lower)
+                    || (passthrough && lower.startsWith("x-codex-"));
+            if (!allowed) {
+                continue;
+            }
+            for (String value : entry.getValue()) {
+                if (value != null && !value.isBlank()) {
+                    response.addHeader(name, value);
+                }
+            }
+        }
+    }
+
     public UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,
                                           HttpServletResponse response,
                                           IUsageParser usageParser) throws IOException {
+        GatewayRequestContext ctx = GatewayRequestContext.get();
+        UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
+        boolean passthrough = route != null && route.passthrough();
         response.setStatus(upstreamResp.statusCode());
-        response.setContentType("application/json");
+        copyUpstreamResponseHeaders(upstreamResp, response, passthrough);
+        response.setContentType(passthrough
+                ? upstreamResp.headers().firstValue("Content-Type").orElse("application/json")
+                : "application/json");
         response.setCharacterEncoding("UTF-8");
 
         String responseBody;
@@ -583,7 +644,6 @@ public class GatewayResponseService {
 
         // 协议翻译：上游格式 → 客户端格式。
         // 优先使用 UpstreamRoute 中的格式，保证与请求翻译、usage parser 的路由决策一致。
-        GatewayRequestContext ctx = GatewayRequestContext.get();
         log.info("[{}] 非流式用量解析: parser={}, body_bytes={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
                 ctx != null ? ctx.getRequestId() : "?",
                 usageParser.getClass().getSimpleName(),
@@ -594,7 +654,6 @@ public class GatewayResponseService {
                 usage != null ? usage.getCacheCreationTokens() : 0,
                 usage != null ? usage.getCacheReadTokens() : 0);
         Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
-        UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
         String clientFormat = route != null && route.clientFormat() != null
                 ? route.clientFormat()
                 : (ctx != null && ctx.getRequestFormat() != null
@@ -606,7 +665,8 @@ public class GatewayResponseService {
                         ? ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform())
                         : null);
         boolean needRespTranslation = clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat);
+                && !clientFormat.equals(upstreamFormat)
+                && (route == null || !route.passthrough());
         String clientBody = responseBody;
         if (needRespTranslation) {
             log.info("[{}] 响应协议翻译: {} -> {}",
@@ -620,6 +680,19 @@ public class GatewayResponseService {
         }
 
         return usage;
+    }
+
+    public void writePassthroughError(HttpResponse<InputStream> upstreamResp,
+                                      HttpServletResponse response,
+                                      String responseBody) throws IOException {
+        response.setStatus(upstreamResp.statusCode());
+        copyUpstreamResponseHeaders(upstreamResp, response, true);
+        response.setContentType(upstreamResp.headers().firstValue("Content-Type").orElse("application/json"));
+        response.setCharacterEncoding("UTF-8");
+        try (var output = response.getOutputStream()) {
+            output.write((responseBody == null ? "" : responseBody).getBytes(StandardCharsets.UTF_8));
+            output.flush();
+        }
     }
 
     /** 构造 Anthropic Messages 非流式响应 JSON。 */

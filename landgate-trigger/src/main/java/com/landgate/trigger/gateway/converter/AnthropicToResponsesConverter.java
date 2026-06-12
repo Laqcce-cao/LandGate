@@ -22,6 +22,7 @@ import java.util.UUID;
 public class AnthropicToResponsesConverter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int MIN_MAX_OUTPUT_TOKENS = 128;
     // ========================
     // 请求转换：Anthropic → Responses IR
     // ========================
@@ -41,16 +42,15 @@ public class AnthropicToResponsesConverter {
             // --- 基础字段透传 ---
             copyTextIfExists(src, dst, "model");
             copyBooleanIfExists(src, dst, "stream");
-            copyTextIfExists(src, dst, "service_tier");
-            copyObjectIfExists(src, dst, "metadata");
 
             // 协议转换层不根据模型名猜能力；采样参数按客户端显式请求保留。
             copyNumberIfExists(src, dst, "temperature");
             copyNumberIfExists(src, dst, "top_p");
 
-            // max_tokens → max_output_tokens
+            // max_tokens → max_output_tokens. sub2api clamps tiny values because
+            // OpenAI Responses/Codex rejects very small output budgets.
             if (src.has("max_tokens") && isPositiveInt(src.get("max_tokens"))) {
-                dst.put("max_output_tokens", src.get("max_tokens").asInt());
+                dst.put("max_output_tokens", Math.max(src.get("max_tokens").asInt(), MIN_MAX_OUTPUT_TOKENS));
             }
 
             // stop_sequences → 内部 IR 扩展。Responses 上游不直接消费，跨协议转 Chat/Anthropic 时再还原。
@@ -124,29 +124,31 @@ public class AnthropicToResponsesConverter {
                 }
             }
 
-            // --- thinking/output_config.effort → reasoning.effort ---
-            // 只在源请求显式表达 thinking/output_config 时映射，避免普通 Messages 请求被转换成推理请求。
-            String reasoningEffort = null;
+            // --- output_config.effort → reasoning.effort ---
+            // 对齐 sub2api/Codex bridge：普通 Messages 请求也默认带 medium reasoning shape。
+            String reasoningEffort = "medium";
             if (src.has("output_config") && src.get("output_config").isObject()
                     && src.get("output_config").has("effort")) {
                 reasoningEffort = mapAnthropicEffortToResponses(src.get("output_config").get("effort"));
             }
-            if (src.has("thinking") && reasoningEffort == null) {
+            if (reasoningEffort == null) {
                 reasoningEffort = "medium";
             }
-            if (reasoningEffort != null) {
-                ObjectNode reasoning = JSON.createObjectNode();
-                reasoning.put("effort", reasoningEffort);
-                reasoning.put("summary", "auto");
-                dst.set("reasoning", reasoning);
-            }
 
-            // --- 固定字段 ---
+            // --- Codex/Responses 默认形状，对齐 sub2api anthropic bridge ---
             dst.put("store", false);
-            if (reasoningEffort != null) {
-                ArrayNode include = JSON.createArrayNode();
-                include.add("reasoning.encrypted_content");
-                dst.set("include", include);
+            ObjectNode text = JSON.createObjectNode();
+            text.put("verbosity", "medium");
+            dst.set("text", text);
+            ObjectNode reasoning = JSON.createObjectNode();
+            reasoning.put("effort", reasoningEffort);
+            reasoning.put("summary", "auto");
+            dst.set("reasoning", reasoning);
+            ArrayNode include = JSON.createArrayNode();
+            include.add("reasoning.encrypted_content");
+            dst.set("include", include);
+            if (!parallelToolCallsDisabled) {
+                dst.put("parallel_tool_calls", true);
             }
             if (parallelToolCallsDisabled) {
                 dst.put("parallel_tool_calls", false);
@@ -222,6 +224,19 @@ public class AnthropicToResponsesConverter {
             }
 
             flushTextBlocks(output, textBlocks);
+            if (output.size() == 0) {
+                ObjectNode msgItem = JSON.createObjectNode();
+                msgItem.put("type", "message");
+                msgItem.put("role", "assistant");
+                msgItem.put("status", "completed");
+                ArrayNode msgContent = JSON.createArrayNode();
+                ObjectNode part = JSON.createObjectNode();
+                part.put("type", "output_text");
+                part.put("text", "");
+                msgContent.add(part);
+                msgItem.set("content", msgContent);
+                output.add(msgItem);
+            }
 
             dst.set("output", output);
 
@@ -240,10 +255,9 @@ public class AnthropicToResponsesConverter {
                 JsonNode usage = src.get("usage");
                 ObjectNode respUsage = JSON.createObjectNode();
                 int inputTokens = nonNegativeIntOrZero(usage.get("input_tokens"));
-                int cacheCreationTokens = nonNegativeIntOrZero(usage.get("cache_creation_input_tokens"));
                 int outputTokens = nonNegativeIntOrZero(usage.get("output_tokens"));
                 int cachedTokens = nonNegativeIntOrZero(usage.get("cache_read_input_tokens"));
-                int responseInputTokens = inputTokens + cacheCreationTokens + cachedTokens;
+                int responseInputTokens = inputTokens;
                 respUsage.put("input_tokens", responseInputTokens);
                 respUsage.put("output_tokens", outputTokens);
                 respUsage.put("total_tokens", responseInputTokens + outputTokens);
@@ -325,15 +339,12 @@ public class AnthropicToResponsesConverter {
         private String currentCallId;
         private String currentName;
         private final StringBuilder currentArguments = new StringBuilder();
-        private final StringBuilder currentReasoningSignature = new StringBuilder();
         private int contentIndex = 0;
         private boolean messageItemOpen = false;
 
         private int inputTokens = 0;
-        private int cacheCreationInputTokens = 0;
         private int outputTokens = 0;
         private int cacheReadInputTokens = 0;
-        private String stopReason = "end_turn";
 
         AnthropicToIRStreamTranslator(String model) {
             this.model = model != null ? model : "unknown";
@@ -360,12 +371,6 @@ public class AnthropicToResponsesConverter {
                             if (!isBlankText(msg.get("model"))) model = msg.get("model").asText();
                             if (msg.has("usage") && isNonNegativeInt(msg.get("usage").get("input_tokens"))) {
                                 inputTokens = msg.get("usage").get("input_tokens").asInt();
-                            }
-                            if (msg.has("usage") && isNonNegativeInt(msg.get("usage").get("cache_read_input_tokens"))) {
-                                cacheReadInputTokens = msg.get("usage").get("cache_read_input_tokens").asInt();
-                            }
-                            if (msg.has("usage") && isNonNegativeInt(msg.get("usage").get("cache_creation_input_tokens"))) {
-                                cacheCreationInputTokens = msg.get("usage").get("cache_creation_input_tokens").asInt();
                             }
                         }
                         ensureCreatedSent(output);
@@ -397,10 +402,6 @@ public class AnthropicToResponsesConverter {
                                 outputIndex++;
                                 currentItemId = "rsn_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
                                 currentItemType = ItemType.REASONING;
-                                currentReasoningSignature.setLength(0);
-                                if (block.has("signature") && !block.get("signature").asText().isEmpty()) {
-                                    currentReasoningSignature.append(block.get("signature").asText());
-                                }
 
                                 ensureCreatedSent(output);
                                 appendEvent(output, "response.output_item.added",
@@ -474,10 +475,7 @@ public class AnthropicToResponsesConverter {
                                 }
                             }
                             case "signature_delta" -> {
-                                String signature = textOrDefault(delta.get("signature"), "");
-                                if (!signature.isEmpty()) {
-                                    currentReasoningSignature.append(signature);
-                                }
+                                // Anthropic signatures have no Responses stream equivalent in sub2api.
                             }
                             default -> log.debug("Anthropic→IR stream: unknown delta type '{}'", deltaType);
                         }
@@ -488,19 +486,14 @@ public class AnthropicToResponsesConverter {
                                     fmt("{\"type\":\"response.reasoning_summary_text.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"summary_index\":0}",
                                             sequenceNumber++, responseId, currentItemId, outputIndex));
                             appendEvent(output, "response.output_item.done",
-                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"completed\"%s}}",
-                                            sequenceNumber++, responseId, outputIndex, currentItemId,
-                                            currentReasoningSignature.length() > 0
-                                                    ? fmt(",\"encrypted_content\":\"%s\"", escapeJsonValue(currentReasoningSignature.toString()))
-                                                    : ""));
+                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"completed\"}}",
+                                            sequenceNumber++, responseId, outputIndex, currentItemId));
                             currentItemType = ItemType.NONE;
-                            currentReasoningSignature.setLength(0);
                         } else if (currentItemType == ItemType.FUNCTION_CALL) {
                             String arguments = currentArguments.length() > 0 ? currentArguments.toString() : "{}";
                             appendEvent(output, "response.function_call_arguments.done",
-                                    fmt("{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"arguments\":\"%s\"}",
-                                            sequenceNumber++, responseId, currentItemId, outputIndex,
-                                            escapeJsonValue(arguments)));
+                                    fmt("{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d}",
+                                            sequenceNumber++, responseId, currentItemId, outputIndex));
                             appendEvent(output, "response.output_item.done",
                                     fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"arguments\":\"%s\",\"status\":\"completed\"}}",
                                             sequenceNumber++, responseId, outputIndex, currentItemId,
@@ -511,7 +504,7 @@ public class AnthropicToResponsesConverter {
                         } else if (currentItemType == ItemType.MESSAGE) {
                             // text block stop: 只发送 text.done，不关闭 message item
                             appendEvent(output, "response.output_text.done",
-                                    fmt("{\"type\":\"response.output_text.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"content_index\":%d,\"text\":\"\"}",
+                                    fmt("{\"type\":\"response.output_text.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"content_index\":%d}",
                                             sequenceNumber++, responseId, currentItemId, outputIndex, contentIndex));
                         }
                     }
@@ -522,30 +515,18 @@ public class AnthropicToResponsesConverter {
                         if (root.has("usage") && isNonNegativeInt(root.get("usage").get("cache_read_input_tokens"))) {
                             cacheReadInputTokens = root.get("usage").get("cache_read_input_tokens").asInt();
                         }
-                        if (root.has("usage") && isNonNegativeInt(root.get("usage").get("cache_creation_input_tokens"))) {
-                            cacheCreationInputTokens = root.get("usage").get("cache_creation_input_tokens").asInt();
-                        }
-                        if (root.has("delta") && root.get("delta").has("stop_reason")
-                                && !root.get("delta").get("stop_reason").isNull()) {
-                            stopReason = textOrDefault(root.get("delta").get("stop_reason"), "end_turn");
-                        }
                     }
                     case "message_stop" -> {
                         closeCurrentItem(output);
-                        // Responses terminal event mirrors the terminal status.
-                        String status = mapAnthropicStopReasonToResponsesStatus(stopReason);
-                        String incompleteDetails = "max_tokens".equals(stopReason)
-                                ? ",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}"
-                                : "";
+                        String status = "completed";
                         String cacheDetails = cacheReadInputTokens > 0
                                 ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
                                 : "";
-                        int responseInputTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
-                        String eventType = "incomplete".equals(status) ? "response.incomplete" : "response.completed";
-                        appendEvent(output, eventType,
+                        int responseInputTokens = inputTokens;
+                        appendEvent(output, "response.completed",
                                 fmt("{\"type\":\"%s\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"%s\"%s,\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
-                                        eventType, sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
-                                        status, incompleteDetails,
+                                        "response.completed", sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
+                                        status, "",
                                         responseInputTokens, outputTokens, responseInputTokens + outputTokens, cacheDetails));
                         done = true;
                     }
@@ -557,7 +538,7 @@ public class AnthropicToResponsesConverter {
                         String cacheDetails = cacheReadInputTokens > 0
                                 ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
                                 : "";
-                        int responseInputTokens = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
+                        int responseInputTokens = inputTokens;
                         appendEvent(output, "response.failed",
                                 fmt("{\"type\":\"response.failed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"failed\",\"error\":{\"code\":\"%s\",\"message\":\"%s\"},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
                                         sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
@@ -702,9 +683,13 @@ public class AnthropicToResponsesConverter {
                 }
                 fco.put("output", textOutput.toString());
             } else if (trContent != null && trContent.isTextual()) {
-                fco.put("output", trContent.asText());
+                String output = trContent.asText();
+                fco.put("output", output.isEmpty() ? "(empty)" : output);
             } else {
-                fco.put("output", "");
+                fco.put("output", "(empty)");
+            }
+            if (fco.path("output").asText("").isEmpty()) {
+                fco.put("output", "(empty)");
             }
             input.add(fco);
         }
@@ -800,7 +785,8 @@ public class AnthropicToResponsesConverter {
      * 转换 Anthropic assistant 消息到 Responses input items。
      * <p>
      * text 块 → message item；tool_use 块 → function_call item；
-     * thinking/redacted_thinking 块 → reasoning item，保留签名/不透明数据。
+     * thinking/redacted_thinking 块 → 请求续链时不重放。对齐 sub2api：
+     * OpenAI Responses/Codex input 不接受 Anthropic thinking 历史块作为输入。
      */
     private static void convertAssistantMessage(JsonNode contentNode, ArrayNode input) {
         if (contentNode == null) return;
@@ -824,7 +810,6 @@ public class AnthropicToResponsesConverter {
         // 收集所有 text 块文本
         StringBuilder textBuilder = new StringBuilder();
         List<JsonNode> toolUses = new ArrayList<>();
-        List<JsonNode> reasoningItems = new ArrayList<>();
 
         for (JsonNode block : contentNode) {
             String blockType = textOrDefault(block.get("type"), "text");
@@ -837,18 +822,8 @@ public class AnthropicToResponsesConverter {
                     }
                 }
                 case "tool_use" -> toolUses.add(block);
-                case "thinking" -> {
-                    ObjectNode reasoning = convertAnthropicThinkingToResponsesReasoning(block);
-                    if (hasReasoningPayload(reasoning)) {
-                        reasoningItems.add(reasoning);
-                    }
-                }
-                case "redacted_thinking" -> {
-                    ObjectNode reasoning = convertAnthropicRedactedThinkingToResponsesReasoning(block);
-                    if (hasReasoningPayload(reasoning)) {
-                        reasoningItems.add(reasoning);
-                    }
-                }
+                case "thinking", "redacted_thinking" ->
+                        log.debug("Anthropic→Responses request: assistant {} block ignored", blockType);
                 default -> log.debug("Anthropic→Responses: unknown assistant block type '{}'", blockType);
             }
         }
@@ -866,10 +841,6 @@ public class AnthropicToResponsesConverter {
             parts.add(part);
             item.set("content", parts);
             input.add(item);
-        }
-
-        for (JsonNode reasoningItem : reasoningItems) {
-            input.add(reasoningItem);
         }
 
         // tool_use → function_call items
@@ -1011,23 +982,12 @@ public class AnthropicToResponsesConverter {
         String thinking = textOrDefault(block.get("thinking"), "");
 
         if (!thinking.isEmpty()) {
-            ArrayNode content = JSON.createArrayNode();
-            ObjectNode contentText = JSON.createObjectNode();
-            contentText.put("type", "reasoning_text");
-            contentText.put("text", thinking);
-            content.add(contentText);
-            reasoningItem.set("content", content);
-
             ArrayNode summary = JSON.createArrayNode();
             ObjectNode summaryText = JSON.createObjectNode();
             summaryText.put("type", "summary_text");
             summaryText.put("text", thinking);
             summary.add(summaryText);
             reasoningItem.set("summary", summary);
-        }
-        String signature = textOrDefault(block.get("signature"), "");
-        if (!signature.isEmpty()) {
-            reasoningItem.put("encrypted_content", signature);
         }
         return reasoningItem;
     }
@@ -1036,10 +996,6 @@ public class AnthropicToResponsesConverter {
         ObjectNode reasoningItem = JSON.createObjectNode();
         reasoningItem.put("type", "reasoning");
         reasoningItem.put("status", "completed");
-        String data = textOrDefault(block.get("data"), "");
-        if (!data.isEmpty()) {
-            reasoningItem.put("encrypted_content", data);
-        }
         return reasoningItem;
     }
 
@@ -1060,7 +1016,7 @@ public class AnthropicToResponsesConverter {
             case "medium" -> "medium";
             case "high" -> "high";
             case "xhigh", "max" -> "xhigh";
-            default -> null;
+            default -> effort.asText();
         };
     }
 
@@ -1106,14 +1062,6 @@ public class AnthropicToResponsesConverter {
     // ========================
     // 通用工具方法
     // ========================
-
-    private static void copyIfExists(JsonNode src, ObjectNode dst, String field) {
-        if (src.has(field) && !src.get(field).isNull()) dst.set(field, src.get(field));
-    }
-
-    private static void copyObjectIfExists(JsonNode src, ObjectNode dst, String field) {
-        if (src.has(field) && src.get(field).isObject()) dst.set(field, src.get(field));
-    }
 
     private static void copyTextIfExists(JsonNode src, ObjectNode dst, String field) {
         if (src.has(field) && src.get(field).isTextual() && !src.get(field).asText().isBlank()) {

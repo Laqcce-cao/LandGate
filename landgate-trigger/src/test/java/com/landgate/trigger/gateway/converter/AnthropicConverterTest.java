@@ -46,12 +46,14 @@ class AnthropicConverterTest {
 
             assertEquals("gpt-5.2", resp.get("model").asText());
             assertTrue(resp.get("stream").asBoolean());
-            assertEquals("standard_only", resp.get("service_tier").asText());
+            assertFalse(resp.has("service_tier"));
             assertEquals(1024, resp.get("max_output_tokens").asInt());
             assertFalse(resp.get("store").asBoolean());
-            assertFalse(resp.has("reasoning"));
-            assertFalse(resp.has("text"));
-            assertFalse(resp.has("include"));
+            assertEquals("medium", resp.get("reasoning").get("effort").asText());
+            assertEquals("auto", resp.get("reasoning").get("summary").asText());
+            assertEquals("medium", resp.get("text").get("verbosity").asText());
+            assertEquals("reasoning.encrypted_content", resp.get("include").get(0).asText());
+            assertTrue(resp.get("parallel_tool_calls").asBoolean());
 
             JsonNode input = resp.get("input");
             assertEquals(1, input.size());
@@ -65,8 +67,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("非对象 metadata 不写入 Responses")
-        void nonObjectMetadataDroppedToResponses() throws Exception {
+        @DisplayName("metadata 按 sub2api 不写入 Responses")
+        void metadataDroppedToResponses() throws Exception {
             String body = """
                     {
                         "model": {"id": "gpt-5.2"},
@@ -78,6 +80,14 @@ class AnthropicConverterTest {
             JsonNode resp = toIR.requestToIR(body);
 
             assertFalse(resp.has("metadata"));
+
+            String objectMetadata = """
+                    {
+                        "model": "gpt-5.2",
+                        "metadata": {"trace_id":"req_123"},
+                        "messages": [{"role": "user", "content": "Hello"}]
+                    }""";
+            assertFalse(toIR.requestToIR(objectMetadata).has("metadata"));
         }
 
         @Test
@@ -178,7 +188,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("stop_sequences → 内部 stop 扩展并可还原")
+        @DisplayName("stop_sequences → 内部 stop 扩展；反向 Anthropic 请求按 sub2api 不透传")
         void stopSequencesToInternalStopExtension() throws Exception {
             String body = """
                     {
@@ -195,9 +205,7 @@ class AnthropicConverterTest {
 
             String anthropicBody = fromIR.requestFromIR(resp);
             JsonNode anthropic = JSON.readTree(anthropicBody);
-            assertEquals("</end>", anthropic.get("stop_sequences").get(0).asText());
-            assertEquals("DONE", anthropic.get("stop_sequences").get(1).asText());
-            assertEquals(2, anthropic.get("stop_sequences").size());
+            assertFalse(anthropic.has("stop_sequences"));
 
             String responsesBody = new ResponsesConverter().requestFromIR(resp);
             assertFalse(JSON.readTree(responsesBody).has("_landgate_stop_sequences"));
@@ -278,8 +286,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("assistant thinking 块保留为 reasoning input item")
-        void thinkingPreservedAsReasoningInput() throws Exception {
+        @DisplayName("assistant thinking 块不作为 Responses input 重放")
+        void thinkingIgnoredInRequestInput() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -293,18 +301,14 @@ class AnthropicConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
             JsonNode input = resp.get("input");
-            // user + assistant(text) + reasoning + user = 4
-            assertEquals(4, input.size());
+            // user + assistant(text) + user = 3
+            assertEquals(3, input.size());
 
             JsonNode assistantContent = input.get(1).get("content");
             assertEquals(1, assistantContent.size());
             assertEquals("output_text", assistantContent.get(0).get("type").asText());
             assertEquals("Hi!", assistantContent.get(0).get("text").asText());
-
-            JsonNode reasoning = input.get(2);
-            assertEquals("reasoning", reasoning.get("type").asText());
-            assertEquals("deep thought", reasoning.get("content").get(0).get("text").asText());
-            assertEquals("sig_1", reasoning.get("encrypted_content").asText());
+            assertEquals("user", input.get(2).get("role").asText());
         }
 
         @Test
@@ -341,12 +345,12 @@ class AnthropicConverterTest {
             String body = """
                     {
                         "model": "gpt-5.2",
-                        "max_tokens": 10,
+                        "max_tokens": 512,
                         "messages": [{"role": "user", "content": "Hi"}]
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            assertEquals(10, resp.get("max_output_tokens").asInt());
+            assertEquals(512, resp.get("max_output_tokens").asInt());
         }
 
         @Test
@@ -367,6 +371,21 @@ class AnthropicConverterTest {
 
             assertFalse(toIR.requestToIR(zero).has("max_output_tokens"));
             assertFalse(toIR.requestToIR(nonNumeric).has("max_output_tokens"));
+        }
+
+        @Test
+        @DisplayName("max_tokens 低于 Responses 下限时钳制为 128")
+        void tinyMaxTokensClampedToResponsesMinimum() {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "max_tokens": 10,
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals(128, resp.get("max_output_tokens").asInt());
         }
 
         @Test
@@ -469,8 +488,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("非法 output_config.effort 不写入 Responses reasoning")
-        void invalidOutputConfigEffortIgnored() throws Exception {
+        @DisplayName("非法 output_config.effort 按 sub2api 透传")
+        void invalidOutputConfigEffortPassthrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -481,13 +500,13 @@ class AnthropicConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("reasoning"));
-            assertFalse(resp.has("include"));
+            assertEquals("extreme", resp.get("reasoning").get("effort").asText());
+            assertEquals("reasoning.encrypted_content", resp.get("include").get(0).asText());
         }
 
         @Test
-        @DisplayName("thinking 存在但 output_config.effort 非法时使用 medium")
-        void thinkingWithInvalidOutputConfigEffortUsesDefault() throws Exception {
+        @DisplayName("thinking 存在但 output_config.effort 非法时仍按 sub2api 透传")
+        void thinkingWithInvalidOutputConfigEffortPassthrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -499,7 +518,7 @@ class AnthropicConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertEquals("medium", resp.get("reasoning").get("effort").asText());
+            assertEquals("extreme", resp.get("reasoning").get("effort").asText());
             assertTrue(resp.get("include").toString().contains("reasoning.encrypted_content"));
         }
 
@@ -568,7 +587,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("非 boolean disable_parallel_tool_use 不映射 Responses parallel_tool_calls")
+        @DisplayName("非 boolean disable_parallel_tool_use 保持默认 parallel_tool_calls=true")
         void nonBooleanDisableParallelToolUseIgnored() throws Exception {
             String body = """
                     {
@@ -581,7 +600,7 @@ class AnthropicConverterTest {
             JsonNode resp = toIR.requestToIR(body);
 
             assertEquals("auto", resp.get("tool_choice").asText());
-            assertFalse(resp.has("parallel_tool_calls"));
+            assertTrue(resp.get("parallel_tool_calls").asBoolean());
         }
 
         @Test
@@ -803,7 +822,7 @@ class AnthropicConverterTest {
 
             // function_call_output
             assertEquals("function_call_output", input.get(2).get("type").asText());
-            assertEquals("", input.get(2).get("output").asText());
+            assertEquals("(empty)", input.get(2).get("output").asText());
 
             // 图片单独的用户消息
             assertEquals("user", input.get(3).get("role").asText());
@@ -865,7 +884,7 @@ class AnthropicConverterTest {
 
             assertEquals(4, input.size());
             assertEquals("function_call_output", input.get(2).get("type").asText());
-            assertEquals("", input.get(2).get("output").asText());
+            assertEquals("(empty)", input.get(2).get("output").asText());
             JsonNode filePart = input.get(3).get("content").get(0);
             assertEquals("input_file", filePart.get("type").asText());
             assertEquals("https://example.com/report.pdf", filePart.get("file_url").asText());
@@ -1252,6 +1271,34 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("web_search_call → server_tool_use + web_search_tool_result")
+        void webSearchCallToAnthropicServerToolBlocks() throws Exception {
+            String body = """
+                    {
+                        "id": "resp_web_search",
+                        "model": "gpt-5.2",
+                        "status": "completed",
+                        "output": [
+                            {"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"LandGate"}},
+                            {"type":"message","content":[{"type":"output_text","text":"visible"}]}
+                        ]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.responseFromIR(JSON.readTree(body)));
+            JsonNode content = anth.get("content");
+
+            assertEquals("server_tool_use", content.get(0).get("type").asText());
+            assertEquals("srvtoolu_ws_1", content.get(0).get("id").asText());
+            assertEquals("web_search", content.get(0).get("name").asText());
+            assertEquals("LandGate", content.get(0).get("input").get("query").asText());
+            assertEquals("web_search_tool_result", content.get(1).get("type").asText());
+            assertEquals("srvtoolu_ws_1", content.get(1).get("tool_use_id").asText());
+            assertEquals(0, content.get(1).get("content").size());
+            assertEquals("text", content.get(2).get("type").asText());
+            assertEquals("visible", content.get(2).get("text").asText());
+        }
+
+        @Test
         @DisplayName("Responses 响应非文本 envelope/content/tool payload 不降级到 Anthropic")
         void nonTextResponsesResponsePayloadIgnoredInAnthropic() throws Exception {
             String body = """
@@ -1310,7 +1357,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("Responses hosted-only 输出不伪造 Anthropic 空 text")
+        @DisplayName("Responses hosted-only 输出补空 Anthropic text")
         void hostedOnlyToolCallsDoNotCreateEmptyText() throws Exception {
             String body = """
                     {
@@ -1329,7 +1376,9 @@ class AnthropicConverterTest {
             JsonNode content = anth.get("content");
 
             assertEquals("end_turn", anth.get("stop_reason").asText());
-            assertEquals(0, content.size());
+            assertEquals(1, content.size());
+            assertEquals("text", content.get(0).get("type").asText());
+            assertEquals("", content.get(0).get("text").asText());
         }
 
         @Test
@@ -1425,7 +1474,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("reasoning.content 优先于 summary 转为 thinking")
+        @DisplayName("reasoning.summary 转为 thinking，忽略 content")
         void reasoningContentPreferredOverSummary() throws Exception {
             String body = """
                     {
@@ -1447,11 +1496,11 @@ class AnthropicConverterTest {
             JsonNode content = anth.get("content");
 
             assertEquals("thinking", content.get(0).get("type").asText());
-            assertEquals("Full reasoning text.", content.get(0).get("thinking").asText());
+            assertEquals("Short summary.", content.get(0).get("thinking").asText());
         }
 
         @Test
-        @DisplayName("reasoning encrypted_content 带文本时转为 thinking signature")
+        @DisplayName("reasoning 仅 content/encrypted_content 时不转 thinking")
         void reasoningEncryptedContentToThinkingSignature() throws Exception {
             String body = """
                     {
@@ -1470,15 +1519,16 @@ class AnthropicConverterTest {
 
             String result = fromIR.responseFromIR(JSON.readTree(body));
             JsonNode anth = JSON.readTree(result);
-            JsonNode thinking = anth.get("content").get(0);
+            JsonNode content = anth.get("content");
 
-            assertEquals("thinking", thinking.get("type").asText());
-            assertEquals("Hidden chain.", thinking.get("thinking").asText());
-            assertEquals("sig_123", thinking.get("signature").asText());
+            assertEquals(1, content.size());
+            assertEquals("text", content.get(0).get("type").asText());
+            assertEquals("42", content.get(0).get("text").asText());
+            assertFalse(content.toString().contains("sig_123"));
         }
 
         @Test
-        @DisplayName("仅 encrypted_content 的 reasoning 转为 redacted_thinking")
+        @DisplayName("仅 encrypted_content 的 reasoning 不转 redacted_thinking")
         void encryptedOnlyReasoningToRedactedThinking() throws Exception {
             String body = """
                     {
@@ -1493,10 +1543,12 @@ class AnthropicConverterTest {
 
             String result = fromIR.responseFromIR(JSON.readTree(body));
             JsonNode anth = JSON.readTree(result);
-            JsonNode redacted = anth.get("content").get(0);
+            JsonNode content = anth.get("content");
 
-            assertEquals("redacted_thinking", redacted.get("type").asText());
-            assertEquals("encrypted_blob", redacted.get("data").asText());
+            assertEquals(1, content.size());
+            assertEquals("text", content.get(0).get("type").asText());
+            assertEquals("42", content.get(0).get("text").asText());
+            assertFalse(content.toString().contains("encrypted_blob"));
         }
 
         @Test
@@ -1535,7 +1587,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("空 output → 空 content，不伪造 text")
+        @DisplayName("空 output → 空 text content block")
         void emptyOutput() throws Exception {
             String body = """
                     {"id": "resp_empty", "model": "gpt-5.2", "status": "completed", "output": []}""";
@@ -1544,7 +1596,9 @@ class AnthropicConverterTest {
             JsonNode anth = JSON.readTree(result);
 
             JsonNode content = anth.get("content");
-            assertEquals(0, content.size());
+            assertEquals(1, content.size());
+            assertEquals("text", content.get(0).get("type").asText());
+            assertEquals("", content.get(0).get("text").asText());
         }
 
         @Test
@@ -1686,7 +1740,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("thinking → reasoning output")
+        @DisplayName("thinking → reasoning summary output")
         void thinkingToReasoning() throws Exception {
             String body = """
                     {
@@ -1709,14 +1763,13 @@ class AnthropicConverterTest {
             assertEquals("reasoning", output.get(0).get("type").asText());
             assertEquals("Let me analyze...",
                     output.get(0).get("summary").get(0).get("text").asText());
-            assertEquals("Let me analyze...",
-                    output.get(0).get("content").get(0).get("text").asText());
-            assertEquals("sig_abc", output.get(0).get("encrypted_content").asText());
+            assertFalse(output.get(0).has("content"));
+            assertFalse(output.get(0).has("encrypted_content"));
             assertEquals("message", output.get(1).get("type").asText());
         }
 
         @Test
-        @DisplayName("redacted_thinking → encrypted reasoning output")
+        @DisplayName("redacted_thinking 非流式响应按 sub2api 忽略")
         void redactedThinkingToEncryptedReasoning() throws Exception {
             String body = """
                     {
@@ -1733,11 +1786,12 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode result = toIR.responseToIR(body);
-            JsonNode reasoning = result.get("output").get(0);
+            JsonNode output = result.get("output");
 
-            assertEquals("reasoning", reasoning.get("type").asText());
-            assertEquals("encrypted_blob", reasoning.get("encrypted_content").asText());
-            assertFalse(reasoning.has("content"));
+            assertEquals(1, output.size());
+            assertEquals("message", output.get(0).get("type").asText());
+            assertEquals("Result", output.get(0).get("content").get(0).get("text").asText());
+            assertFalse(output.toString().contains("encrypted_blob"));
         }
 
         @Test
@@ -1912,7 +1966,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("cache creation/read tokens → Responses input_tokens；cached_tokens 只表示 read")
+        @DisplayName("cache read tokens → cached_tokens；Responses input_tokens 不加总缓存")
         void cacheReadTokensToResponsesUsage() throws Exception {
             String body = """
                     {
@@ -1928,10 +1982,10 @@ class AnthropicConverterTest {
             JsonNode result = toIR.responseToIR(body);
             JsonNode usage = result.get("usage");
 
-            assertEquals(100, usage.get("input_tokens").asInt());
+            assertEquals(12, usage.get("input_tokens").asInt());
             assertEquals(80, usage.get("input_tokens_details").get("cached_tokens").asInt());
             assertEquals(4, usage.get("output_tokens").asInt());
-            assertEquals(104, usage.get("total_tokens").asInt());
+            assertEquals(16, usage.get("total_tokens").asInt());
         }
 
         @Test
@@ -1963,7 +2017,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("空 content → 空 output，不伪造 output_text")
+        @DisplayName("空 content → 空 assistant output_text")
         void emptyContentFallback() throws Exception {
             String body = """
                     {"type":"message","role":"assistant","model":"unknown","stop_reason":"end_turn",
@@ -1973,11 +2027,13 @@ class AnthropicConverterTest {
             // 由于 input 无 id，会生成随机 id
             assertNotNull(result.get("id"));
             assertEquals("completed", result.get("status").asText());
-            assertEquals(0, result.get("output").size());
+            assertEquals(1, result.get("output").size());
+            assertEquals("message", result.get("output").get(0).get("type").asText());
+            assertEquals("", result.get("output").get(0).get("content").get(0).get("text").asText());
         }
 
         @Test
-        @DisplayName("空 text block → 空 output，不伪造 output_text")
+        @DisplayName("空 text block → 空 assistant output_text")
         void emptyTextBlockDoesNotCreateOutputText() throws Exception {
             String body = """
                     {"type":"message","role":"assistant","model":"unknown","stop_reason":"end_turn",
@@ -1986,7 +2042,8 @@ class AnthropicConverterTest {
             JsonNode result = toIR.responseToIR(body);
 
             assertEquals("completed", result.get("status").asText());
-            assertEquals(0, result.get("output").size());
+            assertEquals(1, result.get("output").size());
+            assertEquals("", result.get("output").get(0).get("content").get(0).get("text").asText());
         }
     }
 
@@ -1999,7 +2056,7 @@ class AnthropicConverterTest {
     class ResponsesToAnthropicRequest {
 
         @Test
-        @DisplayName("service_tier 保留到 Anthropic")
+        @DisplayName("service_tier 按 sub2api 不写入 Anthropic")
         void serviceTierPreserved() throws Exception {
             String body = """
                     {
@@ -2010,7 +2067,7 @@ class AnthropicConverterTest {
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
 
-            assertEquals("standard_only", anth.get("service_tier").asText());
+            assertFalse(anth.has("service_tier"));
         }
 
         @Test
@@ -2281,7 +2338,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("parallel_tool_calls=false → Anthropic disable_parallel_tool_use")
+        @DisplayName("parallel_tool_calls=false 按 sub2api 不写入 Anthropic disable_parallel_tool_use")
         void parallelToolCallsFalseToAnthropicToolChoice() throws Exception {
             String body = """
                     {
@@ -2298,11 +2355,11 @@ class AnthropicConverterTest {
 
             assertEquals("tool", tc.get("type").asText());
             assertEquals("get_weather", tc.get("name").asText());
-            assertTrue(tc.get("disable_parallel_tool_use").asBoolean());
+            assertFalse(tc.has("disable_parallel_tool_use"));
         }
 
         @Test
-        @DisplayName("parallel_tool_calls=false 且无 tool_choice 时生成 auto tool_choice")
+        @DisplayName("parallel_tool_calls=false 且无 tool_choice 时不生成 Anthropic tool_choice")
         void parallelToolCallsFalseCreatesAutoToolChoice() throws Exception {
             String body = """
                     {
@@ -2312,10 +2369,7 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
-            JsonNode tc = anth.get("tool_choice");
-
-            assertEquals("auto", tc.get("type").asText());
-            assertTrue(tc.get("disable_parallel_tool_use").asBoolean());
+            assertFalse(anth.has("tool_choice"));
         }
 
         @Test
@@ -2338,7 +2392,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("unsupported tool_choice 且 parallel_tool_calls=false 时保留并行禁用")
+        @DisplayName("unsupported tool_choice 且 parallel_tool_calls=false 时不生成 fallback")
         void unsupportedToolChoiceWithParallelFalseFallsBackToAuto() throws Exception {
             String body = """
                     {
@@ -2349,11 +2403,7 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
-            JsonNode tc = anth.get("tool_choice");
-
-            assertEquals("auto", tc.get("type").asText());
-            assertTrue(tc.get("disable_parallel_tool_use").asBoolean());
-            assertFalse(tc.has("name"));
+            assertFalse(anth.has("tool_choice"));
         }
 
         @Test
@@ -2555,9 +2605,11 @@ class AnthropicConverterTest {
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
             JsonNode messages = anth.get("messages");
 
-            assertEquals(1, messages.size());
-            assertEquals("user", messages.get(0).get("role").asText());
-            assertEquals("visible", messages.get(0).get("content").get(0).get("text").asText());
+            assertEquals(2, messages.size());
+            assertEquals("assistant", messages.get(0).get("role").asText());
+            assertEquals("", messages.get(0).get("content").get(0).get("text").asText());
+            assertEquals("user", messages.get(1).get("role").asText());
+            assertEquals("visible", messages.get(1).get("content").get(0).get("text").asText());
             assertFalse(messages.toString().contains("input_audio"));
             assertFalse(messages.toString().contains("custom_tool_call"));
             assertFalse(messages.toString().contains("hidden object"));
@@ -2568,7 +2620,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("Responses 空 assistant content 不伪造成 Anthropic 空 text")
+        @DisplayName("Responses 空 assistant content 按 sub2api 转为空 text")
         void emptyAssistantContentDoesNotCreateAnthropicTextBlock() throws Exception {
             String body = """
                     {
@@ -2586,11 +2638,13 @@ class AnthropicConverterTest {
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
             JsonNode messages = anth.get("messages");
 
-            assertEquals(1, messages.size());
-            assertEquals("user", messages.get(0).get("role").asText());
-            assertEquals("visible", messages.get(0).get("content").get(0).get("text").asText());
-            assertFalse(messages.toString().contains("\"role\":\"assistant\""));
-            assertFalse(messages.toString().contains("\"text\":\"\""));
+            assertEquals(2, messages.size());
+            assertEquals("assistant", messages.get(0).get("role").asText());
+            assertEquals(2, messages.get(0).get("content").size());
+            assertEquals("", messages.get(0).get("content").get(0).get("text").asText());
+            assertEquals("", messages.get(0).get("content").get(1).get("text").asText());
+            assertEquals("user", messages.get(1).get("role").asText());
+            assertEquals("visible", messages.get(1).get("content").get(0).get("text").asText());
         }
 
         @Test
@@ -2818,17 +2872,17 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("流式 cache creation/read tokens → Responses usage")
+        @DisplayName("流式 cache read tokens → cached_tokens；Responses input_tokens 不加总缓存")
         void streamingCacheReadTokens() {
             StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
 
             t.feed("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"gpt-5.2\",\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":6,\"cache_read_input_tokens\":40}}}");
-            t.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}");
+            t.feed("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5,\"cache_read_input_tokens\":40,\"cache_creation_input_tokens\":6}}");
             List<String> out = t.feed("data: {\"type\":\"message_stop\"}");
 
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"input_tokens\":56")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"input_tokens\":10")));
             assertTrue(out.stream().anyMatch(s -> s.contains("\"cached_tokens\":40")));
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"total_tokens\":61")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"total_tokens\":15")));
         }
 
         @Test
@@ -2845,7 +2899,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("message_delta stop_reason=max_tokens → response incomplete")
+        @DisplayName("message_delta stop_reason=max_tokens 按 sub2api 流式输出 completed")
         void streamingMaxTokensStopReason() {
             StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
 
@@ -2853,14 +2907,14 @@ class AnthropicConverterTest {
             t.feed("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":5}}");
             List<String> out = t.feed("data: {\"type\":\"message_stop\"}");
 
-            assertTrue(out.stream().anyMatch(s -> s.contains("response.incomplete")));
-            assertTrue(out.stream().noneMatch(s -> s.contains("response.completed")));
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"status\":\"incomplete\"")));
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"reason\":\"max_output_tokens\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.completed")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("response.incomplete")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"status\":\"completed\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("incomplete_details")));
         }
 
         @Test
-        @DisplayName("message_delta stop_reason=model_context_window_exceeded → incomplete without reason")
+        @DisplayName("message_delta stop_reason=model_context_window_exceeded 按 sub2api 流式输出 completed")
         void streamingModelContextWindowExceededStopReason() {
             StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
 
@@ -2868,9 +2922,9 @@ class AnthropicConverterTest {
             t.feed("data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"model_context_window_exceeded\"},\"usage\":{\"output_tokens\":5}}");
             List<String> out = t.feed("data: {\"type\":\"message_stop\"}");
 
-            assertTrue(out.stream().anyMatch(s -> s.contains("response.incomplete")));
-            assertTrue(out.stream().noneMatch(s -> s.contains("response.completed")));
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"status\":\"incomplete\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("response.completed")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("response.incomplete")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"status\":\"completed\"")));
             assertTrue(out.stream().noneMatch(s -> s.contains("incomplete_details")));
         }
 
@@ -2911,6 +2965,7 @@ class AnthropicConverterTest {
 
             out = t.feed("data: {\"type\":\"content_block_stop\",\"index\":0}");
             assertTrue(out.stream().anyMatch(s -> s.contains("response.function_call_arguments.done")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"arguments\":\"") && s.contains("response.function_call_arguments.done")));
             assertTrue(out.stream().anyMatch(s -> s.contains("\"arguments\":\"{\\\"city\\\":\\\"NYC\\\"}\"")));
         }
 
@@ -2945,15 +3000,16 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("signature_delta 保留到 reasoning encrypted_content")
-        void streamingThinkingSignaturePreserved() {
+        @DisplayName("signature_delta 按 sub2api 跳过")
+        void streamingThinkingSignatureSkipped() {
             StreamTranslator t = toIR.createStreamToIR("gpt-5.2");
 
             t.feed("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}");
             t.feed("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_part\"}}");
             List<String> out = t.feed("data: {\"type\":\"content_block_stop\",\"index\":0}");
 
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"encrypted_content\":\"sig_part\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("sig_part")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("encrypted_content")));
         }
 
         @Test
@@ -3253,6 +3309,20 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("普通工具 arguments.done 无 delta 时补发完整参数")
+        void toolCallDoneWithoutDeltaEmitsArguments() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.5");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bash\",\"model\":\"gpt-5.5\"}}");
+            t.feed("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_bash\",\"name\":\"Bash\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"arguments\":\"{\\\"command\\\":\\\"git status --short\\\"}\"}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("input_json_delta")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\\\"command\\\":\\\"git status --short\\\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("content_block_stop")));
+        }
+
+        @Test
         @DisplayName("Read 工具 flow：argument delta 缓冲，done 时发送")
         void readToolBuffering() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-5.5");
@@ -3271,6 +3341,20 @@ class AnthropicConverterTest {
             assertTrue(out.stream().anyMatch(s -> s.contains("input_json_delta")));
             // 确认 pages 字段被过滤
             assertTrue(out.stream().anyMatch(s -> !s.contains("pages")));
+        }
+
+        @Test
+        @DisplayName("web_search_call 流式输出 query 到 server_tool_use")
+        void webSearchCallStreamIncludesQuery() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.5");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ws_stream\",\"model\":\"gpt-5.5\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"LandGate\"}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"server_tool_use\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"srvtoolu_ws_1\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"query\":\"LandGate\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"web_search_tool_result\"")));
         }
 
         @Test

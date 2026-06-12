@@ -84,11 +84,47 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
         try {
             JsonNode root = JSON.readTree(extra);
             if (root.has("base_url") && !root.get("base_url").asText().isEmpty()) {
-                return root.get("base_url").asText() + pathSuffix;
+                return buildOpenAiEndpointUrl(root.get("base_url").asText(), pathSuffix);
             }
         } catch (Exception ignored) {
             // extra 解析失败时保持默认 OpenAI 地址，与现有 Transformer 行为一致。
         }
         return defaultUrl;
+    }
+
+    static String buildOpenAiEndpointUrl(String baseUrl, String pathSuffix) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            return OPENAI_BASE_URL + pathSuffix;
+        }
+        String base = baseUrl.trim();
+        while (base.endsWith("/") && base.length() > 1) {
+            base = base.substring(0, base.length() - 1);
+        }
+        String suffix = pathSuffix == null || pathSuffix.isBlank() ? RESPONSES_PATH : pathSuffix;
+        if (!suffix.startsWith("/")) {
+            suffix = "/" + suffix;
+        }
+
+        if (suffix.startsWith("/v1/chat/completions")) {
+            if (base.endsWith("/v1/chat/completions") || base.endsWith("/chat/completions")) {
+                return base + suffix.substring("/v1/chat/completions".length());
+            }
+            if (base.endsWith("/v1")) {
+                return base + suffix.substring("/v1".length());
+            }
+            return base + suffix;
+        }
+
+        if (suffix.startsWith(RESPONSES_PATH)) {
+            if (base.endsWith(RESPONSES_PATH) || base.endsWith("/responses")) {
+                return base + suffix.substring(RESPONSES_PATH.length());
+            }
+            if (base.endsWith("/v1")) {
+                return base + suffix.substring("/v1".length());
+            }
+            return base + suffix;
+        }
+
+        return base + suffix;
     }
 }

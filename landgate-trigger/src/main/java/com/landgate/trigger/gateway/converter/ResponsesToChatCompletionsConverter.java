@@ -74,15 +74,7 @@ public class ResponsesToChatCompletionsConverter {
 
             // stream
             if (ir.has("stream") && ir.get("stream").isBoolean()) {
-                boolean streamFlag = ir.get("stream").asBoolean();
-                dst.put("stream", streamFlag);
-                // 流式必须显式打开 include_usage，否则 OpenAI 兼容上游不会在最终 chunk 返回 usage，
-                // 上层翻译器拿到 output_tokens=0，计费与日志会失真。
-                if (streamFlag) {
-                    ObjectNode streamOptions = JSON.createObjectNode();
-                    streamOptions.put("include_usage", true);
-                    dst.set("stream_options", streamOptions);
-                }
+                dst.put("stream", ir.get("stream").asBoolean());
             }
 
             // reasoning.effort → reasoning_effort
@@ -417,7 +409,6 @@ public class ResponsesToChatCompletionsConverter {
                         case "reasoning" -> {
                             String text = extractReasoningText(item);
                             if (!text.isEmpty()) {
-                                if (reasoningText.length() > 0) reasoningText.append("\n");
                                 reasoningText.append(text);
                             }
                         }
@@ -428,10 +419,8 @@ public class ResponsesToChatCompletionsConverter {
                                     String text = textOrDefault(part.get("text"), "");
                                     String refusal = textOrDefault(part.get("refusal"), "");
                                     if ("output_text".equals(partType) && !text.isEmpty()) {
-                                        if (contentText.length() > 0) contentText.append("\n");
                                         contentText.append(text);
                                     } else if ("refusal".equals(partType) && !refusal.isEmpty()) {
-                                        if (contentText.length() > 0) contentText.append("\n");
                                         contentText.append(refusal);
                                     }
                                 }
@@ -481,7 +470,9 @@ public class ResponsesToChatCompletionsConverter {
             choice.put("index", 0);
             ObjectNode message = JSON.createObjectNode();
             message.put("role", "assistant");
-            message.put("content", contentText.toString());
+            if (contentText.length() > 0) {
+                message.put("content", contentText.toString());
+            }
             if (hasToolCalls) {
                 message.set("tool_calls", toolCalls);
             }
@@ -511,11 +502,6 @@ public class ResponsesToChatCompletionsConverter {
                     ObjectNode details = JSON.createObjectNode();
                     details.put("cached_tokens", usage.get("input_tokens_details").get("cached_tokens").asInt());
                     chatUsage.set("prompt_tokens_details", details);
-                }
-                if (isPositiveInt(usage.path("output_tokens_details").get("reasoning_tokens"))) {
-                    ObjectNode details = JSON.createObjectNode();
-                    details.put("reasoning_tokens", usage.get("output_tokens_details").get("reasoning_tokens").asInt());
-                    chatUsage.set("completion_tokens_details", details);
                 }
                 dst.set("usage", chatUsage);
             }
@@ -557,7 +543,7 @@ public class ResponsesToChatCompletionsConverter {
         private int inputTokens = 0;
         private int outputTokens = 0;
         private int cachedTokens = 0;
-        private int reasoningTokens = 0;
+        private boolean usageSeen = false;
 
         private final Map<Integer, Integer> outputIndexToToolIndex = new HashMap<>();
         private final Set<Integer> textDeltasSeen = new HashSet<>();
@@ -729,6 +715,9 @@ public class ResponsesToChatCompletionsConverter {
                         }
 
                         output.add("data: " + formatFinishChunk(finishReason));
+                        if (usageSeen) {
+                            output.add("data: " + formatUsageChunk());
+                        }
                         output.add("data: [DONE]");
                         done = true;
                     }
@@ -908,31 +897,35 @@ public class ResponsesToChatCompletionsConverter {
             sb.append(",\"object\":\"chat.completion.chunk\"");
             sb.append(",\"created\":").append(created);
             sb.append(",\"model\":\"").append(escapeJsonValue(model)).append("\"");
-            sb.append(",\"choices\":[{\"index\":0,\"delta\":{}");
-            sb.append(",\"finish_reason\":\"").append(finishReason).append("\"}]");
+            sb.append(",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"}");
+            sb.append(",\"finish_reason\":\"").append(finishReason).append("\"}]}");
+            return sb.toString();
+        }
+
+        private String formatUsageChunk() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"id\":\"").append(completionId).append("\"");
+            sb.append(",\"object\":\"chat.completion.chunk\"");
+            sb.append(",\"created\":").append(created);
+            sb.append(",\"model\":\"").append(escapeJsonValue(model)).append("\"");
+            sb.append(",\"choices\":[]");
             sb.append(",\"usage\":{\"prompt_tokens\":").append(inputTokens);
             sb.append(",\"completion_tokens\":").append(outputTokens);
             sb.append(",\"total_tokens\":").append(inputTokens + outputTokens);
             if (cachedTokens > 0) {
                 sb.append(",\"prompt_tokens_details\":{\"cached_tokens\":").append(cachedTokens).append("}");
             }
-            if (reasoningTokens > 0) {
-                sb.append(",\"completion_tokens_details\":{\"reasoning_tokens\":").append(reasoningTokens).append("}");
-            }
             sb.append("}}");
             return sb.toString();
         }
 
         private void extractUsage(JsonNode usage) {
+            usageSeen = true;
             if (isNonNegativeInt(usage.get("input_tokens"))) inputTokens = usage.get("input_tokens").asInt();
             if (isNonNegativeInt(usage.get("output_tokens"))) outputTokens = usage.get("output_tokens").asInt();
             if (usage.has("input_tokens_details")
                     && isNonNegativeInt(usage.get("input_tokens_details").get("cached_tokens"))) {
                 cachedTokens = usage.get("input_tokens_details").get("cached_tokens").asInt();
-            }
-            if (usage.has("output_tokens_details")
-                    && isNonNegativeInt(usage.get("output_tokens_details").get("reasoning_tokens"))) {
-                reasoningTokens = usage.get("output_tokens_details").get("reasoning_tokens").asInt();
             }
         }
 
@@ -1168,18 +1161,6 @@ public class ResponsesToChatCompletionsConverter {
 
     private static String extractReasoningText(JsonNode item) {
         StringBuilder text = new StringBuilder();
-        if (item.has("content") && item.get("content").isArray()) {
-            for (JsonNode part : item.get("content")) {
-                String type = textOrDefault(part.get("type"), "");
-                String partText = textOrDefault(part.get("text"), "");
-                if (("reasoning_text".equals(type) || "text".equals(type)) && !partText.isEmpty()) {
-                    if (text.length() > 0) text.append("\n");
-                    text.append(partText);
-                }
-            }
-        }
-        if (text.length() > 0) return text.toString();
-
         if (item.has("summary") && item.get("summary").isArray()) {
             for (JsonNode summary : item.get("summary")) {
                 String summaryText = textOrDefault(summary.get("text"), "");

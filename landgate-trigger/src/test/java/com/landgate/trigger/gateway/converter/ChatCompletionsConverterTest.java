@@ -42,9 +42,9 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
 
             assertEquals("gpt-4o", resp.get("model").asText());
-            assertFalse(resp.has("stream"));
+            assertTrue(resp.get("stream").asBoolean());
             assertFalse(resp.get("store").asBoolean());
-            assertFalse(resp.has("include"));
+            assertEquals("reasoning.encrypted_content", resp.get("include").get(0).asText());
 
             JsonNode input = resp.get("input");
             assertEquals(1, input.size());
@@ -52,8 +52,8 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("显式 store 字段保留到 Responses")
-        void explicitStorePreserved() throws Exception {
+        @DisplayName("显式 store 字段按 sub2api 强制为 false")
+        void explicitStoreForcedFalse() throws Exception {
             String body = """
                     {
                         "model": {"id": "gpt-4o"},
@@ -63,12 +63,12 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertTrue(resp.get("store").asBoolean());
+            assertFalse(resp.get("store").asBoolean());
         }
 
         @Test
-        @DisplayName("stream 字段保留客户端语义")
-        void streamFlagPreserved() throws Exception {
+        @DisplayName("stream 字段按 sub2api 强制为 true")
+        void streamFlagForcedTrue() throws Exception {
             String streamTrue = """
                     {
                         "model": "gpt-4o",
@@ -83,7 +83,7 @@ class ChatCompletionsConverterTest {
                     }""";
 
             assertTrue(toIR.requestToIR(streamTrue).get("stream").asBoolean());
-            assertFalse(toIR.requestToIR(streamFalse).get("stream").asBoolean());
+            assertTrue(toIR.requestToIR(streamFalse).get("stream").asBoolean());
         }
 
         @Test
@@ -107,7 +107,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("developer 消息 → developer role input item")
+        @DisplayName("developer 消息按 sub2api fallback 为 user input item")
         void developerMessage() throws Exception {
             String body = """
                     {
@@ -121,7 +121,7 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
             JsonNode input = resp.get("input");
             assertEquals(2, input.size());
-            assertEquals("developer", input.get(0).get("role").asText());
+            assertEquals("user", input.get(0).get("role").asText());
             assertEquals("Project rules.", input.get(0).get("content").asText());
         }
 
@@ -211,7 +211,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("max_tokens → max_output_tokens 精确映射")
+        @DisplayName("max_tokens → max_output_tokens，低于 128 时钳制")
         void maxTokens() throws Exception {
             String body = """
                     {
@@ -221,7 +221,7 @@ class ChatCompletionsConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            assertEquals(100, resp.get("max_output_tokens").asInt());
+            assertEquals(128, resp.get("max_output_tokens").asInt());
         }
 
         @Test
@@ -256,7 +256,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("response_format json_schema → text.format")
+        @DisplayName("response_format json_schema 按 sub2api 不写入 Responses text.format")
         void responseFormatJsonSchema() throws Exception {
             String body = """
                     {
@@ -279,13 +279,8 @@ class ChatCompletionsConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            JsonNode format = resp.get("text").get("format");
 
-            assertEquals("json_schema", format.get("type").asText());
-            assertEquals("weather_answer", format.get("name").asText());
-            assertEquals("Weather answer", format.get("description").asText());
-            assertTrue(format.get("strict").asBoolean());
-            assertEquals("object", format.get("schema").get("type").asText());
+            assertFalse(resp.has("text"));
         }
 
         @Test
@@ -322,7 +317,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("非 boolean response_format strict 不写入 Responses text.format")
+        @DisplayName("response_format strict 按 sub2api 整体不写入 Responses text.format")
         void nonBooleanResponseFormatStrictIgnoredInResponsesIR() {
             String body = """
                     {
@@ -341,12 +336,11 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.get("text").get("format").has("description"));
-            assertFalse(resp.get("text").get("format").has("strict"));
+            assertFalse(resp.has("text"));
         }
 
         @Test
-        @DisplayName("response_format json_object/text → text.format")
+        @DisplayName("response_format json_object/text 按 sub2api 不写入 text.format")
         void responseFormatSimpleTypes() throws Exception {
             String jsonObjectBody = """
                     {
@@ -361,14 +355,12 @@ class ChatCompletionsConverterTest {
                         "response_format": {"type": "text"}
                     }""";
 
-            assertEquals("json_object",
-                    toIR.requestToIR(jsonObjectBody).get("text").get("format").get("type").asText());
-            assertEquals("text",
-                    toIR.requestToIR(textBody).get("text").get("format").get("type").asText());
+            assertFalse(toIR.requestToIR(jsonObjectBody).has("text"));
+            assertFalse(toIR.requestToIR(textBody).has("text"));
         }
 
         @Test
-        @DisplayName("Chat 官方同义字段保留到 Responses")
+        @DisplayName("Chat 扩展同义字段按 sub2api 不写入 Responses")
         void officialSharedFieldsPreserved() throws Exception {
             String body = """
                     {
@@ -384,18 +376,13 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertEquals("low", resp.get("text").get("verbosity").asText());
-            assertEquals(3, resp.get("top_logprobs").asInt());
-            assertEquals("user_123", resp.get("safety_identifier").asText());
-            assertEquals("tenant:thread", resp.get("prompt_cache_key").asText());
-            assertEquals("24h", resp.get("prompt_cache_retention").asText());
-            assertTrue(resp.get("include").toString().contains("message.output_text.logprobs"));
-            assertFalse(resp.get("include").toString().contains("reasoning.encrypted_content"));
-
-            JsonNode chat = JSON.readTree(fromIR.requestFromIR(resp));
-            assertEquals("tenant:thread", chat.get("prompt_cache_key").asText());
-            assertEquals("24h", chat.get("prompt_cache_retention").asText());
-            assertTrue(chat.get("logprobs").asBoolean());
+            assertFalse(resp.has("text"));
+            assertFalse(resp.has("top_logprobs"));
+            assertFalse(resp.has("safety_identifier"));
+            assertFalse(resp.has("prompt_cache_key"));
+            assertFalse(resp.has("prompt_cache_retention"));
+            assertFalse(resp.get("include").toString().contains("message.output_text.logprobs"));
+            assertTrue(resp.get("include").toString().contains("reasoning.encrypted_content"));
         }
 
         @Test
@@ -429,7 +416,7 @@ class ChatCompletionsConverterTest {
 
             assertFalse(resp.has("reasoning"));
             assertFalse(resp.has("text"));
-            assertFalse(resp.has("include"));
+            assertEquals("reasoning.encrypted_content", resp.get("include").get(0).asText());
         }
 
         @Test
@@ -452,12 +439,12 @@ class ChatCompletionsConverterTest {
 
             assertFalse(toIR.requestToIR(nonNumeric).has("top_logprobs"));
             assertFalse(toIR.requestToIR(outOfRange).has("top_logprobs"));
-            assertTrue(toIR.requestToIR(outOfRange).get("include").toString()
+            assertFalse(toIR.requestToIR(outOfRange).get("include").toString()
                     .contains("message.output_text.logprobs"));
         }
 
         @Test
-        @DisplayName("非 boolean logprobs 不写入 Responses include")
+        @DisplayName("非 boolean logprobs 不写入 logprobs include")
         void nonBooleanLogprobsIgnoredInResponsesIR() {
             String body = """
                     {
@@ -468,7 +455,8 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("include"));
+            assertEquals(1, resp.get("include").size());
+            assertEquals("reasoning.encrypted_content", resp.get("include").get(0).asText());
         }
 
         @Test
@@ -488,7 +476,7 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
 
             assertFalse(resp.has("model"));
-            assertFalse(resp.has("stream"));
+            assertTrue(resp.get("stream").asBoolean());
             assertFalse(resp.get("store").asBoolean());
             assertFalse(resp.has("parallel_tool_calls"));
             assertFalse(resp.has("temperature"));
@@ -525,7 +513,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("web_search_options → Responses web_search_preview tool")
+        @DisplayName("web_search_options 按 sub2api 不写入 Responses tools")
         void webSearchOptionsToResponsesTool() throws Exception {
             String body = """
                     {
@@ -546,16 +534,12 @@ class ChatCompletionsConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            JsonNode tool = resp.get("tools").get(0);
 
-            assertEquals("web_search_preview", tool.get("type").asText());
-            assertEquals("low", tool.get("search_context_size").asText());
-            assertEquals("approximate", tool.get("user_location").get("type").asText());
-            assertEquals("San Francisco", tool.get("user_location").get("city").asText());
+            assertFalse(resp.has("tools"));
         }
 
         @Test
-        @DisplayName("非法 web_search_options 子字段不写入 Responses tool")
+        @DisplayName("非法 web_search_options 子字段按 sub2api 不写入 Responses tool")
         void invalidWebSearchOptionsFieldsIgnoredInResponsesTool() {
             String body = """
                     {
@@ -575,11 +559,8 @@ class ChatCompletionsConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            JsonNode tool = resp.get("tools").get(0);
 
-            assertEquals("web_search_preview", tool.get("type").asText());
-            assertFalse(tool.has("search_context_size"));
-            assertFalse(tool.has("user_location"));
+            assertFalse(resp.has("tools"));
         }
 
         @Test
@@ -828,9 +809,10 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
             JsonNode input = resp.get("input");
 
-            assertEquals(1, input.size());
+            assertEquals(2, input.size());
             assertEquals("user", input.get(0).get("role").asText());
-            assertEquals("visible", input.get(0).get("content").asText());
+            assertEquals("user", input.get(1).get("role").asText());
+            assertEquals("visible", input.get(1).get("content").asText());
         }
 
         @Test
@@ -859,7 +841,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("Chat 嵌套 tool_choice → Responses 扁平 function tool_choice")
+        @DisplayName("Chat tool_choice 按 sub2api 原样透传")
         void nestedToolChoiceToResponsesToolChoice() throws Exception {
             String body = """
                     {
@@ -873,12 +855,11 @@ class ChatCompletionsConverterTest {
             JsonNode tc = resp.get("tool_choice");
 
             assertEquals("function", tc.get("type").asText());
-            assertEquals("get_weather", tc.get("name").asText());
-            assertFalse(tc.has("function"));
+            assertEquals("get_weather", tc.get("function").get("name").asText());
         }
 
         @Test
-        @DisplayName("Chat custom tool → Responses custom tool")
+        @DisplayName("Chat custom tool 定义按 sub2api 不写入 Responses tools，tool_choice 原样透传")
         void customToolToResponsesTool() throws Exception {
             String body = """
                     {
@@ -904,11 +885,7 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            JsonNode tool = resp.get("tools").get(0);
-            assertEquals("custom", tool.get("type").asText());
-            assertEquals("grammar", tool.get("name").asText());
-            assertEquals("lark", tool.get("format").get("syntax").asText());
-            assertEquals("start: expr", tool.get("format").get("definition").asText());
+            assertFalse(resp.has("tools"));
 
             JsonNode customCall = resp.get("input").get(1);
             assertEquals("custom_tool_call", customCall.get("type").asText());
@@ -917,11 +894,11 @@ class ChatCompletionsConverterTest {
 
             JsonNode tc = resp.get("tool_choice");
             assertEquals("custom", tc.get("type").asText());
-            assertEquals("grammar", tc.get("name").asText());
+            assertEquals("grammar", tc.get("custom").get("name").asText());
         }
 
         @Test
-        @DisplayName("Chat custom tool 非官方 format 不写入 Responses")
+        @DisplayName("Chat custom tool 按 sub2api 不写入 Responses")
         void invalidChatCustomToolFormatIgnored() throws Exception {
             String body = """
                     {
@@ -936,15 +913,11 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            JsonNode tools = resp.get("tools");
-            assertEquals(3, tools.size());
-            assertFalse(tools.get(0).has("format"));
-            assertFalse(tools.get(1).has("format"));
-            assertFalse(tools.get(2).has("format"));
+            assertFalse(resp.has("tools"));
         }
 
         @Test
-        @DisplayName("Chat allowed_tools tool_choice → Responses 扁平 allowed_tools")
+        @DisplayName("Chat allowed_tools tool_choice 按 sub2api 原样透传")
         void allowedToolsToolChoiceToResponses() throws Exception {
             String body = """
                     {
@@ -966,15 +939,15 @@ class ChatCompletionsConverterTest {
             JsonNode tc = resp.get("tool_choice");
 
             assertEquals("allowed_tools", tc.get("type").asText());
-            assertEquals("required", tc.get("mode").asText());
-            assertEquals("function", tc.get("tools").get(0).get("type").asText());
-            assertEquals("get_weather", tc.get("tools").get(0).get("name").asText());
-            assertEquals("custom", tc.get("tools").get(1).get("type").asText());
-            assertEquals("grammar", tc.get("tools").get(1).get("name").asText());
+            assertEquals("required", tc.get("allowed_tools").get("mode").asText());
+            assertEquals("function", tc.get("allowed_tools").get("tools").get(0).get("type").asText());
+            assertEquals("get_weather", tc.get("allowed_tools").get("tools").get(0).get("function").get("name").asText());
+            assertEquals("custom", tc.get("allowed_tools").get("tools").get(1).get("type").asText());
+            assertEquals("grammar", tc.get("allowed_tools").get("tools").get(1).get("custom").get("name").asText());
         }
 
         @Test
-        @DisplayName("Chat allowed_tools 中 unsupported tool 不透传到 Responses")
+        @DisplayName("Chat allowed_tools 中 unsupported tool 按 sub2api 原样透传")
         void allowedToolsDropsUnsupportedToolsToResponses() throws Exception {
             String body = """
                     {
@@ -993,15 +966,16 @@ class ChatCompletionsConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            JsonNode tools = resp.get("tool_choice").get("tools");
+            JsonNode tools = resp.get("tool_choice").get("allowed_tools").get("tools");
 
-            assertEquals(1, tools.size());
+            assertEquals(2, tools.size());
             assertEquals("function", tools.get(0).get("type").asText());
-            assertEquals("get_weather", tools.get(0).get("name").asText());
+            assertEquals("get_weather", tools.get(0).get("function").get("name").asText());
+            assertEquals("file_search", tools.get(1).get("type").asText());
         }
 
         @Test
-        @DisplayName("Chat allowed_tools 非法 mode 不透传到 Responses")
+        @DisplayName("Chat allowed_tools 非法 mode 按 sub2api 原样透传")
         void invalidAllowedToolsModeDroppedToResponses() {
             String body = """
                     {
@@ -1022,8 +996,8 @@ class ChatCompletionsConverterTest {
             JsonNode tc = resp.get("tool_choice");
 
             assertEquals("allowed_tools", tc.get("type").asText());
-            assertFalse(tc.has("mode"));
-            assertEquals("get_weather", tc.get("tools").get(0).get("name").asText());
+            assertTrue(tc.get("allowed_tools").get("mode").isObject());
+            assertEquals("get_weather", tc.get("allowed_tools").get("tools").get(0).get("function").get("name").asText());
         }
 
         @Test
@@ -1074,7 +1048,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("unsupported Chat tool_choice 不透传到 Responses")
+        @DisplayName("unsupported Chat tool_choice 按 sub2api 原样透传")
         void unsupportedToolChoiceDroppedToResponses() throws Exception {
             String body = """
                     {
@@ -1085,11 +1059,12 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("file_search", resp.get("tool_choice").get("type").asText());
+            assertEquals("knowledge", resp.get("tool_choice").get("name").asText());
         }
 
         @Test
-        @DisplayName("未知文本 Chat tool_choice 不透传到 Responses")
+        @DisplayName("未知文本 Chat tool_choice 按 sub2api 原样透传")
         void unknownTextToolChoiceDroppedToResponses() throws Exception {
             String body = """
                     {
@@ -1100,11 +1075,11 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("file_search", resp.get("tool_choice").asText());
         }
 
         @Test
-        @DisplayName("缺 name 的 Chat tool_choice 不透传到 Responses")
+        @DisplayName("缺 name 的 Chat tool_choice 按 sub2api 原样透传")
         void unnamedToolChoiceDroppedToResponses() throws Exception {
             String body = """
                     {
@@ -1115,11 +1090,12 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("function", resp.get("tool_choice").get("type").asText());
+            assertTrue(resp.get("tool_choice").get("function").isObject());
         }
 
         @Test
-        @DisplayName("异常 legacy function_call 不透传到 Responses tool_choice")
+        @DisplayName("异常 legacy function_call 按 sub2api 转为空 name function tool_choice")
         void malformedLegacyFunctionCallDroppedToResponses() throws Exception {
             String body = """
                     {
@@ -1130,11 +1106,12 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("function", resp.get("tool_choice").get("type").asText());
+            assertEquals("", resp.get("tool_choice").get("name").asText());
         }
 
         @Test
-        @DisplayName("空 name 的 legacy function_call 不透传到 Responses tool_choice")
+        @DisplayName("空 name 的 legacy function_call 按 sub2api 透传空白 name")
         void blankLegacyFunctionCallNameDroppedToResponses() throws Exception {
             String body = """
                     {
@@ -1145,11 +1122,12 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("function", resp.get("tool_choice").get("type").asText());
+            assertEquals(" ", resp.get("tool_choice").get("name").asText());
         }
 
         @Test
-        @DisplayName("legacy function_call 不接受 required 模式")
+        @DisplayName("legacy function_call 文本按 sub2api 原样透传")
         void legacyFunctionCallRequiredModeDroppedToResponses() throws Exception {
             String body = """
                     {
@@ -1160,7 +1138,7 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("required", resp.get("tool_choice").asText());
         }
 
         @Test
@@ -1178,7 +1156,27 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("metadata/user/parallel_tool_calls 与 tool strict 透传")
+        @DisplayName("service_tier 按 sub2api 归一化")
+        void serviceTierNormalizedLikeSub2api() throws Exception {
+            String fast = """
+                    {
+                        "model": "gpt-4o",
+                        "service_tier": " fast ",
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+            String unknown = """
+                    {
+                        "model": "gpt-4o",
+                        "service_tier": "turbo",
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            assertEquals("priority", toIR.requestToIR(fast).get("service_tier").asText());
+            assertFalse(toIR.requestToIR(unknown).has("service_tier"));
+        }
+
+        @Test
+        @DisplayName("metadata/user/parallel_tool_calls 按 sub2api 不写入 Responses，tool strict 保留")
         void commonFieldsAndToolStrictPreserved() throws Exception {
             String body = """
                     {
@@ -1198,17 +1196,10 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertEquals("req_123", resp.get("metadata").get("trace_id").asText());
-            assertEquals("user_abc", resp.get("user").asText());
-            assertFalse(resp.get("parallel_tool_calls").asBoolean());
+            assertFalse(resp.has("metadata"));
+            assertFalse(resp.has("user"));
+            assertFalse(resp.has("parallel_tool_calls"));
             assertTrue(resp.get("tools").get(0).get("strict").asBoolean());
-
-            JsonNode chat = JSON.readTree(fromIR.requestFromIR(resp));
-            assertEquals("flex", chat.get("service_tier").asText());
-            assertEquals("req_123", chat.get("metadata").get("trace_id").asText());
-            assertEquals("user_abc", chat.get("user").asText());
-            assertFalse(chat.get("parallel_tool_calls").asBoolean());
-            assertTrue(chat.get("tools").get(0).get("function").get("strict").asBoolean());
         }
 
         @Test
@@ -1229,7 +1220,7 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
 
             assertFalse(resp.get("tools").get(0).has("description"));
-            assertFalse(resp.get("tools").get(0).get("strict").asBoolean());
+            assertFalse(resp.get("tools").get(0).has("strict"));
         }
 
         @Test
@@ -1399,23 +1390,18 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
             JsonNode input = resp.get("input");
-            assertEquals(3, input.size());
+            assertEquals(2, input.size());
 
             JsonNode content = input.get(1).get("content");
             assertEquals(1, content.size());
             assertEquals("output_text", content.get(0).get("type").asText());
             String text = content.get(0).get("text").asText();
-            assertEquals("final answer", text);
-
-            JsonNode reasoning = input.get(2);
-            assertEquals("reasoning", reasoning.get("type").asText());
-            assertEquals("internal plan", reasoning.get("content").get(0).get("text").asText());
-            assertEquals("internal plan", reasoning.get("summary").get(0).get("text").asText());
+            assertEquals("<thinking>internal plan</thinking>final answer", text);
         }
 
         @Test
-        @DisplayName("assistant reasoning_content → 独立 reasoning input item")
-        void assistantReasoningContentToReasoningInputItem() throws Exception {
+        @DisplayName("assistant reasoning_content → thinking 标签文本")
+        void assistantReasoningContentToThinkingTaggedText() throws Exception {
             String body = """
                     {
                         "model": "gpt-4o",
@@ -1428,17 +1414,15 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
             JsonNode input = resp.get("input");
 
-            assertEquals(3, input.size());
+            assertEquals(2, input.size());
             assertEquals("assistant", input.get(1).get("role").asText());
-            assertEquals("42", input.get(1).get("content").get(0).get("text").asText());
-            assertEquals("reasoning", input.get(2).get("type").asText());
-            assertEquals("I multiplied 6 by 7.", input.get(2).get("content").get(0).get("text").asText());
-            assertEquals("I multiplied 6 by 7.", input.get(2).get("summary").get(0).get("text").asText());
+            assertEquals("42<thinking>I multiplied 6 by 7.</thinking>",
+                    input.get(1).get("content").get(0).get("text").asText());
         }
 
         @Test
-        @DisplayName("仅 assistant reasoning_content 不生成空 message")
-        void assistantReasoningContentWithoutTextDoesNotCreateEmptyMessage() throws Exception {
+        @DisplayName("仅 assistant reasoning_content 生成 thinking 标签文本 message")
+        void assistantReasoningContentWithoutTextCreatesThinkingTaggedMessage() throws Exception {
             String body = """
                     {
                         "model": "gpt-4o",
@@ -1453,8 +1437,9 @@ class ChatCompletionsConverterTest {
 
             assertEquals(2, input.size());
             assertEquals("user", input.get(0).get("role").asText());
-            assertEquals("reasoning", input.get(1).get("type").asText());
-            assertEquals("Prior reasoning.", input.get(1).get("content").get(0).get("text").asText());
+            assertEquals("assistant", input.get(1).get("role").asText());
+            assertEquals("<thinking>Prior reasoning.</thinking>",
+                    input.get(1).get("content").get(0).get("text").asText());
         }
 
         @Test
@@ -1480,7 +1465,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("空 tool message content → 空 function_call_output.output")
+        @DisplayName("空 tool message content → sub2api 兼容占位输出")
         void emptyToolMessageContentStaysEmpty() throws Exception {
             String body = """
                     {
@@ -1497,7 +1482,7 @@ class ChatCompletionsConverterTest {
             JsonNode input = resp.get("input");
 
             assertEquals("function_call_output", input.get(2).get("type").asText());
-            assertEquals("", input.get(2).get("output").asText());
+            assertEquals("(empty)", input.get(2).get("output").asText());
         }
 
         @Test
@@ -1588,8 +1573,8 @@ class ChatCompletionsConverterTest {
             assertEquals("{}", input.get(1).get("arguments").asText());
             assertEquals("custom_tool_call", input.get(2).get("type").asText());
             assertEquals("", input.get(2).get("input").asText());
-            assertEquals("", input.get(3).get("output").asText());
-            assertEquals("", input.get(4).get("output").asText());
+            assertEquals("(empty)", input.get(3).get("output").asText());
+            assertEquals("(empty)", input.get(4).get("output").asText());
             assertFalse(input.toString().contains("hidden"));
             assertFalse(input.toString().contains("789"));
         }
@@ -1769,7 +1754,7 @@ class ChatCompletionsConverterTest {
             JsonNode message = chat.get("choices").get(0).get("message");
             JsonNode toolCalls = message.get("tool_calls");
 
-            assertEquals("", message.get("content").asText());
+            assertFalse(message.has("content"));
             assertEquals(2, toolCalls.size());
             assertEquals("{}", toolCalls.get(0).get("function").get("arguments").asText());
             assertEquals("", toolCalls.get(1).get("custom").get("input").asText());
@@ -1798,8 +1783,8 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("reasoning.content 优先于 summary 转为 reasoning_content")
-        void reasoningContentPreferredOverSummary() throws Exception {
+        @DisplayName("reasoning.summary 转为 reasoning_content，忽略 content")
+        void reasoningSummaryUsedOverContent() throws Exception {
             String body = """
                     {
                         "id": "resp_reasoning_content",
@@ -1819,7 +1804,7 @@ class ChatCompletionsConverterTest {
 
             JsonNode message = chat.get("choices").get(0).get("message");
             assertEquals("Final.", message.get("content").asText());
-            assertEquals("Full reasoning text.", message.get("reasoning_content").asText());
+            assertEquals("Short summary.", message.get("reasoning_content").asText());
         }
 
         @Test
@@ -1841,8 +1826,8 @@ class ChatCompletionsConverterTest {
             JsonNode chat = JSON.readTree(result);
             JsonNode message = chat.get("choices").get(0).get("message");
 
-            assertEquals("First answer.\nSecond answer.", message.get("content").asText());
-            assertEquals("First thought.\nSecond thought.", message.get("reasoning_content").asText());
+            assertEquals("First answer.Second answer.", message.get("content").asText());
+            assertEquals("First thought.Second thought.", message.get("reasoning_content").asText());
         }
 
         @Test
@@ -1936,8 +1921,8 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("output_tokens_details.reasoning_tokens → completion_tokens_details")
-        void reasoningTokensToChatUsage() throws Exception {
+        @DisplayName("output_tokens_details.reasoning_tokens 按 sub2api 不写入 Chat usage")
+        void reasoningTokensIgnoredInChatUsage() throws Exception {
             String body = """
                     {
                         "id": "resp_reasoning_usage",
@@ -1949,13 +1934,11 @@ class ChatCompletionsConverterTest {
                             "total_tokens": 130,
                             "output_tokens_details": {"reasoning_tokens": 12}
                         }
-                    }""";
+            }""";
 
             JsonNode chat = JSON.readTree(fromIR.responseFromIR(JSON.readTree(body)));
-            JsonNode details = chat.get("usage").get("completion_tokens_details");
 
-            assertNotNull(details);
-            assertEquals(12, details.get("reasoning_tokens").asInt());
+            assertFalse(chat.get("usage").has("completion_tokens_details"));
         }
 
         @Test
@@ -2514,6 +2497,22 @@ class ChatCompletionsConverterTest {
             JsonNode chat = JSON.readTree(result);
 
             assertTrue(chat.get("store").asBoolean());
+        }
+
+        @Test
+        @DisplayName("stream=true 按 sub2api 不自动生成 stream_options")
+        void streamTrueDoesNotCreateStreamOptions() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "stream": true,
+                        "input": [{"role":"user","content":"Hi"}]
+                    }""";
+
+            JsonNode chat = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+
+            assertTrue(chat.get("stream").asBoolean());
+            assertFalse(chat.has("stream_options"));
         }
 
         @Test
@@ -3771,6 +3770,8 @@ class ChatCompletionsConverterTest {
 
             assertTrue(out.stream().anyMatch(s -> s.contains("\"content\":\"final only\"")));
             assertTrue(out.stream().anyMatch(s -> s.contains("\"cached_tokens\":80")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"choices\":[]") && s.contains("\"usage\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"finish_reason\":\"stop\"") && s.contains("\"usage\"")));
             assertTrue(out.stream().anyMatch(s -> s.contains("data: [DONE]")));
             assertTrue(t.isDone());
         }
@@ -3876,13 +3877,13 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("response.done output_tokens_details.reasoning_tokens → completion_tokens_details")
-        void responseDoneReasoningTokensUsage() {
+        @DisplayName("response.done output_tokens_details.reasoning_tokens 按 sub2api 不写入 Chat usage")
+        void responseDoneReasoningTokensIgnored() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
 
             List<String> out = t.feed("data: {\"type\":\"response.done\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":13,\"output_tokens\":7,\"output_tokens_details\":{\"reasoning_tokens\":3}}}}");
 
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"completion_tokens_details\":{\"reasoning_tokens\":3}")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("completion_tokens_details")));
             assertTrue(t.isDone());
         }
 

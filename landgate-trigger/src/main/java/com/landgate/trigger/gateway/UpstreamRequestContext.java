@@ -12,6 +12,7 @@ import java.util.Map;
  */
 public record UpstreamRequestContext(
         String requestId,
+        Long apiKeyId,
         String body,
         AccountEntity account,
         String accessToken,
@@ -22,7 +23,24 @@ public record UpstreamRequestContext(
         boolean stream,
         boolean shouldMimicClaudeCode,
         Map<String, String> requestHeaders
-) {
+    ) {
+
+    public UpstreamRequestContext(
+            String requestId,
+            String body,
+            AccountEntity account,
+            String accessToken,
+            UpstreamRoute upstreamRoute,
+            String metadataUserId,
+            String upstreamPath,
+            String requestedModel,
+            boolean stream,
+            boolean shouldMimicClaudeCode,
+            Map<String, String> requestHeaders
+    ) {
+        this(requestId, null, body, account, accessToken, upstreamRoute, metadataUserId, upstreamPath,
+                requestedModel, stream, shouldMimicClaudeCode, requestHeaders);
+    }
 
     public UpstreamRequestContext(
             String body,
@@ -36,7 +54,7 @@ public record UpstreamRequestContext(
             boolean shouldMimicClaudeCode,
             Map<String, String> requestHeaders
     ) {
-        this(null, body, account, accessToken, upstreamRoute, metadataUserId, upstreamPath,
+        this(null, null, body, account, accessToken, upstreamRoute, metadataUserId, upstreamPath,
                 requestedModel, stream, shouldMimicClaudeCode, requestHeaders);
     }
 
@@ -44,6 +62,7 @@ public record UpstreamRequestContext(
         GatewayRequestContext ctx = GatewayRequestContext.get();
         return new UpstreamRequestContext(
                 ctx != null ? ctx.getRequestId() : null,
+                ctx != null ? ctx.getApiKeyId() : null,
                 body,
                 account,
                 accessToken,

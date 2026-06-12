@@ -24,6 +24,7 @@ import java.util.UUID;
 public class ChatCompletionsToResponsesConverter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final int MIN_MAX_OUTPUT_TOKENS = 128;
     // ========================
     // 请求转换：Chat Completions → Responses IR
     // ========================
@@ -39,40 +40,11 @@ public class ChatCompletionsToResponsesConverter {
             // --- 基础字段 ---
             copyTextIfExists(src, dst, "model");
             copyTextIfExists(src, dst, "instructions");
-            copyTextIfExists(src, dst, "service_tier");
-            copyObjectIfExists(src, dst, "metadata");
-            copyBooleanIfExists(src, dst, "parallel_tool_calls");
-            copyTextIfExists(src, dst, "user");
-            copyTextIfExists(src, dst, "safety_identifier");
-            copyTextIfExists(src, dst, "prompt_cache_key");
-            copyTextIfExists(src, dst, "prompt_cache_retention");
-            if (isValidTopLogprobs(src.get("top_logprobs"))) {
-                dst.set("top_logprobs", src.get("top_logprobs"));
-            }
+            copyNormalizedServiceTierIfExists(src, dst);
 
             // 协议转换层不根据模型名猜能力；采样参数按客户端显式请求保留。
             copyNumberIfExists(src, dst, "temperature");
             copyNumberIfExists(src, dst, "top_p");
-
-            // response_format / verbosity → text
-            if (src.has("response_format") && src.get("response_format").isObject()) {
-                JsonNode format = convertChatResponseFormatToResponses(src.get("response_format"));
-                if (format != null) {
-                    ObjectNode text = dst.has("text") && dst.get("text").isObject()
-                            ? (ObjectNode) dst.get("text")
-                            : JSON.createObjectNode();
-                    text.set("format", format);
-                    dst.set("text", text);
-                }
-            }
-            String verbosity = normalizeVerbosity(src.get("verbosity"));
-            if (verbosity != null) {
-                ObjectNode text = dst.has("text") && dst.get("text").isObject()
-                        ? (ObjectNode) dst.get("text")
-                        : JSON.createObjectNode();
-                text.put("verbosity", verbosity);
-                dst.set("text", text);
-            }
 
             // max_tokens / max_completion_tokens → max_output_tokens（后者优先）
             JsonNode maxTokensNode = null;
@@ -82,11 +54,11 @@ public class ChatCompletionsToResponsesConverter {
                 maxTokensNode = src.get("max_tokens");
             }
             if (isPositiveInt(maxTokensNode)) {
-                dst.put("max_output_tokens", maxTokensNode.asInt());
+                dst.put("max_output_tokens", Math.max(maxTokensNode.asInt(), MIN_MAX_OUTPUT_TOKENS));
             }
 
-            // stream：保留客户端语义；未传时让 Responses 使用官方默认的非流式。
-            copyBooleanIfExists(src, dst, "stream");
+            // 对齐 sub2api：Responses/Codex 上游固定使用流式，客户端非流式由网关聚合。
+            dst.put("stream", true);
 
             // stop → 内部 IR 扩展。Responses 上游不直接消费，跨协议转 Anthropic/Chat 时再还原。
             if (src.has("stop") && !src.get("stop").isNull()) {
@@ -112,7 +84,6 @@ public class ChatCompletionsToResponsesConverter {
 
                     switch (role) {
                         case "system" -> convertChatInstructionMessage("system", contentNode, input);
-                        case "developer" -> convertChatInstructionMessage("developer", contentNode, input);
                         case "user" -> convertChatUserMessage(contentNode, input);
                         case "assistant" -> convertChatAssistantMessage(msg, input);
                         case "tool" -> convertChatToolMessage(msg, input);
@@ -138,22 +109,7 @@ public class ChatCompletionsToResponsesConverter {
                         rt.put("name", func.get("name").asText());
                         copyTextIfExists(func, rt, "description");
                         if (func.has("parameters")) rt.set("parameters", normalizeToolParameters(func.get("parameters")));
-                        rt.put("strict", func.has("strict") && func.get("strict").isBoolean()
-                                && func.get("strict").asBoolean());
-                        responsesTools.add(rt);
-                    } else if ("custom".equals(type) && tool.has("custom") && tool.get("custom").isObject()) {
-                        JsonNode custom = tool.get("custom");
-                        if (isBlankText(custom.get("name"))) {
-                            continue;
-                        }
-                        ObjectNode rt = JSON.createObjectNode();
-                        rt.put("type", "custom");
-                        rt.put("name", custom.get("name").asText());
-                        copyTextIfExists(custom, rt, "description");
-                        JsonNode format = convertChatCustomToolFormatToResponses(custom.get("format"));
-                        if (format != null) {
-                            rt.set("format", format);
-                        }
+                        copyBooleanIfExists(func, rt, "strict");
                         responsesTools.add(rt);
                     }
                 }
@@ -169,27 +125,17 @@ public class ChatCompletionsToResponsesConverter {
                     rt.put("name", func.get("name").asText());
                     copyTextIfExists(func, rt, "description");
                     if (func.has("parameters")) rt.set("parameters", normalizeToolParameters(func.get("parameters")));
-                    rt.put("strict", false);
+                    copyBooleanIfExists(func, rt, "strict");
                     responsesTools.add(rt);
                 }
             }
             if (responsesTools.size() > 0) {
                 dst.set("tools", responsesTools);
             }
-            if (src.has("web_search_options") && src.get("web_search_options").isObject()) {
-                ObjectNode webSearchTool = convertChatWebSearchOptionsToResponsesTool(src.get("web_search_options"));
-                if (webSearchTool != null) {
-                    responsesTools.add(webSearchTool);
-                    dst.set("tools", responsesTools);
-                }
-            }
 
             // --- tool_choice ---
             if (src.has("tool_choice") && !src.get("tool_choice").isNull()) {
-                JsonNode toolChoice = convertChatToolChoiceToResponses(src.get("tool_choice"));
-                if (toolChoice != null) {
-                    dst.set("tool_choice", toolChoice);
-                }
+                dst.set("tool_choice", src.get("tool_choice"));
             } else if (src.has("function_call") && !src.get("function_call").isNull()) {
                 // 旧式 function_call → tool_choice
                 JsonNode toolChoice = convertLegacyFunctionCall(src.get("function_call"));
@@ -199,21 +145,10 @@ public class ChatCompletionsToResponsesConverter {
             }
 
             // --- 固定字段 ---
-            if (src.has("store") && src.get("store").isBoolean()) {
-                copyBooleanIfExists(src, dst, "store");
-            } else {
-                dst.put("store", false);
-            }
+            dst.put("store", false);
             ArrayNode include = JSON.createArrayNode();
-            if (reasoningEffort != null) {
-                include.add("reasoning.encrypted_content");
-            }
-            if (src.has("logprobs") && src.get("logprobs").isBoolean() && src.get("logprobs").asBoolean()) {
-                include.add("message.output_text.logprobs");
-            }
-            if (!include.isEmpty()) {
-                dst.set("include", include);
-            }
+            include.add("reasoning.encrypted_content");
+            dst.set("include", include);
 
             return dst;
         } catch (Exception e) {
@@ -903,15 +838,17 @@ public class ChatCompletionsToResponsesConverter {
      * Assistant 消息 → assistant message item + function_call items。
      */
     private static void convertChatAssistantMessage(JsonNode msg, ArrayNode input) {
-        // 解析 content。Chat 官方 assistant content part 不包含 thinking/reasoning；
-        // 兼容客户端传入这类扩展时，拆到 Responses reasoning item，避免污染 output_text。
-        ParsedAssistantContent parsedContent = parseAssistantContent(msg.get("content"));
-        String contentText = parsedContent.text();
+        // 对齐 sub2api：assistant 历史 thinking/reasoning content 作为显式标签文本保留，
+        // 不构造 Responses reasoning input item，避免 Codex internal 对输入 item 类型挑剔。
+        String contentText = parseAssistantContent(msg.get("content"));
         String reasoningContent = textOrDefault(msg.get("reasoning_content"), "");
 
         StringBuilder fullContent = new StringBuilder();
         if (contentText != null && !contentText.isEmpty()) {
             fullContent.append(contentText);
+        }
+        if (reasoningContent != null && !reasoningContent.isEmpty()) {
+            fullContent.append("<thinking>").append(reasoningContent).append("</thinking>");
         }
 
         // assistant message item（非空文本时）
@@ -926,13 +863,6 @@ public class ChatCompletionsToResponsesConverter {
             parts.add(part);
             item.set("content", parts);
             input.add(item);
-        }
-
-        for (String reasoningText : parsedContent.reasoningTexts()) {
-            input.add(convertChatReasoningContentToResponsesReasoning(reasoningText));
-        }
-        if (reasoningContent != null && !reasoningContent.isEmpty()) {
-            input.add(convertChatReasoningContentToResponsesReasoning(reasoningContent));
         }
 
         // tool_calls → function_call/custom_tool_call items
@@ -1020,6 +950,9 @@ public class ChatCompletionsToResponsesConverter {
         item.put("type", "function_call_output");
         item.put("call_id", msg.get("tool_call_id").asText());
         String output = flattenContent(msg.get("content"));
+        if (output.isEmpty()) {
+            output = "(empty)";
+        }
         item.put("output", output);
         input.add(item);
     }
@@ -1037,6 +970,9 @@ public class ChatCompletionsToResponsesConverter {
         item.put("type", "function_call_output");
         item.put("call_id", msg.get("name").asText());
         String output = flattenContent(msg.get("content"));
+        if (output.isEmpty()) {
+            output = "(empty)";
+        }
         item.put("output", output);
         input.add(item);
     }
@@ -1047,34 +983,28 @@ public class ChatCompletionsToResponsesConverter {
      * 官方 Chat assistant content part 仅按文本/拒绝文本处理；thinking/reasoning 是兼容扩展，
      * 需要作为 Responses reasoning item 保留，不能伪造成 output_text。
      */
-    private static ParsedAssistantContent parseAssistantContent(JsonNode content) {
-        if (content == null) return new ParsedAssistantContent("", List.of());
-        if (content.isNull()) return new ParsedAssistantContent("", List.of());
-        if (content.isTextual()) return new ParsedAssistantContent(content.asText(), List.of());
+    private static String parseAssistantContent(JsonNode content) {
+        if (content == null || content.isNull()) return "";
+        if (content.isTextual()) return content.asText();
         if (content.isArray()) {
             StringBuilder sb = new StringBuilder();
-            List<String> reasoningTexts = new ArrayList<>();
             for (JsonNode part : content) {
                 String partType = textOrDefault(part.get("type"), "");
                 if ("thinking".equals(partType) || "reasoning".equals(partType)) {
                     String thinkingText = textOrDefault(part.get("thinking"), textOrDefault(part.get("text"), ""));
                     if (!thinkingText.isEmpty()) {
-                        reasoningTexts.add(thinkingText);
+                        sb.append("<thinking>").append(thinkingText).append("</thinking>");
                     }
                 } else if ("refusal".equals(partType) && !isBlankText(part.get("refusal"))) {
-                    if (sb.length() > 0) sb.append("\n");
                     sb.append(part.get("refusal").asText());
                 } else if (!isBlankText(part.get("text"))) {
-                    if (sb.length() > 0) sb.append("\n");
                     sb.append(part.get("text").asText());
                 }
             }
-            return new ParsedAssistantContent(sb.toString(), reasoningTexts);
+            return sb.toString();
         }
-        return new ParsedAssistantContent("", List.of());
+        return "";
     }
-
-    private record ParsedAssistantContent(String text, List<String> reasoningTexts) {}
 
     /**
      * 将 content 拍平为纯文本（支持字符串和数组格式）。
@@ -1124,13 +1054,14 @@ public class ChatCompletionsToResponsesConverter {
      */
     private static JsonNode convertLegacyFunctionCall(JsonNode functionCall) {
         if (functionCall.isTextual()) {
-            return isSupportedLegacyFunctionCallMode(functionCall.asText()) ? functionCall : null;
+            return functionCall;
         }
-        if (functionCall.isObject() && functionCall.has("name")) {
-            if (isBlankText(functionCall.get("name"))) return null;
+        if (functionCall.isObject()) {
             ObjectNode obj = JSON.createObjectNode();
             obj.put("type", "function");
-            obj.put("name", functionCall.get("name").asText());
+            obj.put("name", functionCall.has("name") && functionCall.get("name").isTextual()
+                    ? functionCall.get("name").asText()
+                    : "");
             return obj;
         }
         return null;
@@ -1313,6 +1244,26 @@ public class ChatCompletionsToResponsesConverter {
     private static boolean isValidTopLogprobs(JsonNode node) {
         return node != null && node.isIntegralNumber() && node.canConvertToInt()
                 && node.asInt() >= 0 && node.asInt() <= 20;
+    }
+
+    private static void copyNormalizedServiceTierIfExists(JsonNode src, ObjectNode dst) {
+        String normalized = normalizedOpenAIServiceTierValue(src.get("service_tier"));
+        if (normalized != null) {
+            dst.put("service_tier", normalized);
+        }
+    }
+
+    private static String normalizedOpenAIServiceTierValue(JsonNode node) {
+        if (node == null || !node.isTextual()) return null;
+        String value = node.asText().trim().toLowerCase();
+        if (value.isEmpty()) return null;
+        if ("fast".equals(value)) {
+            value = "priority";
+        }
+        return switch (value) {
+            case "priority", "flex", "auto", "default", "scale" -> value;
+            default -> null;
+        };
     }
 
     private static String normalizeChatReasoningEffort(JsonNode node) {

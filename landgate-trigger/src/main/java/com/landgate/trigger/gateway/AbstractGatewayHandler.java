@@ -401,6 +401,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 try {
                     upstreamReq = transformer.buildUpstreamRequest(new UpstreamRequestContext(
                             requestId,
+                            apiKeyId,
                             upstreamBody,
                             account,
                             accessToken,
@@ -592,6 +593,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         excludeForFailover(excludedAccountIds, account, requestId, "passthrough_retry_" + statusCode);
                         failoverCount++;
                         // 回到 failover 循环
+                    } else if (upstreamRoute != null && upstreamRoute.passthrough()) {
+                        log.warn("[{}] Passthrough 错误原样返回: status={}, account_id={}",
+                                requestId, statusCode, account.getId());
+                        concurrencyService.release(slot);
+                        gatewayResponseService.writePassthroughError(upstreamResp, response, errorBody);
+                        return;
                     } else {
                         log.warn("[{}] 错误透传裁决 PASS: status={}, account_id={}",
                                 requestId, statusCode, account.getId());

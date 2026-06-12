@@ -26,6 +26,7 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import javax.net.ssl.SSLSession;
 
@@ -388,6 +389,69 @@ class AbstractGatewayHandlerTest {
         assertEquals(80, usage.getCacheReadTokens());
     }
 
+    @Test
+    @DisplayName("非流式 passthrough 响应不做反向协议翻译")
+    void passthroughNonStreamingResponseSkipsProtocolTranslation() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("test-passthrough-response")
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("chat_completions")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(AccountEntity.builder().id(1L).name("openai-api-key").platform(Platform.OPENAI).build())
+                .stream(false)
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "chat_completions",
+                        "responses",
+                        EndpointKind.OPENAI_RESPONSES,
+                        "https://api.openai.com/v1/responses",
+                        true,
+                        false,
+                        false,
+                        "responses",
+                        "openai_api_key_responses"))
+                .build());
+        String responsesJson = """
+                {"id":"resp_passthrough","object":"response","model":"gpt-5.5","output":[],"usage":{"input_tokens":10,"output_tokens":2}}
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UsageTokens usage = handler.captureNonStreaming(responsesJson, response, new ResponsesUsageParser());
+        String body = response.getContentAsString();
+
+        assertTrue(body.contains("\"object\":\"response\""));
+        assertFalse(body.contains("chat.completion"));
+        assertEquals(10, usage.getInputTokens());
+        assertEquals(2, usage.getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("passthrough 普通错误按 sub2api 原样返回")
+    void passthroughErrorResponseKeepsRawBodyAndFilteredHeaders() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        String errorJson = "{\"error\":{\"message\":\"bad request\",\"type\":\"invalid_request_error\"}}";
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.capturePassthroughError(new InputStreamHttpResponse(
+                400,
+                errorJson,
+                Map.of(
+                        "content-type", List.of("application/problem+json"),
+                        "x-request-id", List.of("rid-raw"),
+                        "x-codex-turn-id", List.of("turn-raw"),
+                        "set-cookie", List.of("secret"))),
+                response,
+                errorJson);
+
+        assertEquals(400, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/problem+json"));
+        assertEquals(errorJson, response.getContentAsString());
+        assertEquals("rid-raw", response.getHeader("x-request-id"));
+        assertEquals("turn-raw", response.getHeader("x-codex-turn-id"));
+        assertFalse(response.containsHeader("set-cookie"));
+    }
+
     private static ConverterRegistry converterRegistry() {
         ConverterRegistry registry = new ConverterRegistry();
         registry.register(List.of(new ResponsesConverter(), new AnthropicConverter(), new ChatCompletionsConverter()));
@@ -452,6 +516,17 @@ class AbstractGatewayHandlerTest {
                     GatewayRequestContext.get(), usageParser);
         }
 
+        UsageTokens captureNonStreaming(String body, MockHttpServletResponse response,
+                                        IUsageParser usageParser) throws IOException {
+            return handleNonStreaming(new InputStreamHttpResponse(body, "application/json"), response, usageParser);
+        }
+
+        void capturePassthroughError(InputStreamHttpResponse upstreamResp,
+                                     MockHttpServletResponse response,
+                                     String body) throws IOException {
+            gatewayResponseService.writePassthroughError(upstreamResp, response, body);
+        }
+
         @Override
         protected IErrorWriter getErrorWriter() {
             return null;
@@ -459,19 +534,25 @@ class AbstractGatewayHandlerTest {
     }
 
     private static class InputStreamHttpResponse implements HttpResponse<InputStream> {
+        private final int status;
         private final String body;
-        private final String contentType;
+        private final Map<String, List<String>> headers;
 
         InputStreamHttpResponse(String body, String contentType) {
-            this.body = body;
-            this.contentType = contentType;
+            this(200, body, Map.of("content-type", List.of(contentType)));
         }
 
-        @Override public int statusCode() { return 200; }
+        InputStreamHttpResponse(int status, String body, Map<String, List<String>> headers) {
+            this.status = status;
+            this.body = body;
+            this.headers = headers;
+        }
+
+        @Override public int statusCode() { return status; }
         @Override public HttpRequest request() { return null; }
         @Override public Optional<HttpResponse<InputStream>> previousResponse() { return Optional.empty(); }
         @Override public HttpHeaders headers() {
-            return HttpHeaders.of(java.util.Map.of("content-type", List.of(contentType)), (k, v) -> true);
+            return HttpHeaders.of(headers, (k, v) -> true);
         }
         @Override public InputStream body() { return new ByteArrayInputStream(body.getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
         @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
