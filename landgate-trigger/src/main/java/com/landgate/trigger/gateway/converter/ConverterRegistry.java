@@ -31,7 +31,7 @@ public class ConverterRegistry {
     public void register(List<ProtocolConverter> converterList) {
         for (ProtocolConverter c : converterList) {
             converters.put(c.getFormatId(), c);
-            log.info("Registered ProtocolConverter: format={}, class={}",
+            log.debug("Registered ProtocolConverter: format={}, class={}",
                     c.getFormatId(), c.getClass().getSimpleName());
         }
     }

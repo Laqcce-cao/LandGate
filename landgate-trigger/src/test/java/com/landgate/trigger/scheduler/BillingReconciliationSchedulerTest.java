@@ -4,7 +4,7 @@ import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.service.BillingDomainService;
-import com.landgate.trigger.gateway.BalanceDomainService;
+import com.landgate.trigger.gateway.billing.BalanceDomainService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

@@ -60,7 +60,47 @@ class ResponsesUsageParserTest {
     }
 
     @Test
-    @DisplayName("非 response.completed 事件不产生用量")
+    @DisplayName("流式 response.done usage 将 cached_tokens 计入缓存读取并从输入中扣除")
+    void parseSSELineSubtractsCachedTokensFromResponseDone() {
+        String sseData = """
+                {
+                  "type": "response.done",
+                  "response": {
+                    "usage": {
+                      "input_tokens": 100,
+                      "output_tokens": 5,
+                      "input_tokens_details": {"cached_tokens": 80}
+                    }
+                  }
+                }""";
+
+        UsageTokens usage = parser.parseSSELine(sseData);
+
+        assertEquals(20, usage.getInputTokens());
+        assertEquals(5, usage.getOutputTokens());
+        assertEquals(80, usage.getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("流式终止事件支持顶层 usage")
+    void parseSSELineReadsTopLevelUsage() {
+        String sseData = """
+                {
+                  "type": "response.failed",
+                  "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 0
+                  }
+                }""";
+
+        UsageTokens usage = parser.parseSSELine(sseData);
+
+        assertEquals(12, usage.getInputTokens());
+        assertEquals(0, usage.getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("非 Responses 终止事件不产生用量")
     void parseSSELineReturnsNullForNonUsageEvent() {
         String sseData = """
                 {

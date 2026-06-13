@@ -1,10 +1,12 @@
 package com.landgate.trigger.gateway;
 
 import com.landgate.trigger.gateway.error.AnthropicErrorWriter;
-import com.landgate.trigger.gateway.error.GeminiErrorWriter;
+import com.landgate.trigger.gateway.error.IErrorWriter;
 import com.landgate.trigger.gateway.error.OpenAiErrorWriter;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
-import com.landgate.trigger.gateway.usage.GeminiUsageParser;
+import com.landgate.trigger.gateway.transformer.AnthropicTransformer;
+import com.landgate.trigger.gateway.transformer.IRequestTransformer;
+import com.landgate.trigger.gateway.transformer.OpenAiTransformer;
 import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.trigger.gateway.usage.OpenAiUsageParser;
 import com.landgate.trigger.gateway.usage.ResponsesUsageParser;
@@ -30,18 +32,14 @@ import java.util.Map;
 public class PlatformRouter {
 
     private final AnthropicTransformer anthropicTransformer;
-    private final AntigravityTransformer antigravityTransformer;
     private final OpenAiTransformer openAiTransformer;
-    private final GeminiTransformer geminiTransformer;
 
     private final AnthropicUsageParser anthropicUsageParser;
     private final OpenAiUsageParser openAiUsageParser;
     private final ResponsesUsageParser responsesUsageParser;
-    private final GeminiUsageParser geminiUsageParser;
 
     private final AnthropicErrorWriter anthropicErrorWriter;
     private final OpenAiErrorWriter openAiErrorWriter;
-    private final GeminiErrorWriter geminiErrorWriter;
 
     private final Map<Platform, IRequestTransformer> transformerMap = new EnumMap<>(Platform.class);
     private final Map<Platform, IUsageParser> usageParserMap = new EnumMap<>(Platform.class);
@@ -50,21 +48,15 @@ public class PlatformRouter {
     @PostConstruct
     void init() {
         transformerMap.put(Platform.ANTHROPIC, anthropicTransformer);
-        transformerMap.put(Platform.ANTIGRAVITY, antigravityTransformer);
         transformerMap.put(Platform.OPENAI, openAiTransformer);
-        transformerMap.put(Platform.GEMINI, geminiTransformer);
 
         // OpenAI 平台同时承载 chat_completions 和 responses 两种 usage schema；
         // 平台粗粒度默认使用 Chat Completions，正常网关路径优先通过 UpstreamRoute.usageFormat 精确选择。
         usageParserMap.put(Platform.ANTHROPIC, anthropicUsageParser);
-        usageParserMap.put(Platform.ANTIGRAVITY, anthropicUsageParser);
         usageParserMap.put(Platform.OPENAI, openAiUsageParser);
-        usageParserMap.put(Platform.GEMINI, geminiUsageParser);
 
         errorWriterMap.put(Platform.ANTHROPIC, anthropicErrorWriter);
-        errorWriterMap.put(Platform.ANTIGRAVITY, anthropicErrorWriter);
         errorWriterMap.put(Platform.OPENAI, openAiErrorWriter);
-        errorWriterMap.put(Platform.GEMINI, geminiErrorWriter);
 
         log.info("PlatformRouter initialized with {} platforms", transformerMap.size());
     }

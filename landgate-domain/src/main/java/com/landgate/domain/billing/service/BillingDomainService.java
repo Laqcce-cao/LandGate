@@ -168,7 +168,7 @@ public class BillingDomainService {
                 .build();
 
         UsageLogEntity savedLog = usageLogRepository.save(logEntry);
-        log.info("Billing: platform={}, model={}, tokens={}/{}/{}/{}(5m={},1h={}), total=${}, actual=${}",
+        log.debug("Billing: platform={}, model={}, tokens={}/{}/{}/{}(5m={},1h={}), total=${}, actual=${}",
                 platform, model, usage.getInputTokens(), usage.getOutputTokens(),
                 usage.getCacheCreationTokens(), usage.getCacheReadTokens(),
                 usage.getCacheCreation5mTokens(), usage.getCacheCreation1hTokens(),
@@ -294,7 +294,7 @@ public class BillingDomainService {
                 .build();
 
         UsageLogEntity savedLog = usageLogRepository.save(logEntry);
-        log.info("Image billing: model={}, size={}, count={}, unit_price=${}, total=${}, actual=${}",
+        log.debug("Image billing: model={}, size={}, count={}, unit_price=${}, total=${}, actual=${}",
                 model, imageSize, imageCount, unitPrice, totalCost, actualCost);
         return savedLog;
     }

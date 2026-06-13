@@ -5,7 +5,7 @@ import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.domain.group.model.entity.GroupEntity;
-import com.landgate.trigger.gateway.BalanceDomainService;
+import com.landgate.trigger.gateway.billing.BalanceDomainService;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
 import com.landgate.types.enums.Status;
 import com.landgate.types.exception.AuthenticationException;
@@ -231,7 +231,7 @@ class GatewayAccessServiceTest {
         return new UnsupportedOperationException("not used by this test");
     }
 
-    private static class CapturingErrorWriter implements com.landgate.trigger.gateway.IErrorWriter {
+    private static class CapturingErrorWriter implements com.landgate.trigger.gateway.error.IErrorWriter {
         private int status;
         private String code;
         private String message;

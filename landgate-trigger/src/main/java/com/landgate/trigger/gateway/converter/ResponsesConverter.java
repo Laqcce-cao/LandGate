@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.converter;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -14,7 +15,7 @@ import java.util.List;
  * IR 已重锚为 Responses API 格式，故 ResponsesConverter 自身即为 IR 格式，
  * 所有转换方法均为直接透传，无需任何字段映射。
  * <p>
- * 流式翻译器在透传的同时从 {@code response.completed} 事件中提取 usage token 数。
+ * 流式翻译器在透传的同时从 Responses 终止事件中提取 usage token 数。
  */
 @Slf4j
 @Component
@@ -50,11 +51,109 @@ public class ResponsesConverter implements ProtocolConverter {
     @Override
     public String requestFromIR(JsonNode ir) {
         try {
+            if (ir != null && ir.isObject()) {
+                ObjectNode sanitized = ((ObjectNode) ir).deepCopy();
+                sanitized.remove("_landgate_stop_sequences");
+                normalizeOpenAIServiceTier(sanitized);
+                sanitizeEmptyBase64InputImages(sanitized);
+                return JSON.writeValueAsString(sanitized);
+            }
             return JSON.writeValueAsString(ir);
         } catch (Exception e) {
             log.warn("Responses pass-through requestFromIR error: {}", e.getMessage());
             return "{}";
         }
+    }
+
+    private static void normalizeOpenAIServiceTier(ObjectNode root) {
+        JsonNode value = root.get("service_tier");
+        if (value == null || !value.isTextual()) {
+            return;
+        }
+        String normalized = normalizedOpenAIServiceTierValue(value.asText());
+        if (normalized.isBlank()) {
+            root.remove("service_tier");
+        } else {
+            root.put("service_tier", normalized);
+        }
+    }
+
+    private static String normalizedOpenAIServiceTierValue(String raw) {
+        if (raw == null) return "";
+        String value = raw.trim().toLowerCase();
+        if (value.isBlank()) return "";
+        if ("fast".equals(value)) {
+            value = "priority";
+        }
+        return switch (value) {
+            case "priority", "flex", "auto", "default", "scale" -> value;
+            default -> "";
+        };
+    }
+
+    private static void sanitizeEmptyBase64InputImages(ObjectNode root) {
+        JsonNode input = root.get("input");
+        if (input == null || !input.isArray()) {
+            return;
+        }
+        var normalizedItems = JSON.createArrayNode();
+        boolean changed = false;
+        for (JsonNode item : input) {
+            if (!(item instanceof ObjectNode itemObject)) {
+                normalizedItems.add(item);
+                continue;
+            }
+            if (shouldDropEmptyBase64InputImagePart(itemObject)) {
+                changed = true;
+                continue;
+            }
+            JsonNode content = itemObject.get("content");
+            if (content == null || !content.isArray()) {
+                normalizedItems.add(item);
+                continue;
+            }
+            var normalizedParts = JSON.createArrayNode();
+            boolean itemChanged = false;
+            for (JsonNode part : content) {
+                if (part instanceof ObjectNode partObject && shouldDropEmptyBase64InputImagePart(partObject)) {
+                    changed = true;
+                    itemChanged = true;
+                    continue;
+                }
+                normalizedParts.add(part);
+            }
+            if (itemChanged) {
+                if (normalizedParts.isEmpty()) {
+                    continue;
+                }
+                ObjectNode copied = itemObject.deepCopy();
+                copied.set("content", normalizedParts);
+                normalizedItems.add(copied);
+            } else {
+                normalizedItems.add(item);
+            }
+        }
+        if (changed) {
+            root.set("input", normalizedItems);
+        }
+    }
+
+    private static boolean shouldDropEmptyBase64InputImagePart(ObjectNode part) {
+        JsonNode type = part.get("type");
+        JsonNode imageUrl = part.get("image_url");
+        return type != null && type.isTextual() && "input_image".equals(type.asText().trim())
+                && imageUrl != null && imageUrl.isTextual()
+                && isEmptyBase64DataURI(imageUrl.asText().trim());
+    }
+
+    private static boolean isEmptyBase64DataURI(String raw) {
+        if (raw == null || !raw.startsWith("data:")) return false;
+        String rest = raw.substring("data:".length());
+        int semicolon = rest.indexOf(';');
+        if (semicolon < 0) return false;
+        rest = rest.substring(semicolon + 1);
+        if (!rest.startsWith("base64,")) return false;
+        return rest.substring("base64,".length()).trim().isEmpty();
     }
 
     // ========================
@@ -92,7 +191,7 @@ public class ResponsesConverter implements ProtocolConverter {
     // ========================
 
     /**
-     * 上游 Responses SSE → IR SSE（透传，从 response.completed 提取 usage）。
+     * 上游 Responses SSE → IR SSE（透传，从 Responses 终止事件提取 usage）。
      */
     @Override
     public StreamTranslator createStreamToIR(String model) {
@@ -100,7 +199,7 @@ public class ResponsesConverter implements ProtocolConverter {
     }
 
     /**
-     * IR SSE → 客户端 Responses SSE（透传，从 response.completed 提取 usage）。
+     * IR SSE → 客户端 Responses SSE（透传，从 Responses 终止事件提取 usage）。
      */
     @Override
     public StreamTranslator createStreamFromIR(String model) {
@@ -113,7 +212,7 @@ public class ResponsesConverter implements ProtocolConverter {
 
     /**
      * Responses SSE 透传翻译器 —— 逐行原样透传上游 SSE 事件，
-     * 同时在遇到 {@code response.completed} 事件时提取 usage 中的 token 数并标记流结束。
+     * 同时在遇到 Responses 终止事件时提取 usage 中的 token 数并标记流结束。
      */
     static class PassThroughStreamTranslator implements StreamTranslator {
 
@@ -129,17 +228,21 @@ public class ResponsesConverter implements ProtocolConverter {
             // 透传所有 SSE 行（包括 event: 行、data: 行、空行分隔符）
             output.add(line);
 
-            // 从 response.completed 事件中提取 usage token 数
+            // 从 Responses 终止事件中提取 usage token 数
             if (line.startsWith("data: ")) {
                 String json = line.substring(6);
                 try {
                     JsonNode root = JSON.readTree(json);
-                    String type = root.has("type") ? root.get("type").asText() : null;
-                    if ("response.completed".equals(type)) {
-                        if (root.has("response") && root.get("response").has("usage")) {
-                            JsonNode usage = root.get("response").get("usage");
-                            if (usage.has("input_tokens")) inputTokens = usage.get("input_tokens").asInt();
-                            if (usage.has("output_tokens")) outputTokens = usage.get("output_tokens").asInt();
+                    String type = textOrDefault(root.get("type"), null);
+                    if (isTerminalResponseEvent(type)) {
+                        JsonNode usage = root.path("response").path("usage");
+                        if ((usage.isMissingNode() || usage.isNull()) && root.has("usage")) {
+                            usage = root.path("usage");
+                        }
+                        if (!usage.isMissingNode() && !usage.isNull()) {
+                            int cachedTokens = nonNegativeIntOrZero(usage.path("input_tokens_details").get("cached_tokens"));
+                            inputTokens = Math.max(0, nonNegativeIntOrZero(usage.get("input_tokens")) - cachedTokens);
+                            outputTokens = nonNegativeIntOrZero(usage.get("output_tokens"));
                         }
                         done = true;
                     }
@@ -163,6 +266,23 @@ public class ResponsesConverter implements ProtocolConverter {
         @Override
         public int getOutputTokens() {
             return outputTokens;
+        }
+
+        private static boolean isTerminalResponseEvent(String type) {
+            return "response.completed".equals(type)
+                    || "response.done".equals(type)
+                    || "response.failed".equals(type)
+                    || "response.incomplete".equals(type);
+        }
+
+        private static int nonNegativeIntOrZero(JsonNode node) {
+            return node != null && node.isIntegralNumber() && node.canConvertToInt() && node.asInt() >= 0
+                    ? node.asInt()
+                    : 0;
+        }
+
+        private static String textOrDefault(JsonNode node, String defaultValue) {
+            return node != null && node.isTextual() && !node.asText().isBlank() ? node.asText() : defaultValue;
         }
     }
 }

@@ -84,6 +84,7 @@ services:
       CAPTCHA_ENABLED: ${CAPTCHA_ENABLED:-false}
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
       CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY}
+      LANDGATE_CODEX_PRESERVE_PROMPT_CACHE_KEY: ${LANDGATE_CODEX_PRESERVE_PROMPT_CACHE_KEY:-false}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-http://localhost:80/oauth/callback}
       # 访问宿主机 Mihomo 代理
       http_proxy: http://host.docker.internal:10801

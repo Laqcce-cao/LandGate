@@ -9,14 +9,10 @@ public enum EndpointKind {
 
     /** Anthropic Messages API。 */
     ANTHROPIC_MESSAGES,
-    /** Antigravity 的 Anthropic Messages 兼容端点。 */
-    ANTIGRAVITY_MESSAGES,
     /** OpenAI Chat Completions API。 */
     OPENAI_CHAT_COMPLETIONS,
     /** OpenAI Responses API。 */
     OPENAI_RESPONSES,
     /** ChatGPT 内部 Codex Responses 端点。 */
-    OPENAI_CODEX_RESPONSES,
-    /** Gemini generateContent 端点。 */
-    GEMINI_GENERATE_CONTENT
+    OPENAI_CODEX_RESPONSES
 }

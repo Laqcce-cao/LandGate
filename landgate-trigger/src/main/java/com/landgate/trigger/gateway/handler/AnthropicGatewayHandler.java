@@ -1,19 +1,29 @@
 package com.landgate.trigger.gateway.handler;
 
-import com.landgate.trigger.gateway.IErrorWriter;
+import com.landgate.trigger.gateway.AbstractGatewayHandler;
+import com.landgate.trigger.gateway.GatewayProtocolPlanner;
+import com.landgate.trigger.gateway.error.IErrorWriter;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
+import com.landgate.trigger.gateway.oauth.GetAccessTokenService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
+import com.landgate.trigger.gateway.oauth.OAuthTokenRefreshService;
 import com.landgate.infrastructure.upstream.HttpUpstreamClient;
-import com.landgate.trigger.gateway.*;
 import com.landgate.trigger.gateway.access.GatewayAccessService;
 import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
 import com.landgate.trigger.gateway.client.ClientProfileService;
 import com.landgate.trigger.gateway.error.AnthropicErrorWriter;
+import com.landgate.trigger.gateway.error.ErrorPassthroughService;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
+import com.landgate.trigger.gateway.limit.ConcurrencyService;
+import com.landgate.trigger.gateway.limit.RateLimitHeaderParser;
+import com.landgate.trigger.gateway.PlatformRouter;
+import com.landgate.trigger.gateway.converter.ProtocolTranslationService;
 import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.response.GatewayResponseService;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
+import com.landgate.trigger.gateway.account.AccountSelector;
+import com.landgate.trigger.gateway.session.SessionHashService;
 import org.springframework.stereotype.Component;
 
 /**
@@ -40,9 +50,9 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
             PlatformRouter platformRouter,
             ProtocolTranslationService translationService,
             ConverterRegistry converterRegistry,
+            GatewayProtocolPlanner protocolPlanner,
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
-            UpstreamCapabilityService upstreamCapabilityService,
             UpstreamRouteResolver upstreamRouteResolver,
             GatewayBillingSettlementService billingSettlementService,
             GatewayGroupResolver gatewayGroupResolver,
@@ -53,9 +63,9 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 gatewayAccessService, concurrencyService, sessionHashService, oauthTokenRefreshService,
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
-                translationService, converterRegistry,
+                translationService, converterRegistry, protocolPlanner,
                 oAuthMimicryService, fingerprintService,
-                upstreamCapabilityService, upstreamRouteResolver, billingSettlementService,
+                upstreamRouteResolver, billingSettlementService,
                 gatewayGroupResolver, clientProfileService, gatewayRequestParser, gatewayResponseService);
         this.errorWriter = errorWriter;
     }

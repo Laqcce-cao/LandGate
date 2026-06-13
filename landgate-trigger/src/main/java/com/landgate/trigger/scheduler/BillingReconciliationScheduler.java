@@ -3,7 +3,7 @@ package com.landgate.trigger.scheduler;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.billing.model.entity.UsageLogEntity;
 import com.landgate.domain.billing.service.BillingDomainService;
-import com.landgate.trigger.gateway.BalanceDomainService;
+import com.landgate.trigger.gateway.billing.BalanceDomainService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;

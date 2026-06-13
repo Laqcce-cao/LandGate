@@ -7,8 +7,15 @@ import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.adapter.repository.IGroupRepository;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.domain.images.service.ImageGenerationIntent;
+import com.landgate.trigger.gateway.billing.BalanceDomainService;
+import com.landgate.trigger.gateway.limit.ConcurrencyService;
+import com.landgate.trigger.gateway.limit.ConcurrencySlot;
+import com.landgate.trigger.gateway.limit.RateLimitHeaderParser;
+import com.landgate.trigger.gateway.limit.RateLimitSnapshot;
+import com.landgate.trigger.gateway.oauth.GetAccessTokenService;
+import com.landgate.trigger.gateway.account.AccountSelector;
+import com.landgate.trigger.gateway.session.SessionHashService;
 import com.landgate.trigger.images.ImagesService;
-import com.landgate.trigger.gateway.*;
 import com.landgate.types.enums.AccountType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -115,7 +122,7 @@ public class ImagesController {
         }
 
         String contentType = request.getContentType();
-        log.info("Image request: path={}, content_type={}, size={} bytes", path, contentType, body.length);
+        log.debug("Image request: path={}, content_type={}, size={} bytes", path, contentType, body.length);
 
         // ---- Step 2: 鉴权 ----
         Long apiKeyId = (Long) request.getAttribute("api_key_id");
@@ -279,7 +286,7 @@ public class ImagesController {
                         accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
 
                         // 记录用量日志
-                        log.info("Image request completed: model={}, account={}, images={}, size={}, stream={}, duration={}ms",
+                        log.debug("Image request completed: model={}, account={}, images={}, size={}, stream={}, duration={}ms",
                                 model, account.getName(), imageCount, imageSize, parsed.isStream(), durationMs);
 
                         // ---- Step 8: 图片计费 + 余额扣减 ----

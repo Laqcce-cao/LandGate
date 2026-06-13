@@ -3,6 +3,7 @@ package com.landgate.trigger.gateway;
 import com.landgate.domain.auth.adapter.repository.IUserRepository;
 import com.landgate.domain.auth.model.entity.UserEntity;
 import com.landgate.infrastructure.balance.BalanceRedisService;
+import com.landgate.trigger.gateway.billing.BalanceDomainService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 

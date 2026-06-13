@@ -17,7 +17,7 @@ public record UpstreamRouteRequest(
         Platform requestPlatform,
         /** 客户端入口格式，由 URL 路径解析得到。 */
         String requestFormat,
-        /** Gemini 等平台使用的原始上游路径。 */
+        /** 客户端请求对应的原始上游路径。 */
         String upstreamPath,
         /** 客户端请求模型名。 */
         String requestedModel

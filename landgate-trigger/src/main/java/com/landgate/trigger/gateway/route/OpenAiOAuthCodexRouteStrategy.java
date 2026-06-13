@@ -1,5 +1,6 @@
 package com.landgate.trigger.gateway.route;
 
+import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.springframework.core.annotation.Order;
@@ -26,16 +27,20 @@ public class OpenAiOAuthCodexRouteStrategy implements UpstreamRouteStrategy {
 
     @Override
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
+        String upstreamFormat = ProtocolFormatResolver.requireSingleAccountUpstreamFormat(
+                request.account(), java.util.Set.of("responses"));
+        String targetUrl = resolveCodexTargetUrl(request);
+        boolean compact = UpstreamRoute.isCompactCodexResponsesEndpoint(
+                EndpointKind.OPENAI_CODEX_RESPONSES, targetUrl);
         return new UpstreamRoute(
                 Platform.OPENAI,
                 request.requestFormat(),
-                "responses",
+                upstreamFormat,
                 EndpointKind.OPENAI_CODEX_RESPONSES,
-                resolveCodexTargetUrl(request),
-                false,
+                targetUrl,
+                !compact,
                 true,
-                true,
-                "responses",
+                upstreamFormat,
                 "openai_oauth_codex"
         );
     }

@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.route;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
 import com.landgate.types.enums.Platform;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -25,16 +26,17 @@ public class AnthropicRouteStrategy implements UpstreamRouteStrategy {
 
     @Override
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
+        String upstreamFormat = ProtocolFormatResolver.requireSingleAccountUpstreamFormat(
+                request.account(), java.util.Set.of("messages"));
         return new UpstreamRoute(
                 Platform.ANTHROPIC,
                 request.requestFormat(),
-                "messages",
+                upstreamFormat,
                 EndpointKind.ANTHROPIC_MESSAGES,
                 resolveTargetUrl(request),
                 false,
                 false,
-                false,
-                "messages",
+                upstreamFormat,
                 "anthropic_messages"
         );
     }
