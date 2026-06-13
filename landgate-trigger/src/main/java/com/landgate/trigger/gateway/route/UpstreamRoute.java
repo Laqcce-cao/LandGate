@@ -18,8 +18,6 @@ public record UpstreamRoute(
         EndpointKind endpointKind,
         /** 最终上游 URL，不包含动态认证 token。 */
         String targetUrl,
-        /** 是否跳过协议翻译，直接透传原始请求体。 */
-        boolean passthrough,
         /** 是否由路由强制流式处理。 */
         boolean forceStreaming,
         /** 是否需要执行 OpenAI Codex OAuth 请求体规范化。 */
@@ -29,4 +27,14 @@ public record UpstreamRoute(
         /** 路由命中原因，用于日志排查。 */
         String reason
 ) {
+    /** ChatGPT Codex /compact 返回普通 JSON，不能被客户端 stream=true 强制走 SSE 分支。 */
+    public boolean forceNonStreamingResponse() {
+        return isCompactCodexResponsesEndpoint(endpointKind, targetUrl);
+    }
+
+    public static boolean isCompactCodexResponsesEndpoint(EndpointKind endpointKind, String targetUrl) {
+        return endpointKind == EndpointKind.OPENAI_CODEX_RESPONSES
+                && targetUrl != null
+                && targetUrl.replaceAll("/+$", "").endsWith("/compact");
+    }
 }

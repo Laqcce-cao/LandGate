@@ -104,7 +104,6 @@ class AbstractGatewayHandlerTest {
                         "responses",
                         EndpointKind.OPENAI_CODEX_RESPONSES,
                         "https://chatgpt.com/backend-api/codex/responses",
-                        false,
                         true,
                         true,
                         "responses",
@@ -375,7 +374,6 @@ class AbstractGatewayHandlerTest {
                         "responses",
                         EndpointKind.OPENAI_CODEX_RESPONSES,
                         "https://chatgpt.com/backend-api/codex/responses",
-                        false,
                         true,
                         true,
                         "responses",
@@ -400,17 +398,16 @@ class AbstractGatewayHandlerTest {
         GatewayRequestContext.set(GatewayRequestContext.builder()
                 .requestId("test-passthrough-response")
                 .requestPlatform(Platform.OPENAI)
-                .requestFormat("chat_completions")
+                .requestFormat("responses")
                 .requestedModel("gpt-5.5")
                 .selectedAccount(AccountEntity.builder().id(1L).name("openai-api-key").platform(Platform.OPENAI).build())
                 .stream(false)
                 .upstreamRoute(new UpstreamRoute(
                         Platform.OPENAI,
-                        "chat_completions",
+                        "responses",
                         "responses",
                         EndpointKind.OPENAI_RESPONSES,
                         "https://api.openai.com/v1/responses",
-                        true,
                         false,
                         false,
                         "responses",
@@ -476,7 +473,6 @@ class AbstractGatewayHandlerTest {
                         "responses",
                         EndpointKind.OPENAI_CODEX_RESPONSES,
                         "https://chatgpt.com/backend-api/codex/responses",
-                        false,
                         true,
                         true,
                         "responses",

@@ -20,9 +20,7 @@ public class OpenAiResponsesRequestNormalizer {
             JsonNode parsed = JSON.readTree(body);
             if (!(parsed instanceof ObjectNode root)) return body;
             normalizeOpenAIServiceTier(root);
-            root.remove("max_output_tokens");
             root.remove("max_completion_tokens");
-            root.remove("previous_response_id");
             root.remove("prompt_cache_retention");
             root.remove("safety_identifier");
             sanitizeEmptyBase64InputImages(root);

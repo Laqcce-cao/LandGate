@@ -164,60 +164,6 @@ class UpstreamCapabilityServiceTest {
     }
 
     // ========================
-    // isPassthroughEnabled
-    // ========================
-
-    @Nested
-    @DisplayName("isPassthroughEnabled")
-    class IsPassthroughEnabled {
-
-        @Test
-        @DisplayName("null account → false")
-        void nullAccountReturnsFalse() {
-            assertFalse(service.isPassthroughEnabled(null));
-        }
-
-        @Test
-        @DisplayName("未配置 → false")
-        void notConfiguredReturnsFalse() {
-            AccountEntity account = createAccount(Platform.OPENAI, AccountType.API_KEY, null);
-            assertFalse(service.isPassthroughEnabled(account));
-        }
-
-        @Test
-        @DisplayName("openai_passthrough=true → true")
-        void passthroughTrue() {
-            AccountEntity account = createAccount(Platform.OPENAI, AccountType.API_KEY,
-                    "{\"openai_passthrough\":true}");
-            assertTrue(service.isPassthroughEnabled(account));
-        }
-
-        @Test
-        @DisplayName("openai_passthrough=false → false")
-        void passthroughFalse() {
-            AccountEntity account = createAccount(Platform.OPENAI, AccountType.API_KEY,
-                    "{\"openai_passthrough\":false}");
-            assertFalse(service.isPassthroughEnabled(account));
-        }
-
-        @Test
-        @DisplayName("旧字段 openai_oauth_passthrough=true → true（兼容）")
-        void legacyOAuthPassthrough() {
-            AccountEntity account = createAccount(Platform.OPENAI, AccountType.OAUTH,
-                    "{\"openai_oauth_passthrough\":true}");
-            assertTrue(service.isPassthroughEnabled(account));
-        }
-
-        @Test
-        @DisplayName("新字段优先于旧字段")
-        void newFieldTakesPrecedence() {
-            AccountEntity account = createAccount(Platform.OPENAI, AccountType.API_KEY,
-                    "{\"openai_passthrough\":false,\"openai_oauth_passthrough\":true}");
-            assertFalse(service.isPassthroughEnabled(account));
-        }
-    }
-
-    // ========================
     // isResponsesEndpointSupportedByStatus
     // ========================
 

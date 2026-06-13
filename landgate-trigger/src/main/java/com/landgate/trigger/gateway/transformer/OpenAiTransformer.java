@@ -42,34 +42,13 @@ public class OpenAiTransformer implements IRequestTransformer {
     /** ChatGPT 内部 Codex 端点（OAuth 账号专用） */
     private static final String CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
     private static final String CODEX_CLI_VERSION = "0.125.0";
+    private static final String CODEX_CLI_USER_AGENT = "codex_cli_rs/" + CODEX_CLI_VERSION;
     private static final ObjectMapper JSON = new ObjectMapper();
     /** ChatGPT 内部 Codex 端点不支持的请求字段（对齐 sub2api OpenAI OAuth transform） */
     private static final Set<String> CODEX_UNSUPPORTED_FIELDS = Set.of(
             "max_output_tokens", "max_completion_tokens", "temperature", "top_p",
             "frequency_penalty", "presence_penalty", "user", "metadata",
-            "prompt_cache_retention", "safety_identifier", "stream_options");
-
-    private static final Set<String> CODEX_ALLOWED_PASSTHROUGH_HEADERS = Set.of(
-            "accept",
-            "accept-language",
-            "content-type",
-            "conversation_id",
-            "openai-beta",
-            "originator",
-            "session_id",
-            "user-agent",
-            "x-codex-turn-state",
-            "x-codex-turn-metadata");
-
-    private static final Set<String> OPENAI_CHAT_RAW_ALLOWED_HEADERS = Set.of(
-            "accept-language",
-            "content-type",
-            "conversation_id",
-            "originator",
-            "session_id",
-            "user-agent",
-            "x-codex-turn-state",
-            "x-codex-turn-metadata");
+            "prompt_cache_key", "prompt_cache_retention", "safety_identifier", "stream_options");
 
     private static final Map<String, String> CODEX_MODEL_MAP = Map.ofEntries(
             Map.entry("gpt-5.5", "gpt-5.5"),
@@ -165,11 +144,13 @@ public class OpenAiTransformer implements IRequestTransformer {
 
         log.debug("OpenAI upstream URL: url={}, account_id={}, isOAuth={}", targetUrl, account.getId(), isOAuth);
 
-        var headers = new ArrayList<String>();
-        headers.addAll(List.of("Authorization", "Bearer " + accessToken));
-        headers.addAll(List.of("Content-Type", "application/json"));
+        var headers = new UpstreamHeaders();
+        headers.set("Authorization", "Bearer " + accessToken);
+        headers.set("Content-Type", "application/json");
         if (route != null && route.normalizeCodexOAuthBody()) {
             appendCodexOAuthHeaders(headers, context, body, route);
+        } else if (route != null && route.endpointKind() == EndpointKind.OPENAI_RESPONSES) {
+            appendOpenAiResponsesHeaders(headers, context);
         } else if (route != null && route.endpointKind() == EndpointKind.OPENAI_CHAT_COMPLETIONS) {
             appendOpenAiRawChatHeaders(headers, context);
         }
@@ -177,7 +158,7 @@ public class OpenAiTransformer implements IRequestTransformer {
         return HttpRequest.newBuilder()
                 .uri(URI.create(targetUrl))
                 .timeout(Duration.ofSeconds(120))
-                .headers(headers.toArray(new String[0]))
+                .headers(headers.toArray())
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build();
     }
@@ -231,6 +212,7 @@ public class OpenAiTransformer implements IRequestTransformer {
             normalizeCodexTextVerbosity(root);
             normalizeOpenAIServiceTier(root);
             if (isCodexCompactEndpoint(route)) {
+                root.remove("prompt_cache_key");
                 root.remove("store");
                 root.remove("stream");
             } else {
@@ -1052,83 +1034,52 @@ public class OpenAiTransformer implements IRequestTransformer {
         return !("prompt_cache_key".equals(field) && preservePromptCacheKey);
     }
 
-    private static void appendCodexOAuthHeaders(List<String> headers, UpstreamRequestContext context,
+    private static void appendCodexOAuthHeaders(UpstreamHeaders headers, UpstreamRequestContext context,
                                                 String normalizedBody, UpstreamRoute route) {
         if (context == null || headers == null) return;
         var requestHeaders = context.requestHeaders();
         String chatgptAccountId = credentialText(context.account(), "chatgpt_account_id");
-        if (!chatgptAccountId.isBlank()) {
-            headers.add("chatgpt-account-id");
-            headers.add(chatgptAccountId);
-        }
-        if (requestHeaders != null) {
-            requestHeaders.forEach((key, value) -> {
-                String normalizedKey = key == null ? "" : key.trim().toLowerCase();
-                if (normalizedKey.isBlank() || value == null || value.isBlank()) return;
-                if (CODEX_ALLOWED_PASSTHROUGH_HEADERS.contains(normalizedKey)) {
-                    headers.add(key);
-                    headers.add(value);
-                }
-            });
-        }
+        headers.set("chatgpt-account-id", chatgptAccountId);
+        headers.copyAllowed(requestHeaders, OpenAiHeaderPolicy.CODEX_OAUTH_ALLOWED_HEADERS);
 
-        removeHeader(headers, "conversation_id");
-        removeHeader(headers, "session_id");
+        headers.set("Content-Type", "application/json");
+        headers.remove("conversation_id");
+        headers.remove("session_id");
 
-        String promptCacheKey = extractPromptCacheKey(normalizedBody);
-        String clientSession = firstNonBlank(
-                headerValue(requestHeaders, "session_id"),
-                headerValue(requestHeaders, "conversation_id"),
-                promptCacheKey);
-        if (!clientSession.isBlank()) {
-            String isolated = isolateCodexSessionId(context.apiKeyId(), clientSession);
-            headers.add("session_id");
-            headers.add(isolated);
-            headers.add("conversation_id");
-            headers.add(isolated);
+        String promptCacheKey = firstNonBlank(
+                extractPromptCacheKey(normalizedBody),
+                extractPromptCacheKey(context.body()));
+        String clientSessionId = firstNonBlank(headerValue(requestHeaders, "session_id"), promptCacheKey);
+        String clientConversationId = firstNonBlank(headerValue(requestHeaders, "conversation_id"), promptCacheKey);
+        if (!clientSessionId.isBlank()) {
+            headers.set("session_id", isolateCodexSessionId(context.apiKeyId(), clientSessionId));
+        }
+        if (!clientConversationId.isBlank()) {
+            headers.set("conversation_id", isolateCodexSessionId(context.apiKeyId(), clientConversationId));
         }
         if (isCodexCompactEndpoint(route)) {
-            removeHeader(headers, "Accept");
-            headers.add("Accept");
-            headers.add("application/json");
-            if (getHeader(headers, "Version").isBlank()) {
-                headers.add("Version");
-                headers.add(CODEX_CLI_VERSION);
-            }
-        } else if (getHeader(headers, "Accept").isBlank()) {
-            headers.add("Accept");
-            headers.add("text/event-stream");
+            headers.set("Accept", "application/json");
+            headers.setIfAbsent("Version", CODEX_CLI_VERSION);
+        } else {
+            headers.set("Accept", "text/event-stream");
         }
-        if (getHeader(headers, "OpenAI-Beta").isBlank()) {
-            headers.add("OpenAI-Beta");
-            headers.add("responses=experimental");
-        }
-        if (getHeader(headers, "Originator").isBlank()) {
-            headers.add("Originator");
-            headers.add("codex_cli_rs");
+        headers.setIfAbsent("OpenAI-Beta", "responses=experimental");
+        headers.setIfAbsent("Originator", "codex_cli_rs");
+        if (!isCodexCliUserAgent(headers.get("User-Agent"))) {
+            headers.set("User-Agent", CODEX_CLI_USER_AGENT);
         }
     }
 
-    private static void appendOpenAiRawChatHeaders(List<String> headers, UpstreamRequestContext context) {
+    private static void appendOpenAiRawChatHeaders(UpstreamHeaders headers, UpstreamRequestContext context) {
         if (context == null || headers == null) return;
-        if (context.stream()) {
-            headers.add("Accept");
-            headers.add("text/event-stream");
-        } else {
-            headers.add("Accept");
-            headers.add("application/json");
-        }
-        var requestHeaders = context.requestHeaders();
-        if (requestHeaders == null) return;
-        requestHeaders.forEach((key, value) -> {
-            String normalizedKey = key == null ? "" : key.trim().toLowerCase();
-            if (normalizedKey.isBlank() || value == null || value.isBlank()) return;
-            if (OPENAI_CHAT_RAW_ALLOWED_HEADERS.contains(normalizedKey)) {
-                removeHeader(headers, key);
-                headers.add(key);
-                headers.add(value);
-            }
-        });
+        headers.set("Accept", context.stream() ? "text/event-stream" : "application/json");
+        headers.copyAllowed(context.requestHeaders(), OpenAiHeaderPolicy.RAW_CHAT_ALLOWED_HEADERS);
+    }
+
+    private static void appendOpenAiResponsesHeaders(UpstreamHeaders headers, UpstreamRequestContext context) {
+        if (context == null || headers == null) return;
+        headers.copyAllowed(context.requestHeaders(), OpenAiHeaderPolicy.API_KEY_RESPONSES_ALLOWED_HEADERS);
+        headers.setIfAbsent("Accept", context.stream() ? "text/event-stream" : "application/json");
     }
 
     private static String credentialText(AccountEntity account, String field) {
@@ -1174,6 +1125,15 @@ public class OpenAiTransformer implements IRequestTransformer {
         return "";
     }
 
+    private static boolean isCodexCliUserAgent(String userAgent) {
+        if (userAgent == null || userAgent.isBlank()) return false;
+        String normalized = userAgent.trim().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("codex_cli_rs/")
+                || normalized.contains("codex_cli_rs/")
+                || normalized.startsWith("codex_vscode/")
+                || normalized.contains("codex_vscode/");
+    }
+
     private static String isolateCodexSessionId(Long apiKeyId, String raw) {
         String value = raw == null ? "" : raw.trim();
         if (value.isBlank()) return "";
@@ -1189,28 +1149,6 @@ public class OpenAiTransformer implements IRequestTransformer {
             hash *= 0x100000001b3L;
         }
         return String.format("%016x", hash);
-    }
-
-    private static void removeHeader(List<String> headers, String name) {
-        if (headers == null || name == null) return;
-        for (int i = 0; i + 1 < headers.size(); ) {
-            if (headers.get(i).equalsIgnoreCase(name)) {
-                headers.remove(i + 1);
-                headers.remove(i);
-            } else {
-                i += 2;
-            }
-        }
-    }
-
-    private static String getHeader(List<String> headers, String name) {
-        if (headers == null || name == null) return "";
-        for (int i = 0; i + 1 < headers.size(); i += 2) {
-            if (headers.get(i).equalsIgnoreCase(name)) {
-                return headers.get(i + 1);
-            }
-        }
-        return "";
     }
 
     private static void logCodexNormalizationDiagnostics(String requestId,

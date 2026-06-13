@@ -28,14 +28,12 @@ public class AnthropicRouteStrategy implements UpstreamRouteStrategy {
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
         String upstreamFormat = ProtocolFormatResolver.resolveAccountUpstreamFormat(
                 request.account(), "messages", java.util.Set.of("messages"));
-        boolean passthrough = upstreamFormat.equals(ProtocolFormatResolver.normalizeFormat(request.requestFormat()));
         return new UpstreamRoute(
                 Platform.ANTHROPIC,
                 request.requestFormat(),
                 upstreamFormat,
                 EndpointKind.ANTHROPIC_MESSAGES,
                 resolveTargetUrl(request),
-                passthrough,
                 false,
                 false,
                 upstreamFormat,

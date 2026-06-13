@@ -16,7 +16,7 @@ class GatewayProtocolPlannerTest {
     @Test
     @DisplayName("客户端协议和上游协议不同且非透传时需要翻译")
     void differentFormatsRequireTranslation() {
-        GatewayProtocolPlan plan = planner.plan(Platform.OPENAI, route("chat_completions", "responses", false));
+        GatewayProtocolPlan plan = planner.plan(Platform.OPENAI, route("chat_completions", "responses"));
 
         assertEquals("chat_completions", plan.clientFormat());
         assertEquals("responses", plan.upstreamFormat());
@@ -27,9 +27,9 @@ class GatewayProtocolPlannerTest {
     }
 
     @Test
-    @DisplayName("透传模式即使格式相同也不执行协议翻译")
-    void passthroughSkipsTranslation() {
-        GatewayProtocolPlan plan = planner.plan(Platform.OPENAI, route("responses", "responses", true));
+    @DisplayName("客户端协议和上游协议相同时透传")
+    void sameFormatPassthroughSkipsTranslation() {
+        GatewayProtocolPlan plan = planner.plan(Platform.OPENAI, route("responses", "responses"));
 
         assertTrue(plan.passthrough());
         assertFalse(plan.translationRequired());
@@ -40,21 +40,20 @@ class GatewayProtocolPlannerTest {
     @Test
     @DisplayName("缺少 clientFormat 时回退入口 platform 格式")
     void missingClientFormatFallsBackToRequestPlatform() {
-        GatewayProtocolPlan plan = planner.plan(Platform.ANTHROPIC, route(null, "responses", false));
+        GatewayProtocolPlan plan = planner.plan(Platform.ANTHROPIC, route(null, "responses"));
 
         assertEquals("messages", plan.clientFormat());
         assertEquals("responses", plan.upstreamFormat());
         assertTrue(plan.translationRequired());
     }
 
-    private static UpstreamRoute route(String clientFormat, String upstreamFormat, boolean passthrough) {
+    private static UpstreamRoute route(String clientFormat, String upstreamFormat) {
         return new UpstreamRoute(
                 Platform.OPENAI,
                 clientFormat,
                 upstreamFormat,
                 EndpointKind.OPENAI_RESPONSES,
                 "https://api.openai.com/v1/responses",
-                passthrough,
                 false,
                 false,
                 upstreamFormat,

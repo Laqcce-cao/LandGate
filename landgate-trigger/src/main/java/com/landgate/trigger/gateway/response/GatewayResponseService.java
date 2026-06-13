@@ -8,6 +8,7 @@ import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.trigger.gateway.limit.ConcurrencyService;
 import com.landgate.trigger.gateway.GatewayRequestContext;
 import com.landgate.trigger.gateway.usage.IUsageParser;
+import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
 import com.landgate.trigger.gateway.converter.ProtocolTranslationService;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ProtocolConverter;
@@ -70,7 +71,8 @@ public class GatewayResponseService {
                                                  IUsageParser usageParser) throws IOException {
         response.setStatus(200);
         UpstreamRoute route = ctx.getUpstreamRoute();
-        copyUpstreamResponseHeaders(upstreamResp, response, route != null && route.passthrough());
+        boolean passthrough = isPassthrough(ctx, route);
+        copyUpstreamResponseHeaders(upstreamResp, response, passthrough);
         response.setContentType("text/event-stream");
         response.setCharacterEncoding("UTF-8");
         response.setHeader("Cache-Control", "no-cache");
@@ -82,17 +84,10 @@ public class GatewayResponseService {
         // 判断翻译方向，通过 ConverterRegistry 获取流式翻译器。
         // 优先使用 UpstreamRoute 中的格式，保证请求和响应翻译走同一份路由决策。
         Platform requestPlatform = ctx.getRequestPlatform();
-        String clientFormat = route != null && route.clientFormat() != null
-                ? route.clientFormat()
-                : (ctx.getRequestFormat() != null
-                        ? ctx.getRequestFormat()
-                        : ProtocolTranslationService.platformToFormatId(requestPlatform));
-        String upstreamFormat = route != null
-                ? route.upstreamFormat()
-                : ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform());
+        String clientFormat = resolveClientFormat(ctx, route);
+        String upstreamFormat = resolveUpstreamFormat(ctx, route);
         boolean needTranslation = clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat)
-                && (route == null || !route.passthrough());
+                && !clientFormat.equals(upstreamFormat);
 
         // Hub-and-Spoke 流式翻译器：上游 SSE → IR SSE，IR SSE → 客户端 SSE
         StreamTranslator upstreamToIR = null;
@@ -360,7 +355,7 @@ public class GatewayResponseService {
                 responseId, responseModel, status, incompleteReason, errorNode,
                 outputItems, textByContentKey, contentTypeByContentKey,
                 argumentsByOutputIndex, reasoningByOutputIndex, totalUsage);
-        String clientFormat = resolveClientFormat(ctx);
+        String clientFormat = resolveClientFormat(ctx, ctx != null ? ctx.getUpstreamRoute() : null);
         String clientBody = "responses".equals(clientFormat)
                 ? responsesBody
                 : translationService.translateResponse(responsesBody, "responses", clientFormat);
@@ -581,16 +576,37 @@ public class GatewayResponseService {
         return contentKey / 10_000;
     }
 
-    private static String resolveClientFormat(GatewayRequestContext ctx) {
-        if (ctx == null) return "responses";
-        UpstreamRoute route = ctx.getUpstreamRoute();
+    private static String resolveClientFormat(GatewayRequestContext ctx, UpstreamRoute route) {
+        String format;
         if (route != null && route.clientFormat() != null) {
-            return route.clientFormat();
+            format = route.clientFormat();
+        } else if (ctx != null && ctx.getRequestFormat() != null) {
+            format = ctx.getRequestFormat();
+        } else {
+            Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
+            format = ProtocolTranslationService.platformToFormatId(requestPlatform);
         }
-        if (ctx.getRequestFormat() != null) {
-            return ctx.getRequestFormat();
+        return ProtocolFormatResolver.normalizeFormat(format);
+    }
+
+    private static String resolveUpstreamFormat(GatewayRequestContext ctx, UpstreamRoute route) {
+        String format;
+        if (route != null) {
+            format = route.upstreamFormat();
+        } else if (ctx != null && ctx.getSelectedAccount() != null) {
+            format = ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform());
+        } else {
+            format = null;
         }
-        return ProtocolTranslationService.platformToFormatId(ctx.getRequestPlatform());
+        return ProtocolFormatResolver.normalizeFormat(format);
+    }
+
+    private static boolean isPassthrough(GatewayRequestContext ctx, UpstreamRoute route) {
+        String clientFormat = resolveClientFormat(ctx, route);
+        String upstreamFormat = resolveUpstreamFormat(ctx, route);
+        return clientFormat != null && upstreamFormat != null
+                && !clientFormat.isBlank()
+                && clientFormat.equals(upstreamFormat);
     }
 
     private static void copyUpstreamResponseHeaders(HttpResponse<?> upstreamResp,
@@ -626,7 +642,7 @@ public class GatewayResponseService {
                                           IUsageParser usageParser) throws IOException {
         GatewayRequestContext ctx = GatewayRequestContext.get();
         UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
-        boolean passthrough = route != null && route.passthrough();
+        boolean passthrough = isPassthrough(ctx, route);
         response.setStatus(upstreamResp.statusCode());
         copyUpstreamResponseHeaders(upstreamResp, response, passthrough);
         response.setContentType(passthrough
@@ -653,20 +669,10 @@ public class GatewayResponseService {
                 usage != null ? usage.getOutputTokens() : 0,
                 usage != null ? usage.getCacheCreationTokens() : 0,
                 usage != null ? usage.getCacheReadTokens() : 0);
-        Platform requestPlatform = ctx != null ? ctx.getRequestPlatform() : null;
-        String clientFormat = route != null && route.clientFormat() != null
-                ? route.clientFormat()
-                : (ctx != null && ctx.getRequestFormat() != null
-                        ? ctx.getRequestFormat()
-                        : ProtocolTranslationService.platformToFormatId(requestPlatform));
-        String upstreamFormat = route != null
-                ? route.upstreamFormat()
-                : (ctx != null && ctx.getSelectedAccount() != null
-                        ? ProtocolTranslationService.platformToFormatId(ctx.getSelectedAccount().getPlatform())
-                        : null);
+        String clientFormat = resolveClientFormat(ctx, route);
+        String upstreamFormat = resolveUpstreamFormat(ctx, route);
         boolean needRespTranslation = clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat)
-                && (route == null || !route.passthrough());
+                && !clientFormat.equals(upstreamFormat);
         String clientBody = responseBody;
         if (needRespTranslation) {
             log.info("[{}] 响应协议翻译: {} -> {}",

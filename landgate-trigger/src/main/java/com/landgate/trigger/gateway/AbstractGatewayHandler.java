@@ -351,7 +351,9 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     requestId, upstreamRoute.endpointKind(), upstreamRoute.upstreamFormat(),
                     upstreamRoute.targetUrl(), upstreamRoute.reason());
 
-            boolean upstreamStream = upstreamRoute.forceStreaming() || clientStream;
+            boolean upstreamStream = upstreamRoute.forceNonStreamingResponse()
+                    ? false
+                    : upstreamRoute.forceStreaming() || clientStream;
 
             var ctx = GatewayRequestContext.builder()
                     .requestId(requestId).apiKeyId(apiKeyId).userId(userId)
@@ -601,7 +603,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         excludeForFailover(excludedAccountIds, account, requestId, "passthrough_retry_" + statusCode);
                         failoverCount++;
                         // 回到 failover 循环
-                    } else if (upstreamRoute != null && upstreamRoute.passthrough()) {
+                    } else if (protocolPlan.passthrough()) {
                         log.warn("[{}] Passthrough 错误原样返回: status={}, account_id={}",
                                 requestId, statusCode, account.getId());
                         concurrencyService.release(slot);

@@ -15,7 +15,6 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>{@code openai_responses_supported}: true | false（自动探测结果）</li>
  *   <li>{@code openai_responses_mode}: "auto" | "force_responses" | "force_chat_completions"（手动覆盖）</li>
- *   <li>{@code openai_passthrough}: true | false（passthrough 模式，跳过协议翻译）</li>
  * </ul>
  * <p>
  * 参照：sub2api {@code openai_compat/upstream_capability.go}
@@ -27,8 +26,6 @@ public class UpstreamCapabilityService {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String KEY_RESPONSES_SUPPORTED = "openai_responses_supported";
     private static final String KEY_RESPONSES_MODE = "openai_responses_mode";
-    private static final String KEY_PASSTHROUGH = "openai_passthrough";
-    private static final String KEY_OAUTH_PASSTHROUGH = "openai_oauth_passthrough";
 
     /**
      * 判定是否应使用 Responses API 端点。
@@ -75,26 +72,6 @@ public class UpstreamCapabilityService {
 
         // 3. 默认 true（未探测时保持存量行为）
         return true;
-    }
-
-    /**
-     * 判断账号是否启用了 passthrough 模式（跳过协议翻译）。
-     * <p>
-     * 兼容旧字段 {@code openai_oauth_passthrough}。
-     */
-    public boolean isPassthroughEnabled(AccountEntity account) {
-        if (account == null) return false;
-        JsonNode extra = parseExtra(account);
-        if (extra == null) return false;
-
-        if (extra.has(KEY_PASSTHROUGH) && extra.get(KEY_PASSTHROUGH).isBoolean()) {
-            return extra.get(KEY_PASSTHROUGH).asBoolean();
-        }
-        // 兼容旧字段
-        if (extra.has(KEY_OAUTH_PASSTHROUGH) && extra.get(KEY_OAUTH_PASSTHROUGH).isBoolean()) {
-            return extra.get(KEY_OAUTH_PASSTHROUGH).asBoolean();
-        }
-        return false;
     }
 
     /**

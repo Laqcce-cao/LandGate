@@ -29,15 +29,16 @@ public class OpenAiOAuthCodexRouteStrategy implements UpstreamRouteStrategy {
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
         String upstreamFormat = ProtocolFormatResolver.resolveAccountUpstreamFormat(
                 request.account(), "responses", java.util.Set.of("responses"));
-        boolean passthrough = upstreamFormat.equals(ProtocolFormatResolver.normalizeFormat(request.requestFormat()));
+        String targetUrl = resolveCodexTargetUrl(request);
+        boolean compact = UpstreamRoute.isCompactCodexResponsesEndpoint(
+                EndpointKind.OPENAI_CODEX_RESPONSES, targetUrl);
         return new UpstreamRoute(
                 Platform.OPENAI,
                 request.requestFormat(),
                 upstreamFormat,
                 EndpointKind.OPENAI_CODEX_RESPONSES,
-                resolveCodexTargetUrl(request),
-                passthrough,
-                true,
+                targetUrl,
+                !compact,
                 true,
                 upstreamFormat,
                 "openai_oauth_codex"

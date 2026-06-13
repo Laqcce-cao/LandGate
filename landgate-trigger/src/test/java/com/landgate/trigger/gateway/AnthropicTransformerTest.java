@@ -42,7 +42,6 @@ class AnthropicTransformerTest {
                         "https://route.example.com/v1/messages",
                         false,
                         false,
-                        false,
                         "messages",
                         "test_route"),
                 null,

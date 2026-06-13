@@ -68,6 +68,12 @@ public final class ProtocolFormatResolver {
         };
     }
 
+    public static boolean isSameFormat(String left, String right) {
+        String normalizedLeft = normalizeFormat(left);
+        String normalizedRight = normalizeFormat(right);
+        return !normalizedLeft.isBlank() && normalizedLeft.equals(normalizedRight);
+    }
+
     private static List<String> parseProtocols(String raw) {
         if (raw == null || raw.isBlank() || "[]".equals(raw.trim())) {
             return List.of();

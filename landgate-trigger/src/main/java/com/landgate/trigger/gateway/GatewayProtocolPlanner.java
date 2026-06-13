@@ -29,7 +29,7 @@ public class GatewayProtocolPlanner {
         clientFormat = ProtocolFormatResolver.normalizeFormat(clientFormat);
 
         String upstreamFormat = ProtocolFormatResolver.normalizeFormat(route.upstreamFormat());
-        boolean passthrough = route.passthrough();
+        boolean passthrough = ProtocolFormatResolver.isSameFormat(clientFormat, upstreamFormat);
         boolean translationRequired = !passthrough
                 && clientFormat != null && upstreamFormat != null
                 && !clientFormat.equals(upstreamFormat);

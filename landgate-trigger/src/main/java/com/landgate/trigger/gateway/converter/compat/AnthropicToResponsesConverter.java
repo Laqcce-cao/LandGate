@@ -1,11 +1,11 @@
 package com.landgate.trigger.gateway.converter.compat;
 
+import com.landgate.trigger.gateway.converter.AnthropicConverter;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.landgate.trigger.gateway.converter.StreamTranslator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;

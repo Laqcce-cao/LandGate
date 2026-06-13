@@ -51,7 +51,6 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
                 : EndpointKind.OPENAI_CHAT_COMPLETIONS;
         String pathSuffix = useResponses ? resolveResponsesPathSuffix(request) : "/v1/chat/completions";
         String defaultUrl = useResponses ? OPENAI_BASE_URL + pathSuffix : OPENAI_CHAT_URL;
-        boolean passthrough = upstreamFormat.equals(ProtocolFormatResolver.normalizeFormat(request.requestFormat()));
 
         return new UpstreamRoute(
                 Platform.OPENAI,
@@ -59,7 +58,6 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
                 upstreamFormat,
                 endpointKind,
                 resolveTargetUrl(request, defaultUrl, pathSuffix),
-                passthrough,
                 false,
                 false,
                 upstreamFormat,

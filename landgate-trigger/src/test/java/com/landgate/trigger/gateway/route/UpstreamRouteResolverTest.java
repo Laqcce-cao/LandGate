@@ -1,6 +1,7 @@
 package com.landgate.trigger.gateway.route;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.trigger.gateway.GatewayProtocolPlanner;
 import com.landgate.trigger.gateway.transformer.UpstreamCapabilityService;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
@@ -18,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class UpstreamRouteResolverTest {
 
     private final UpstreamCapabilityService capabilityService = new UpstreamCapabilityService();
+    private final GatewayProtocolPlanner protocolPlanner = new GatewayProtocolPlanner();
     private final UpstreamRouteResolver resolver = new UpstreamRouteResolver(List.of(
             new OpenAiOAuthCodexRouteStrategy(),
             new OpenAiApiKeyRouteStrategy(capabilityService),
@@ -91,6 +93,8 @@ class UpstreamRouteResolverTest {
 
         assertEquals(EndpointKind.OPENAI_CODEX_RESPONSES, route.endpointKind());
         assertEquals("https://chatgpt.com/backend-api/codex/responses/compact", route.targetUrl());
+        assertFalse(route.forceStreaming());
+        assertTrue(route.forceNonStreamingResponse());
     }
 
     @Test
@@ -123,11 +127,11 @@ class UpstreamRouteResolverTest {
         assertEquals(EndpointKind.OPENAI_CHAT_COMPLETIONS, chat.endpointKind());
         assertEquals("responses", chat.clientFormat());
         assertEquals("chat_completions", chat.upstreamFormat());
-        assertFalse(chat.passthrough());
+        assertFalse(protocolPlanner.plan(Platform.OPENAI, chat).passthrough());
         assertEquals(EndpointKind.OPENAI_RESPONSES, responses.endpointKind());
         assertEquals("chat_completions", responses.clientFormat());
         assertEquals("responses", responses.upstreamFormat());
-        assertFalse(responses.passthrough());
+        assertFalse(protocolPlanner.plan(Platform.OPENAI, responses).passthrough());
     }
 
     @Test
@@ -141,8 +145,8 @@ class UpstreamRouteResolverTest {
         UpstreamRoute translated = resolver.resolve(request(legacyPassthrough, Platform.OPENAI, "responses"));
         UpstreamRoute passthrough = resolver.resolve(request(sameProtocol, Platform.OPENAI, "responses"));
 
-        assertFalse(translated.passthrough());
-        assertTrue(passthrough.passthrough());
+        assertFalse(protocolPlanner.plan(Platform.OPENAI, translated).passthrough());
+        assertTrue(protocolPlanner.plan(Platform.OPENAI, passthrough).passthrough());
     }
 
     @Test
