@@ -141,6 +141,7 @@ class OpenAiTransformerTest {
                 true,
                 false,
                 Map.of(
+                        "Accept", "text/event-stream",
                         "User-Agent", "openai-sdk-java/1.0",
                         "Accept-Language", "zh-CN",
                         "OpenAI-Beta", "responses=experimental",
@@ -158,7 +159,7 @@ class OpenAiTransformerTest {
     }
 
     @Test
-    @DisplayName("API Key Responses 透传 sub2api 安全白名单 Header")
+    @DisplayName("API Key Responses 不透传 Codex 内部 Header")
     void apiKeyResponsesForwardsPassthroughAllowedHeaders() {
         OpenAiTransformer transformer = new OpenAiTransformer();
         AccountEntity account = AccountEntity.builder()
@@ -197,13 +198,14 @@ class OpenAiTransformerTest {
                         "x-stainless-timeout", "1")));
 
         assertEquals("application/json", request.headers().firstValue("Accept").orElse(""));
+        assertEquals(List.of("application/json"), request.headers().allValues("Accept"));
         assertEquals("openai-sdk-java/1.0", request.headers().firstValue("User-Agent").orElse(""));
         assertEquals("zh-CN", request.headers().firstValue("Accept-Language").orElse(""));
-        assertEquals("responses=experimental", request.headers().firstValue("OpenAI-Beta").orElse(""));
-        assertEquals("codex_cli_rs", request.headers().firstValue("originator").orElse(""));
-        assertEquals("sess_1", request.headers().firstValue("session_id").orElse(""));
-        assertEquals("conv_1", request.headers().firstValue("conversation_id").orElse(""));
-        assertEquals("turn_state", request.headers().firstValue("x-codex-turn-state").orElse(""));
+        assertTrue(request.headers().firstValue("OpenAI-Beta").isEmpty());
+        assertTrue(request.headers().firstValue("originator").isEmpty());
+        assertTrue(request.headers().firstValue("session_id").isEmpty());
+        assertTrue(request.headers().firstValue("conversation_id").isEmpty());
+        assertTrue(request.headers().firstValue("x-codex-turn-state").isEmpty());
         assertTrue(request.headers().firstValue("x-stainless-timeout").isEmpty());
     }
 
