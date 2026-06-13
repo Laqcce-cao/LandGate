@@ -80,6 +80,7 @@ public class GatewayResponseService {
         response.setHeader("X-Accel-Buffering", "no");
 
         UsageTokens totalUsage = UsageTokens.builder().build();
+        String responseId = "";
 
         // 判断翻译方向，通过 ConverterRegistry 获取流式翻译器。
         // 优先使用 UpstreamRoute 中的格式，保证请求和响应翻译走同一份路由决策。
@@ -135,6 +136,7 @@ public class GatewayResponseService {
                 // 记录 SSE 结构化摘要，不输出完整响应内容，避免泄露用户数据。
                 if (line.startsWith("data: ")) {
                     sseDataLines++;
+                    responseId = firstNonBlank(responseId, extractResponseIdFromSseLine(line));
                 }
                 if (usageParser.isStreamDone(line)) {
                     doneSignalSeen = true;
@@ -203,14 +205,14 @@ public class GatewayResponseService {
                 sseDataLines, usageEventLines, doneSignalSeen, clientDisconnected, totalUsage.hasUsage(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
-        return new GatewayResponseResult(totalUsage, clientDisconnected);
+        return new GatewayResponseResult(totalUsage, clientDisconnected, responseId);
     }
 
     /** 将上游 SSE 聚合为客户端非流式响应，适配 OpenAI OAuth Codex 仅支持上游流式的场景。 */
-    public UsageTokens handleStreamingAsNonStreaming(HttpResponse<InputStream> upstreamResp,
-                                                     HttpServletResponse response,
-                                                     GatewayRequestContext ctx,
-                                                     IUsageParser usageParser) throws IOException {
+    public GatewayResponseResult handleStreamingAsNonStreaming(HttpResponse<InputStream> upstreamResp,
+                                                               HttpServletResponse response,
+                                                               GatewayRequestContext ctx,
+                                                               IUsageParser usageParser) throws IOException {
         response.setStatus(200);
         copyUpstreamResponseHeaders(upstreamResp, response, false);
         response.setContentType("application/json");
@@ -368,7 +370,7 @@ public class GatewayResponseService {
                 ctx != null ? ctx.getRequestId() : "?", totalUsage.hasUsage(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
-        return totalUsage;
+        return new GatewayResponseResult(totalUsage, false, responseId);
     }
 
     private static ObjectNode normalizeStreamingOutputItem(JsonNode item) {
@@ -637,9 +639,9 @@ public class GatewayResponseService {
         }
     }
 
-    public UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,
-                                          HttpServletResponse response,
-                                          IUsageParser usageParser) throws IOException {
+    public GatewayResponseResult handleNonStreaming(HttpResponse<InputStream> upstreamResp,
+                                                    HttpServletResponse response,
+                                                    IUsageParser usageParser) throws IOException {
         GatewayRequestContext ctx = GatewayRequestContext.get();
         UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
         boolean passthrough = isPassthrough(ctx, route);
@@ -685,7 +687,39 @@ public class GatewayResponseService {
             output.flush();
         }
 
-        return usage;
+        return new GatewayResponseResult(usage, false, extractResponseIdFromJson(responseBody));
+    }
+
+    private static String extractResponseIdFromSseLine(String line) {
+        if (line == null || !line.startsWith("data: ")) return "";
+        try {
+            JsonNode root = JSON_MAPPER.readTree(line.substring(6));
+            return firstNonBlank(
+                    root.path("response").path("id").asText(""),
+                    root.path("id").asText(""));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String extractResponseIdFromJson(String body) {
+        if (body == null || body.isBlank()) return "";
+        try {
+            JsonNode root = JSON_MAPPER.readTree(body);
+            return firstNonBlank(
+                    root.path("id").asText(""),
+                    root.path("response").path("id").asText(""));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) return "";
+        for (String value : values) {
+            if (value != null && !value.isBlank()) return value.trim();
+        }
+        return "";
     }
 
     public void writePassthroughError(HttpResponse<InputStream> upstreamResp,

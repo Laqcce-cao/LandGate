@@ -151,9 +151,23 @@ public class ResponsesToAnthropicConverter {
             // 合并连续同角色消息（Anthropic 要求 user/assistant 交替）
             messages = mergeConsecutiveMessages(messages);
 
+            boolean bridgePromptCache = hasText(ir, "prompt_cache_key");
+
             // system
             if (systemText != null && !systemText.isEmpty()) {
-                dst.put("system", systemText);
+                if (bridgePromptCache) {
+                    ArrayNode systemBlocks = JSON.createArrayNode();
+                    ObjectNode systemBlock = JSON.createObjectNode();
+                    systemBlock.put("type", "text");
+                    systemBlock.put("text", systemText);
+                    systemBlock.set("cache_control", ephemeralCacheControl());
+                    systemBlocks.add(systemBlock);
+                    dst.set("system", systemBlocks);
+                } else {
+                    dst.put("system", systemText);
+                }
+            } else if (bridgePromptCache) {
+                attachCacheControlToFirstUserTextBlock(messages);
             }
             dst.set("messages", messages);
 
@@ -1483,6 +1497,60 @@ public class ResponsesToAnthropicConverter {
         return null;
     }
 
+    private static ObjectNode ephemeralCacheControl() {
+        ObjectNode cacheControl = JSON.createObjectNode();
+        cacheControl.put("type", "ephemeral");
+        return cacheControl;
+    }
+
+    /**
+     * Responses 的 prompt_cache_key 不会被 Anthropic 识别。转 Claude 时将其降级为
+     * Anthropic prompt caching 的 cache_control 断点，优先放在稳定 system 前缀；
+     * 无 system 时才标记首个 user text block。
+     */
+    private static void attachCacheControlToFirstUserTextBlock(ArrayNode messages) {
+        for (JsonNode message : messages) {
+            if (!message.isObject() || !"user".equals(textOrDefault(message.get("role"), null))) {
+                continue;
+            }
+
+            ObjectNode messageObj = (ObjectNode) message;
+            JsonNode content = messageObj.get("content");
+            if (content == null || content.isNull()) {
+                continue;
+            }
+
+            if (content.isTextual()) {
+                if (content.asText().isBlank()) {
+                    continue;
+                }
+                ArrayNode blocks = JSON.createArrayNode();
+                ObjectNode textBlock = JSON.createObjectNode();
+                textBlock.put("type", "text");
+                textBlock.put("text", content.asText());
+                textBlock.set("cache_control", ephemeralCacheControl());
+                blocks.add(textBlock);
+                messageObj.set("content", blocks);
+                return;
+            }
+
+            if (content.isArray()) {
+                for (JsonNode block : content) {
+                    if (!block.isObject()
+                            || !"text".equals(textOrDefault(block.get("type"), ""))
+                            || isBlankText(block.get("text"))) {
+                        continue;
+                    }
+                    ObjectNode blockObj = (ObjectNode) block;
+                    if (!blockObj.has("cache_control")) {
+                        blockObj.set("cache_control", ephemeralCacheControl());
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     // ========================
     // 通用工具方法
     // ========================
@@ -1507,6 +1575,10 @@ public class ResponsesToAnthropicConverter {
 
     private static void copyNumberIfExists(JsonNode src, ObjectNode dst, String field) {
         if (src.has(field) && src.get(field).isNumber()) dst.set(field, src.get(field));
+    }
+
+    private static boolean hasText(JsonNode src, String field) {
+        return src.has(field) && src.get(field).isTextual() && !src.get(field).asText().isBlank();
     }
 
     private static boolean isBlankText(JsonNode node) {

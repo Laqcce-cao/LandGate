@@ -779,6 +779,60 @@ class OpenAiTransformerTest {
     }
 
     @Test
+    @DisplayName("Anthropic Messages 兼容 OpenAI OAuth 时按 prompt_cache_key 设置 Codex session")
+    void anthropicMessagesCompatOAuthUsesPromptCacheKeyAsCodexSession() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .credentials("{\"chatgpt_account_id\":\"chatgpt-acc\"}")
+                .build();
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "prompt_cache_key":"anthropic-cache-abc",
+                  "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]}],
+                  "stream":false
+                }""";
+
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                "req-1",
+                42L,
+                body,
+                account,
+                "token-1",
+                new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://chatgpt.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "openai_oauth_codex"),
+                null,
+                "/v1/messages",
+                "gpt-5.5",
+                true,
+                false,
+                Map.of("conversation_id", "", "Originator", "client-origin", "OpenAI-Beta", "responses=experimental")));
+
+        JsonNode root = JSON.readTree(readBody(request));
+        String sessionId = request.headers().firstValue("session_id").orElse("");
+
+        assertFalse(root.has("prompt_cache_key"));
+        assertFalse(sessionId.isBlank());
+        assertEquals(36, sessionId.length());
+        assertTrue(sessionId.contains("-"));
+        assertTrue(request.headers().firstValue("conversation_id").isEmpty());
+        assertTrue(request.headers().firstValue("OpenAI-Beta").isEmpty());
+        assertTrue(request.headers().firstValue("Originator").isEmpty());
+        assertEquals("text/event-stream", request.headers().firstValue("Accept").orElse(""));
+    }
+
+    @Test
     @DisplayName("OAuth Codex 请求保留官方 Codex User-Agent")
     void codexOAuthRequestKeepsOfficialCodexUserAgent() {
         OpenAiTransformer transformer = new OpenAiTransformer();

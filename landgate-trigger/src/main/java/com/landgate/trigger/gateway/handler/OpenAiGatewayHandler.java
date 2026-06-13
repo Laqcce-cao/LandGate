@@ -23,6 +23,7 @@ import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.response.GatewayResponseService;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import com.landgate.trigger.gateway.account.AccountSelector;
+import com.landgate.trigger.gateway.session.OpenAiCompatSessionService;
 import com.landgate.trigger.gateway.session.SessionHashService;
 import org.springframework.stereotype.Component;
 
@@ -59,6 +60,7 @@ public class OpenAiGatewayHandler extends AbstractGatewayHandler {
             ClientProfileService clientProfileService,
             GatewayRequestParser gatewayRequestParser,
             GatewayResponseService gatewayResponseService,
+            OpenAiCompatSessionService openAiCompatSessionService,
             OpenAiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 gatewayAccessService, concurrencyService, sessionHashService, oauthTokenRefreshService,
@@ -66,7 +68,8 @@ public class OpenAiGatewayHandler extends AbstractGatewayHandler {
                 translationService, converterRegistry, protocolPlanner,
                 oAuthMimicryService, fingerprintService,
                 upstreamRouteResolver, billingSettlementService,
-                gatewayGroupResolver, clientProfileService, gatewayRequestParser, gatewayResponseService);
+                gatewayGroupResolver, clientProfileService, gatewayRequestParser, gatewayResponseService,
+                openAiCompatSessionService);
         this.errorWriter = errorWriter;
     }
 

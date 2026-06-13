@@ -34,6 +34,7 @@ import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import com.landgate.trigger.gateway.account.AccountSelector;
+import com.landgate.trigger.gateway.session.OpenAiCompatSessionService;
 import com.landgate.trigger.gateway.session.SessionHashService;
 import com.landgate.trigger.gateway.transformer.IRequestTransformer;
 import com.landgate.trigger.gateway.transformer.UpstreamRequestContext;
@@ -50,6 +51,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -92,6 +96,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final ClientProfileService clientProfileService;
     protected final GatewayRequestParser gatewayRequestParser;
     protected final GatewayResponseService gatewayResponseService;
+    protected final OpenAiCompatSessionService openAiCompatSessionService;
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -117,7 +122,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             GatewayGroupResolver gatewayGroupResolver,
             ClientProfileService clientProfileService,
             GatewayRequestParser gatewayRequestParser,
-            GatewayResponseService gatewayResponseService) {
+            GatewayResponseService gatewayResponseService,
+            OpenAiCompatSessionService openAiCompatSessionService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -141,6 +147,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.gatewayResponseService = gatewayResponseService != null
                 ? gatewayResponseService
                 : new GatewayResponseService(concurrencyService, translationService, converterRegistry);
+        this.openAiCompatSessionService = openAiCompatSessionService;
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -257,7 +264,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 requestId, model, clientStream, requestFormat);
 
         // Step 4: Session 粘滞（IP + UA + API Key）
-        String sessionHash = sessionHashService.generateHash(request, apiKeyId);
+        String sessionHash = sessionHashService.generateHash(request, apiKeyId, body);
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
         Long initialStickyAccountId = stickyAccountId;
         if (stickyAccountId != null) {
@@ -386,9 +393,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 if (shouldMimicClaudeCode) {
                     log.debug("[{}] OAuth 伪装: account_id={}, model={}, type={}",
                             requestId, account.getId(), model, account.getType());
+                    boolean systemRewritten = false;
                     if (model != null && !model.toLowerCase().contains("haiku")) {
                         upstreamBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
                                 upstreamBody, model);
+                        systemRewritten = true;
                     }
                     // 获取或创建指纹，用于 metadata.user_id 构建
                     com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fp =
@@ -396,9 +405,36 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                     account.getId(),
                                     clientProfile.headers());
                     upstreamBody = oAuthMimicryService.buildAndInjectMetadataUserID(
-                            upstreamBody, account, fp);
+                            upstreamBody, account, fp, !systemRewritten);
                     upstreamBody = oAuthMimicryService.normalizeClaudeOAuthRequestBody(
-                            upstreamBody, model);
+                            upstreamBody, model, false, null, !systemRewritten);
+                }
+
+                Map<String, String> upstreamRequestHeaders = clientProfile.headers();
+                if (openAiCompatSessionService != null && isOpenAiAnthropicMessagesCompat(upstreamRoute)) {
+                    OpenAiCompatSessionService.CompatState compatState =
+                            openAiCompatSessionService.prepareAnthropicMessagesCompat(
+                                    account, apiKeyId, body, upstreamBody, model);
+                    upstreamBody = compatState.body();
+                    ctx.setOpenAiCompatPromptCacheKey(compatState.promptCacheKey());
+                    ctx.setOpenAiCompatDigestChain(compatState.digestChain());
+                    ctx.setOpenAiCompatMatchedDigestChain(compatState.matchedDigestChain());
+                    ctx.setOpenAiCompatPreviousResponseId(compatState.previousResponseId());
+                    if (compatState.promptCacheKeyInjected()) {
+                        log.debug("[{}] OpenAI Anthropic compat prompt_cache_key injected: account_id={}, key_prefix={}, digest={}",
+                                requestId, account.getId(), compatState.promptCacheKey().split("-", 2)[0],
+                                !compatState.digestChain().isBlank());
+                    }
+                    if (account.getType() == AccountType.OAUTH && !compatState.promptCacheKey().isBlank()) {
+                        String turnState = openAiCompatSessionService.getTurnState(
+                                account, apiKeyId, compatState.promptCacheKey());
+                        if (!turnState.isBlank() && headerValue(upstreamRequestHeaders, "x-codex-turn-state").isBlank()) {
+                            upstreamRequestHeaders = new HashMap<>(upstreamRequestHeaders);
+                            upstreamRequestHeaders.put("x-codex-turn-state", turnState);
+                            log.debug("[{}] OpenAI OAuth compat turn-state attached: account_id={}",
+                                    requestId, account.getId());
+                        }
+                    }
                 }
 
                 // 根据选中账户的平台构造对应的上游请求
@@ -417,7 +453,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             model,
                             upstreamStream,
                             shouldMimicClaudeCode,
-                            clientProfile.headers()));
+                            upstreamRequestHeaders));
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
                     concurrencyService.release(slot);
@@ -465,10 +501,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         streamingResult = handleStreaming(upstreamResp, response, ctx, usageParser);
                         usage = streamingResult.usage();
                     } else if (handleAsStreaming) {
-                        usage = handleStreamingAsNonStreaming(upstreamResp, response, ctx, usageParser);
+                        streamingResult = handleStreamingAsNonStreaming(upstreamResp, response, ctx, usageParser);
+                        usage = streamingResult.usage();
                     } else {
-                        usage = handleNonStreaming(upstreamResp, response, usageParser);
+                        streamingResult = handleNonStreaming(upstreamResp, response, usageParser);
+                        usage = streamingResult.usage();
                     }
+                    bindOpenAiCompatSuccessState(ctx, account, apiKeyId, upstreamResp, streamingResult);
 
                     if (usage != null && usage.hasUsage()) {
                         long cacheEligibleInput = (long) usage.getInputTokens() + usage.getCacheReadTokens();
@@ -585,6 +624,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         errorBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
                     }
 
+                    if (handleOpenAiCompatPreviousResponseFailure(ctx, account, apiKeyId, statusCode, errorBody)) {
+                        concurrencyService.release(slot);
+                        stickyAccountId = account.getId();
+                        continue;
+                    }
+
                     ErrorPassthroughService.ErrorAction action =
                             errorPassthroughService.decide(statusCode, errorBody, accountPlatform.name());
 
@@ -641,10 +686,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     }
 
     /** 将上游 SSE 聚合为客户端非流式响应，适配 OpenAI OAuth Codex 仅支持上游流式的场景。 */
-    protected UsageTokens handleStreamingAsNonStreaming(HttpResponse<InputStream> upstreamResp,
-                                                        HttpServletResponse response,
-                                                        GatewayRequestContext ctx,
-                                                        IUsageParser usageParser) throws IOException {
+    protected GatewayResponseResult handleStreamingAsNonStreaming(HttpResponse<InputStream> upstreamResp,
+                                                                  HttpServletResponse response,
+                                                                  GatewayRequestContext ctx,
+                                                                  IUsageParser usageParser) throws IOException {
         return gatewayResponseService.handleStreamingAsNonStreaming(upstreamResp, response, ctx, usageParser);
     }
 
@@ -663,10 +708,104 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         });
     }
 
-    protected UsageTokens handleNonStreaming(HttpResponse<InputStream> upstreamResp,
-                                              HttpServletResponse response,
-                                              IUsageParser usageParser) throws IOException {
+    protected GatewayResponseResult handleNonStreaming(HttpResponse<InputStream> upstreamResp,
+                                                       HttpServletResponse response,
+                                                       IUsageParser usageParser) throws IOException {
         return gatewayResponseService.handleNonStreaming(upstreamResp, response, usageParser);
+    }
+
+    private void bindOpenAiCompatSuccessState(GatewayRequestContext ctx,
+                                              AccountEntity account,
+                                              Long apiKeyId,
+                                              HttpResponse<InputStream> upstreamResp,
+                                              GatewayResponseResult result) {
+        if (openAiCompatSessionService == null || ctx == null || account == null
+                || !isOpenAiAnthropicMessagesCompat(ctx.getUpstreamRoute())) {
+            return;
+        }
+        String promptCacheKey = trim(ctx.getOpenAiCompatPromptCacheKey());
+        if (promptCacheKey.isBlank()) return;
+
+        if (account.getType() == AccountType.OAUTH && upstreamResp != null && upstreamResp.headers() != null) {
+            String turnState = upstreamResp.headers().firstValue("x-codex-turn-state").orElse("").trim();
+            if (!turnState.isBlank()) {
+                openAiCompatSessionService.bindTurnState(account, apiKeyId, promptCacheKey, turnState);
+            }
+        }
+        if (account.getType() == AccountType.API_KEY && result != null
+                && !result.clientDisconnected()
+                && !trim(result.responseId()).isBlank()) {
+            openAiCompatSessionService.bindResponseId(account, apiKeyId, promptCacheKey, result.responseId());
+        }
+        if (!trim(ctx.getOpenAiCompatDigestChain()).isBlank()) {
+            openAiCompatSessionService.bindAnthropicDigestPromptCacheKey(
+                    account, apiKeyId, ctx.getOpenAiCompatDigestChain(), promptCacheKey,
+                    ctx.getOpenAiCompatMatchedDigestChain());
+        }
+    }
+
+    private boolean handleOpenAiCompatPreviousResponseFailure(GatewayRequestContext ctx,
+                                                              AccountEntity account,
+                                                              Long apiKeyId,
+                                                              int statusCode,
+                                                              String errorBody) {
+        if (openAiCompatSessionService == null || ctx == null || account == null
+                || !isOpenAiAnthropicMessagesCompat(ctx.getUpstreamRoute())
+                || trim(ctx.getOpenAiCompatPreviousResponseId()).isBlank()
+                || trim(ctx.getOpenAiCompatPromptCacheKey()).isBlank()) {
+            return false;
+        }
+        if (isOpenAiCompatPreviousResponseUnsupported(statusCode, errorBody)) {
+            openAiCompatSessionService.disableContinuation(account, apiKeyId, ctx.getOpenAiCompatPromptCacheKey());
+            log.info("[{}] OpenAI compat previous_response_id unsupported, retrying without continuation: account_id={}, previous_response_id={}",
+                    ctx.getRequestId(), account.getId(), ctx.getOpenAiCompatPreviousResponseId());
+            return true;
+        }
+        if (isOpenAiCompatPreviousResponseNotFound(statusCode, errorBody)) {
+            openAiCompatSessionService.deleteResponseId(account, apiKeyId, ctx.getOpenAiCompatPromptCacheKey());
+            log.info("[{}] OpenAI compat previous_response_id unavailable, retrying without continuation: account_id={}, previous_response_id={}",
+                    ctx.getRequestId(), account.getId(), ctx.getOpenAiCompatPreviousResponseId());
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isOpenAiCompatPreviousResponseNotFound(int statusCode, String errorBody) {
+        if (statusCode != 400 && statusCode != 404) return false;
+        String lower = trim(errorBody).toLowerCase(Locale.ROOT);
+        return lower.contains("previous_response_not_found")
+                || (lower.contains("previous response") && lower.contains("not found"))
+                || (lower.contains("unsupported parameter") && lower.contains("previous_response_id"));
+    }
+
+    private static boolean isOpenAiCompatPreviousResponseUnsupported(int statusCode, String errorBody) {
+        if (statusCode != 400) return false;
+        String lower = trim(errorBody).toLowerCase(Locale.ROOT);
+        if (!lower.contains("previous_response_id")) return false;
+        return lower.contains("unsupported parameter")
+                || lower.contains("only supported on responses websocket")
+                || lower.contains("not supported");
+    }
+
+    private static boolean isOpenAiAnthropicMessagesCompat(UpstreamRoute route) {
+        return route != null
+                && route.upstreamPlatform() == Platform.OPENAI
+                && "messages".equals(route.clientFormat())
+                && "responses".equals(route.upstreamFormat());
+    }
+
+    private static String headerValue(Map<String, String> headers, String name) {
+        if (headers == null || name == null) return "";
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(name)) {
+                return trim(entry.getValue());
+            }
+        }
+        return "";
+    }
+
+    private static String trim(String value) {
+        return value == null ? "" : value.trim();
     }
 
     /**

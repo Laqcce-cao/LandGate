@@ -57,6 +57,14 @@ public class GatewayRequestContext {
     private com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fingerprint;
     /** 经过 resolveGatewayGroup 降级后的实际使用的 group（可能与 APIKey 绑定的 group 不同） */
     private GroupEntity resolvedGroup;
+    /** OpenAI Anthropic Messages 兼容链路的 prompt_cache_key。 */
+    private String openAiCompatPromptCacheKey;
+    /** OpenAI Anthropic Messages 兼容链路的 digest chain，用于滚动 replay 复用 prompt key。 */
+    private String openAiCompatDigestChain;
+    /** 命中的旧 digest chain，成功后删除旧绑定。 */
+    private String openAiCompatMatchedDigestChain;
+    /** API Key Responses 兼容续接时附加的 previous_response_id。OAuth 路径不使用。 */
+    private String openAiCompatPreviousResponseId;
 
     private static final ThreadLocal<GatewayRequestContext> HOLDER = new ThreadLocal<>();
 

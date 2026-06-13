@@ -503,7 +503,7 @@ class AbstractGatewayHandlerTest {
             super(null, null, null, null, null, null, null, null, null, null,
                     new ProtocolTranslationService(converterRegistry), converterRegistry,
                     new GatewayProtocolPlanner(),
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null);
         }
 
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {
@@ -514,12 +514,12 @@ class AbstractGatewayHandlerTest {
         UsageTokens captureStreamingAsNonStreaming(String sse, MockHttpServletResponse response,
                                                    IUsageParser usageParser) throws IOException {
             return handleStreamingAsNonStreaming(new InputStreamHttpResponse(sse, "text/event-stream"), response,
-                    GatewayRequestContext.get(), usageParser);
+                    GatewayRequestContext.get(), usageParser).usage();
         }
 
         UsageTokens captureNonStreaming(String body, MockHttpServletResponse response,
                                         IUsageParser usageParser) throws IOException {
-            return handleNonStreaming(new InputStreamHttpResponse(body, "application/json"), response, usageParser);
+            return handleNonStreaming(new InputStreamHttpResponse(body, "application/json"), response, usageParser).usage();
         }
 
         void capturePassthroughError(InputStreamHttpResponse upstreamResp,

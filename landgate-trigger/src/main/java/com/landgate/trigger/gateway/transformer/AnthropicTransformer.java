@@ -104,6 +104,8 @@ public class AnthropicTransformer implements IRequestTransformer {
             }
         }
 
+        body = AnthropicCacheControlPolicy.enforceLimit(body);
+
         String modelName = extractModel(body);
         String targetUrl = resolveTargetUrl(account, context);
 

@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * OpenAI 协议请求转换器 —— 根据已解析的 {@link UpstreamRoute} 构建 OpenAI 上游 HTTP 请求。
@@ -215,6 +216,11 @@ public class OpenAiTransformer implements IRequestTransformer {
                 root.remove("prompt_cache_key");
                 root.remove("store");
                 root.remove("stream");
+            } else if (isAnthropicMessagesCompat(route)) {
+                root.remove("prompt_cache_key");
+                root.put("store", false);
+                // ChatGPT Codex 内部 Responses 端点只接受流式请求；客户端非流式由网关聚合后返回。
+                root.put("stream", true);
             } else {
                 root.put("store", false);
                 // ChatGPT Codex 内部 Responses 端点只接受流式请求；客户端非流式由网关聚合后返回。
@@ -1049,13 +1055,23 @@ public class OpenAiTransformer implements IRequestTransformer {
         String promptCacheKey = firstNonBlank(
                 extractPromptCacheKey(normalizedBody),
                 extractPromptCacheKey(context.body()));
-        String clientSessionId = firstNonBlank(headerValue(requestHeaders, "session_id"), promptCacheKey);
-        String clientConversationId = firstNonBlank(headerValue(requestHeaders, "conversation_id"), promptCacheKey);
-        if (!clientSessionId.isBlank()) {
-            headers.set("session_id", isolateCodexSessionId(context.apiKeyId(), clientSessionId));
-        }
-        if (!clientConversationId.isBlank()) {
-            headers.set("conversation_id", isolateCodexSessionId(context.apiKeyId(), clientConversationId));
+        if (isAnthropicMessagesCompat(route) && !promptCacheKey.isBlank()) {
+            String isolatedSessionId = codexSessionUuid(context.apiKeyId(), promptCacheKey);
+            headers.set("session_id", isolatedSessionId);
+            if (!headerValue(requestHeaders, "conversation_id").isBlank()) {
+                headers.set("conversation_id", isolatedSessionId);
+            } else {
+                headers.remove("conversation_id");
+            }
+        } else {
+            String clientSessionId = firstNonBlank(headerValue(requestHeaders, "session_id"), promptCacheKey);
+            String clientConversationId = firstNonBlank(headerValue(requestHeaders, "conversation_id"), promptCacheKey);
+            if (!clientSessionId.isBlank()) {
+                headers.set("session_id", isolateCodexSessionId(context.apiKeyId(), clientSessionId));
+            }
+            if (!clientConversationId.isBlank()) {
+                headers.set("conversation_id", isolateCodexSessionId(context.apiKeyId(), clientConversationId));
+            }
         }
         if (isCodexCompactEndpoint(route)) {
             headers.set("Accept", "application/json");
@@ -1063,8 +1079,13 @@ public class OpenAiTransformer implements IRequestTransformer {
         } else {
             headers.set("Accept", "text/event-stream");
         }
-        headers.setIfAbsent("OpenAI-Beta", "responses=experimental");
-        headers.setIfAbsent("Originator", "codex_cli_rs");
+        if (isAnthropicMessagesCompat(route)) {
+            headers.remove("OpenAI-Beta");
+            headers.remove("Originator");
+        } else {
+            headers.setIfAbsent("OpenAI-Beta", "responses=experimental");
+            headers.setIfAbsent("Originator", "codex_cli_rs");
+        }
         if (!isCodexCliUserAgent(headers.get("User-Agent"))) {
             headers.set("User-Agent", CODEX_CLI_USER_AGENT);
         }
@@ -1139,6 +1160,17 @@ public class OpenAiTransformer implements IRequestTransformer {
         if (value.isBlank()) return "";
         long key = apiKeyId == null ? 0L : apiKeyId;
         return fnv1a64Hex("k" + key + ":" + value);
+    }
+
+    private static String codexSessionUuid(Long apiKeyId, String raw) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.isBlank()) return "";
+        long key = apiKeyId == null ? 0L : apiKeyId;
+        return UUID.nameUUIDFromBytes(("k" + key + ":" + value).getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private static boolean isAnthropicMessagesCompat(UpstreamRoute route) {
+        return route != null && "messages".equals(route.clientFormat());
     }
 
     private static String fnv1a64Hex(String value) {

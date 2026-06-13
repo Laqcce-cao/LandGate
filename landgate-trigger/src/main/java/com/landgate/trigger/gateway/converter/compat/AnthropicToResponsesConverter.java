@@ -49,6 +49,11 @@ public class AnthropicToResponsesConverter {
             copyNumberIfExists(src, dst, "temperature");
             copyNumberIfExists(src, dst, "top_p");
 
+            String promptCacheKey = CompatPromptCacheKeyPolicy.deriveAnthropicCompatPromptCacheKey(src);
+            if (!promptCacheKey.isEmpty()) {
+                dst.put("prompt_cache_key", promptCacheKey);
+            }
+
             // max_tokens → max_output_tokens. sub2api clamps tiny values because
             // OpenAI Responses/Codex rejects very small output budgets.
             if (src.has("max_tokens") && isPositiveInt(src.get("max_tokens"))) {

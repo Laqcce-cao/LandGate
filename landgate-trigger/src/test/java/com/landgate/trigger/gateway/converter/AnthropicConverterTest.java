@@ -173,6 +173,65 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("Claude Code cache_control 锚点派生稳定 prompt_cache_key")
+        void cacheControlAnchorsDeriveStablePromptCacheKey() throws Exception {
+            String base = """
+                    {
+                        "model": "gpt-5.5",
+                        "system": [{"type":"text","text":"project instructions","cache_control":{"type":"ephemeral"}}],
+                        "messages": [
+                            {"role":"user","content":[{"type":"text","text":"repo anchor","cache_control":{"type":"ephemeral"}}]}
+                        ]
+                    }""";
+            String extended = """
+                    {
+                        "model": "gpt-5.5",
+                        "system": [{"type":"text","text":"project instructions","cache_control":{"type":"ephemeral"}}],
+                        "messages": [
+                            {"role":"user","content":[{"type":"text","text":"repo anchor","cache_control":{"type":"ephemeral"}}]},
+                            {"role":"assistant","content":[{"type":"text","text":"Opened."}]},
+                            {"role":"user","content":[{"type":"text","text":"Run tests"}]}
+                        ]
+                    }""";
+
+            JsonNode first = toIR.requestToIR(base);
+            JsonNode second = toIR.requestToIR(extended);
+
+            assertTrue(first.has("prompt_cache_key"));
+            assertTrue(first.get("prompt_cache_key").asText().startsWith("anthropic-cache-"));
+            assertEquals(first.get("prompt_cache_key").asText(), second.get("prompt_cache_key").asText());
+        }
+
+        @Test
+        @DisplayName("GPT-5 Anthropic 兼容请求无 cache_control 时派生 digest prompt_cache_key")
+        void gpt5CompatRequestDerivesDigestPromptCacheKey() throws Exception {
+            String base = """
+                    {
+                        "model": "gpt-5.5",
+                        "system": "You are helpful.",
+                        "messages": [{"role":"user","content":"Open repo"}]
+                    }""";
+            String extended = """
+                    {
+                        "model": "gpt-5.5",
+                        "system": "You are helpful.",
+                        "messages": [
+                            {"role":"user","content":"Open repo"},
+                            {"role":"assistant","content":"Opened."},
+                            {"role":"user","content":"Run tests"}
+                        ]
+                    }""";
+
+            JsonNode first = toIR.requestToIR(base);
+            JsonNode second = toIR.requestToIR(extended);
+
+            assertTrue(first.has("prompt_cache_key"));
+            assertTrue(first.get("prompt_cache_key").asText().startsWith("anthropic-digest-"));
+            assertTrue(second.get("prompt_cache_key").asText().startsWith("anthropic-digest-"));
+            assertNotEquals(first.get("prompt_cache_key").asText(), second.get("prompt_cache_key").asText());
+        }
+
+        @Test
         @DisplayName("billing header 文本过滤")
         void billingHeaderSkipped() throws Exception {
             String body = """
@@ -2100,6 +2159,64 @@ class AnthropicConverterTest {
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
 
             assertFalse(anth.has("service_tier"));
+        }
+
+        @Test
+        @DisplayName("Responses prompt_cache_key 有 system 时转为 Anthropic system cache_control")
+        void promptCacheKeyMarksSystemCacheControl() throws Exception {
+            String body = """
+                    {
+                        "model": "claude-sonnet-4-5",
+                        "prompt_cache_key": "tenant:thread",
+                        "instructions": "You are concise.",
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode system = anth.get("system");
+
+            assertTrue(system.isArray());
+            assertEquals("text", system.get(0).get("type").asText());
+            assertEquals("You are concise.", system.get(0).get("text").asText());
+            assertEquals("ephemeral", system.get(0).get("cache_control").get("type").asText());
+            assertFalse(anth.has("prompt_cache_key"));
+        }
+
+        @Test
+        @DisplayName("Responses prompt_cache_key 无 system 时标记首个 user text block")
+        void promptCacheKeyMarksFirstUserTextBlockWithoutSystem() throws Exception {
+            String body = """
+                    {
+                        "model": "claude-sonnet-4-5",
+                        "prompt_cache_key": "tenant:thread",
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode content = anth.get("messages").get(0).get("content");
+
+            assertFalse(anth.has("system"));
+            assertTrue(content.isArray());
+            assertEquals("text", content.get(0).get("type").asText());
+            assertEquals("Hello", content.get(0).get("text").asText());
+            assertEquals("ephemeral", content.get(0).get("cache_control").get("type").asText());
+            assertFalse(anth.has("prompt_cache_key"));
+        }
+
+        @Test
+        @DisplayName("无 prompt_cache_key 时 Anthropic system 保持字符串")
+        void systemStaysStringWithoutPromptCacheKey() throws Exception {
+            String body = """
+                    {
+                        "model": "claude-sonnet-4-5",
+                        "instructions": "You are concise.",
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+
+            assertTrue(anth.get("system").isTextual());
+            assertEquals("You are concise.", anth.get("system").asText());
         }
 
         @Test

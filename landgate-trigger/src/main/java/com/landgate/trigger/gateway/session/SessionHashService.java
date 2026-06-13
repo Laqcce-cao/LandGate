@@ -1,9 +1,11 @@
 package com.landgate.trigger.gateway.session;
 
+import com.landgate.trigger.gateway.converter.compat.CompatPromptCacheKeyPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RMapCache;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -26,8 +28,13 @@ public class SessionHashService {
 
     private final RMapCache<String, Long> sessionCache;
 
+    @Autowired
     public SessionHashService(RedissonClient redissonClient) {
         this.sessionCache = redissonClient.getMapCache(CACHE_KEY);
+    }
+
+    SessionHashService(RMapCache<String, Long> sessionCache) {
+        this.sessionCache = sessionCache;
     }
 
     /**
@@ -41,11 +48,32 @@ public class SessionHashService {
      * @return 16 位十六进制会话哈希
      */
     public String generateHash(HttpServletRequest request, Long apiKeyId) {
+        return generateHash(request, apiKeyId, null);
+    }
+
+    /**
+     * 生成会话哈希。对齐 sub2api：请求体里显式携带 prompt_cache_key 时优先使用它，
+     * 使 OpenAI Responses 兼容请求能稳定粘到同一上游账号；否则回退到 IP + UA + API Key。
+     */
+    public String generateHash(HttpServletRequest request, Long apiKeyId, String body) {
+        String promptCacheKey = CompatPromptCacheKeyPolicy.extractPromptCacheKey(body);
+        if (!promptCacheKey.isEmpty()) {
+            return hashRaw("prompt_cache_key|" + apiKeyId + "|" + promptCacheKey);
+        }
+        String anthropicCacheAnchor = CompatPromptCacheKeyPolicy.extractAnthropicCacheControlSessionAnchor(body);
+        if (!anthropicCacheAnchor.isEmpty()) {
+            return hashRaw("anthropic_cache|" + apiKeyId + "|" + anthropicCacheAnchor);
+        }
+
         String clientIp = request.getRemoteAddr();
         String userAgent = normalizeUserAgent(request.getHeader("User-Agent"));
         String raw = new StringBuilder()
                 .append(clientIp).append('|').append(userAgent).append('|').append(apiKeyId)
                 .toString();
+        return hashRaw(raw);
+    }
+
+    private static String hashRaw(String raw) {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] hash = md.digest(raw.getBytes(StandardCharsets.UTF_8));

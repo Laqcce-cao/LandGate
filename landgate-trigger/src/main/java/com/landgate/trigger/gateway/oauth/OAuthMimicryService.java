@@ -134,6 +134,12 @@ public class OAuthMimicryService {
      */
     public String normalizeClaudeOAuthRequestBody(String body, String model,
                                                    boolean injectMetadata, String metadataUserId) {
+        return normalizeClaudeOAuthRequestBody(body, model, injectMetadata, metadataUserId, true);
+    }
+
+    public String normalizeClaudeOAuthRequestBody(String body, String model,
+                                                   boolean injectMetadata, String metadataUserId,
+                                                   boolean stripSystemCacheControl) {
         if (body == null || body.isEmpty()) return body;
 
         try {
@@ -142,7 +148,7 @@ public class OAuthMimicryService {
             ObjectNode rootObj = (ObjectNode) root;
             boolean modified = false;
 
-            // 标准化 system（替换 OpenCode 文本 + 剥离 cache_control）
+            // 标准化 system（替换 OpenCode 文本；按调用链语义决定是否剥离 cache_control）
             if (rootObj.has("system")) {
                 JsonNode system = rootObj.get("system");
                 if (system.isTextual()) {
@@ -163,8 +169,7 @@ public class OAuthMimicryService {
                                 modified = true;
                             }
                         }
-                        // 剥离 system 中的 cache_control
-                        if (item.isObject() && item.has("cache_control")) {
+                        if (stripSystemCacheControl && item.isObject() && item.has("cache_control")) {
                             ((ObjectNode) item).remove("cache_control");
                             modified = true;
                         }
@@ -351,9 +356,15 @@ public class OAuthMimicryService {
      */
     public String buildAndInjectMetadataUserID(String body, AccountEntity account,
                                                 ClientFingerprint fp) {
+        return buildAndInjectMetadataUserID(body, account, fp, true);
+    }
+
+    public String buildAndInjectMetadataUserID(String body, AccountEntity account,
+                                                ClientFingerprint fp,
+                                                boolean stripSystemCacheControl) {
         String metadataUserId = buildOAuthMetadataUserID(account, fp, body);
         if (metadataUserId == null || metadataUserId.isEmpty()) return body;
-        return normalizeClaudeOAuthRequestBody(body, "", true, metadataUserId);
+        return normalizeClaudeOAuthRequestBody(body, "", true, metadataUserId, stripSystemCacheControl);
     }
 
     // ========================
