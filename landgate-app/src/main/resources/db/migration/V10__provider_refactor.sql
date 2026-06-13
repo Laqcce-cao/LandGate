@@ -33,7 +33,7 @@ ALTER TABLE `groups`
 
 ALTER TABLE `accounts`
     ADD COLUMN `supported_protocols` JSON NULL
-        COMMENT '账户支持的上游 API 协议（JSON 数组），如 ["chat_completions","responses"]。NULL = 默认格式'
+        COMMENT '账户上游 API 协议（JSON 数组，必须只配置一个），如 ["chat_completions"] 或 ["responses"]'
         AFTER `supported_models`;
 
 ALTER TABLE `accounts`

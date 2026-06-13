@@ -26,8 +26,8 @@ public class AnthropicRouteStrategy implements UpstreamRouteStrategy {
 
     @Override
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
-        String upstreamFormat = ProtocolFormatResolver.resolveAccountUpstreamFormat(
-                request.account(), "messages", java.util.Set.of("messages"));
+        String upstreamFormat = ProtocolFormatResolver.requireSingleAccountUpstreamFormat(
+                request.account(), java.util.Set.of("messages"));
         return new UpstreamRoute(
                 Platform.ANTHROPIC,
                 request.requestFormat(),

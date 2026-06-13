@@ -3,7 +3,6 @@ package com.landgate.trigger.gateway.route;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
-import com.landgate.trigger.gateway.transformer.UpstreamCapabilityService;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.springframework.core.annotation.Order;
@@ -22,12 +21,6 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
     private static final String CODEX_RESPONSES_PATH = "/backend-api/codex/responses";
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    private final UpstreamCapabilityService upstreamCapabilityService;
-
-    public OpenAiApiKeyRouteStrategy(UpstreamCapabilityService upstreamCapabilityService) {
-        this.upstreamCapabilityService = upstreamCapabilityService;
-    }
-
     @Override
     public boolean supports(UpstreamRouteRequest request) {
         return request != null
@@ -38,14 +31,9 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
 
     @Override
     public UpstreamRoute resolve(UpstreamRouteRequest request) {
-        String configuredUpstreamFormat = ProtocolFormatResolver.resolveAccountUpstreamFormat(request.account(), "");
-        boolean useResponses = switch (configuredUpstreamFormat) {
-            case "responses" -> true;
-            case "chat_completions" -> false;
-            default -> "responses".equals(request.requestFormat())
-                    && upstreamCapabilityService.shouldUseResponsesAPI(request.account());
-        };
-        String upstreamFormat = useResponses ? "responses" : "chat_completions";
+        String upstreamFormat = ProtocolFormatResolver.requireSingleAccountUpstreamFormat(
+                request.account(), java.util.Set.of("responses", "chat_completions"));
+        boolean useResponses = "responses".equals(upstreamFormat);
         EndpointKind endpointKind = useResponses
                 ? EndpointKind.OPENAI_RESPONSES
                 : EndpointKind.OPENAI_CHAT_COMPLETIONS;

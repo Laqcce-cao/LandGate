@@ -503,7 +503,7 @@ class AbstractGatewayHandlerTest {
             super(null, null, null, null, null, null, null, null, null, null,
                     new ProtocolTranslationService(converterRegistry), converterRegistry,
                     new GatewayProtocolPlanner(),
-                    null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null);
         }
 
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {

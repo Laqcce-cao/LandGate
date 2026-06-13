@@ -51,6 +51,27 @@ public final class ProtocolFormatResolver {
         return normalizeFormat(fallback);
     }
 
+    public static String requireSingleAccountUpstreamFormat(AccountEntity account, Set<String> allowed) {
+        List<String> normalized = (account == null ? List.<String>of() : parseProtocols(account.getSupportedProtocols()))
+                .stream()
+                .map(ProtocolFormatResolver::normalizeFormat)
+                .filter(value -> !value.isBlank() && !"*".equals(value))
+                .distinct()
+                .toList();
+        if (normalized.size() != 1) {
+            Long accountId = account != null ? account.getId() : null;
+            throw new IllegalArgumentException(
+                    "Account supportedProtocols must contain exactly one upstream protocol: account_id=" + accountId);
+        }
+        String protocol = normalized.get(0);
+        if (allowed != null && !allowed.isEmpty() && !allowed.contains(protocol)) {
+            Long accountId = account != null ? account.getId() : null;
+            throw new IllegalArgumentException(
+                    "Account upstream protocol '" + protocol + "' is not allowed for this route: account_id=" + accountId);
+        }
+        return protocol;
+    }
+
     public static String normalizeFormat(String raw) {
         if (raw == null) return "";
         String value = raw.trim().toLowerCase(Locale.ROOT)

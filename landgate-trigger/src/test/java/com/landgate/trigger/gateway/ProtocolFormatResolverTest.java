@@ -40,6 +40,33 @@ class ProtocolFormatResolverTest {
     }
 
     @Test
+    @DisplayName("Account 上游协议必须明确且只能一个")
+    void accountRequiresSingleUpstreamFormat() {
+        AccountEntity account = AccountEntity.builder()
+                .id(7L)
+                .supportedProtocols("[\"openai-responses\"]")
+                .build();
+        AccountEntity missing = AccountEntity.builder().id(8L).supportedProtocols("[]").build();
+        AccountEntity multiple = AccountEntity.builder()
+                .id(9L)
+                .supportedProtocols("[\"responses\",\"chat_completions\"]")
+                .build();
+        AccountEntity disallowed = AccountEntity.builder()
+                .id(10L)
+                .supportedProtocols("[\"gemini\"]")
+                .build();
+
+        assertEquals("responses", ProtocolFormatResolver.requireSingleAccountUpstreamFormat(
+                account, java.util.Set.of("responses", "chat_completions")));
+        assertThrows(IllegalArgumentException.class,
+                () -> ProtocolFormatResolver.requireSingleAccountUpstreamFormat(missing, java.util.Set.of("responses")));
+        assertThrows(IllegalArgumentException.class,
+                () -> ProtocolFormatResolver.requireSingleAccountUpstreamFormat(multiple, java.util.Set.of("responses")));
+        assertThrows(IllegalArgumentException.class,
+                () -> ProtocolFormatResolver.requireSingleAccountUpstreamFormat(disallowed, java.util.Set.of("responses")));
+    }
+
+    @Test
     @DisplayName("不支持的账号协议会回退到策略允许的默认协议")
     void accountProtocolFallsBackWhenNotAllowedByStrategy() {
         AccountEntity account = AccountEntity.builder()

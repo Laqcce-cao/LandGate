@@ -3,6 +3,7 @@ package com.landgate.domain.account.service;
 import com.landgate.domain.account.adapter.repository.IAccountRepository;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.types.enums.AccountType;
+import com.landgate.types.enums.Platform;
 import com.landgate.types.exception.NotFoundException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,6 +12,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 上游账号领域服务 —— 管理 AI 平台账号的生命周期。
@@ -33,6 +36,7 @@ public class AccountDomainService {
      */
     @Transactional
     public AccountEntity create(AccountEntity account) {
+        validateSingleUpstreamProtocol(account);
         account = accountRepository.save(account);
         log.info("Account created: id={}, name={}", account.getId(), account.getName());
         return account;
@@ -94,6 +98,7 @@ public class AccountDomainService {
         if (updates.getSupportedModels() != null) existing.setSupportedModels(updates.getSupportedModels());
         if (updates.getSupportedProtocols() != null) existing.setSupportedProtocols(updates.getSupportedProtocols());
         if (updates.getMixedScheduling() != null) existing.setMixedScheduling(updates.getMixedScheduling());
+        validateSingleUpstreamProtocol(existing);
         accountRepository.save(existing);
         log.info("Account updated: id={}", id);
         return existing;
@@ -138,5 +143,73 @@ public class AccountDomainService {
         account.setSchedulable(schedulable);
         accountRepository.save(account);
         log.info("Account schedulable set: id={}, schedulable={}", id, schedulable);
+    }
+
+    private static void validateSingleUpstreamProtocol(AccountEntity account) {
+        if (account == null || account.getPlatform() == null) return;
+        Set<String> allowed = allowedProtocols(account.getPlatform(), account.getType());
+        if (allowed.isEmpty()) return;
+        List<String> protocols = parseProtocols(account.getSupportedProtocols()).stream()
+                .map(AccountDomainService::normalizeProtocol)
+                .filter(value -> !value.isBlank() && !"*".equals(value))
+                .distinct()
+                .toList();
+        if (protocols.size() != 1) {
+            throw new IllegalArgumentException(
+                    "Account supportedProtocols must contain exactly one upstream protocol");
+        }
+        if (!allowed.contains(protocols.get(0))) {
+            throw new IllegalArgumentException(
+                    "Account upstream protocol '" + protocols.get(0)
+                            + "' is not supported for platform=" + account.getPlatform()
+                            + ", type=" + account.getType());
+        }
+    }
+
+    private static Set<String> allowedProtocols(Platform platform, AccountType type) {
+        if (platform == Platform.OPENAI && type == AccountType.API_KEY) {
+            return Set.of("chat_completions", "responses");
+        }
+        if (platform == Platform.OPENAI && type == AccountType.OAUTH) {
+            return Set.of("responses");
+        }
+        if (platform == Platform.ANTHROPIC) {
+            return Set.of("messages");
+        }
+        if (platform == Platform.GEMINI) {
+            return Set.of("gemini");
+        }
+        return Set.of();
+    }
+
+    private static List<String> parseProtocols(String raw) {
+        if (raw == null || raw.isBlank() || "[]".equals(raw.trim())) return List.of();
+        String trimmed = raw.trim();
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            String inner = trimmed.substring(1, trimmed.length() - 1).trim();
+            if (inner.isBlank()) return List.of();
+            return java.util.Arrays.stream(inner.split(","))
+                    .map(value -> value.trim().replace("\"", ""))
+                    .filter(value -> !value.isBlank())
+                    .toList();
+        }
+        return List.of(trimmed);
+    }
+
+    private static String normalizeProtocol(String raw) {
+        if (raw == null) return "";
+        String value = raw.trim().toLowerCase(Locale.ROOT)
+                .replace('-', '_')
+                .replace(' ', '_');
+        while (value.contains("__")) {
+            value = value.replace("__", "_");
+        }
+        return switch (value) {
+            case "anthropic", "anthropic_messages", "messages_api" -> "messages";
+            case "openai", "openai_chat", "chat", "chat_completion", "chat_completions" -> "chat_completions";
+            case "openai_responses", "response", "responses_api" -> "responses";
+            case "google", "google_gemini", "gemini_generate_content" -> "gemini";
+            default -> value;
+        };
     }
 }

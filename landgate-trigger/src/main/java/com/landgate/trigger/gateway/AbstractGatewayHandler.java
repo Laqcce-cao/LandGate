@@ -36,7 +36,6 @@ import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import com.landgate.trigger.gateway.account.AccountSelector;
 import com.landgate.trigger.gateway.session.SessionHashService;
 import com.landgate.trigger.gateway.transformer.IRequestTransformer;
-import com.landgate.trigger.gateway.transformer.UpstreamCapabilityService;
 import com.landgate.trigger.gateway.transformer.UpstreamRequestContext;
 import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.types.enums.AccountType;
@@ -87,7 +86,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
     protected final OAuthMimicryService oAuthMimicryService;
     protected final FingerprintService fingerprintService;
-    protected final UpstreamCapabilityService upstreamCapabilityService;
     protected final UpstreamRouteResolver upstreamRouteResolver;
     protected final GatewayBillingSettlementService billingSettlementService;
     protected final GatewayGroupResolver gatewayGroupResolver;
@@ -114,7 +112,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             GatewayProtocolPlanner protocolPlanner,
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
-            UpstreamCapabilityService upstreamCapabilityService,
             UpstreamRouteResolver upstreamRouteResolver,
             GatewayBillingSettlementService billingSettlementService,
             GatewayGroupResolver gatewayGroupResolver,
@@ -136,7 +133,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         this.protocolPlanner = protocolPlanner != null ? protocolPlanner : new GatewayProtocolPlanner();
         this.oAuthMimicryService = oAuthMimicryService;
         this.fingerprintService = fingerprintService;
-        this.upstreamCapabilityService = upstreamCapabilityService;
         this.upstreamRouteResolver = upstreamRouteResolver;
         this.billingSettlementService = billingSettlementService;
         this.gatewayGroupResolver = gatewayGroupResolver;

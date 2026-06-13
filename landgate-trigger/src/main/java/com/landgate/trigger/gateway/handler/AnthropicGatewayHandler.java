@@ -24,7 +24,6 @@ import com.landgate.trigger.gateway.response.GatewayResponseService;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import com.landgate.trigger.gateway.account.AccountSelector;
 import com.landgate.trigger.gateway.session.SessionHashService;
-import com.landgate.trigger.gateway.transformer.UpstreamCapabilityService;
 import org.springframework.stereotype.Component;
 
 /**
@@ -54,7 +53,6 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
             GatewayProtocolPlanner protocolPlanner,
             OAuthMimicryService oAuthMimicryService,
             FingerprintService fingerprintService,
-            UpstreamCapabilityService upstreamCapabilityService,
             UpstreamRouteResolver upstreamRouteResolver,
             GatewayBillingSettlementService billingSettlementService,
             GatewayGroupResolver gatewayGroupResolver,
@@ -67,7 +65,7 @@ public class AnthropicGatewayHandler extends AbstractGatewayHandler {
                 errorPassthroughService, rateLimitHeaderParser, platformRouter,
                 translationService, converterRegistry, protocolPlanner,
                 oAuthMimicryService, fingerprintService,
-                upstreamCapabilityService, upstreamRouteResolver, billingSettlementService,
+                upstreamRouteResolver, billingSettlementService,
                 gatewayGroupResolver, clientProfileService, gatewayRequestParser, gatewayResponseService);
         this.errorWriter = errorWriter;
     }

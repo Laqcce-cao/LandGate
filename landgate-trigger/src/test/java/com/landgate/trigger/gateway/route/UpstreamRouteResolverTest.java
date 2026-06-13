@@ -2,7 +2,6 @@ package com.landgate.trigger.gateway.route;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.GatewayProtocolPlanner;
-import com.landgate.trigger.gateway.transformer.UpstreamCapabilityService;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.DisplayName;
@@ -18,18 +17,17 @@ import static org.junit.jupiter.api.Assertions.*;
 @DisplayName("UpstreamRouteResolver 上游策略路由测试")
 class UpstreamRouteResolverTest {
 
-    private final UpstreamCapabilityService capabilityService = new UpstreamCapabilityService();
     private final GatewayProtocolPlanner protocolPlanner = new GatewayProtocolPlanner();
     private final UpstreamRouteResolver resolver = new UpstreamRouteResolver(List.of(
             new OpenAiOAuthCodexRouteStrategy(),
-            new OpenAiApiKeyRouteStrategy(capabilityService),
+            new OpenAiApiKeyRouteStrategy(),
             new AnthropicRouteStrategy()
     ));
 
     @Test
     @DisplayName("OpenAI OAuth 账号路由到 Codex Responses 并强制上游流式")
     void openAiOAuthRoutesToCodexResponses() {
-        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH, null);
+        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH, null, "[\"responses\"]");
 
         UpstreamRoute route = resolver.resolve(request(account, Platform.ANTHROPIC, "messages"));
 
@@ -44,10 +42,10 @@ class UpstreamRouteResolverTest {
     }
 
     @Test
-    @DisplayName("OpenAI API Key 且 Responses 可用时路由到 /v1/responses")
-    void openAiApiKeyRoutesToResponsesWhenSupported() {
+    @DisplayName("OpenAI API Key 账号协议为 responses 时路由到 /v1/responses")
+    void openAiApiKeyRoutesToResponsesByAccountProtocol() {
         AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"openai_responses_supported\":true}");
+                "{}", "[\"responses\"]");
 
         UpstreamRoute route = resolver.resolve(request(account, Platform.OPENAI, "responses"));
 
@@ -64,7 +62,7 @@ class UpstreamRouteResolverTest {
     @DisplayName("OpenAI API Key 保留 Responses 子路径")
     void openAiApiKeyPreservesResponsesSubpath() {
         AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"base_url\":\"https://proxy.example.com\",\"openai_responses_supported\":true}");
+                "{\"base_url\":\"https://proxy.example.com\"}", "[\"responses\"]");
 
         UpstreamRoute route = resolver.resolve(UpstreamRouteRequest.builder()
                 .account(account)
@@ -81,7 +79,7 @@ class UpstreamRouteResolverTest {
     @Test
     @DisplayName("OpenAI OAuth Codex 保留 Responses 子路径并映射到内部端点")
     void openAiOAuthPreservesResponsesSubpath() {
-        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH, null);
+        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH, null, "[\"responses\"]");
 
         UpstreamRoute route = resolver.resolve(UpstreamRouteRequest.builder()
                 .account(account)
@@ -98,10 +96,10 @@ class UpstreamRouteResolverTest {
     }
 
     @Test
-    @DisplayName("OpenAI API Key 且 Responses 不可用时路由到 Chat Completions")
-    void openAiApiKeyFallsBackToChatCompletionsWhenResponsesUnsupported() {
+    @DisplayName("OpenAI API Key 账号协议为 chat_completions 时路由到 Chat Completions")
+    void openAiApiKeyRoutesToChatCompletionsByAccountProtocol() {
         AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"openai_responses_supported\":false}");
+                "{}", "[\"chat_completions\"]");
 
         UpstreamRoute route = resolver.resolve(request(account, Platform.OPENAI, "responses"));
 
@@ -117,9 +115,9 @@ class UpstreamRouteResolverTest {
     @DisplayName("OpenAI API Key 优先使用账户协议字段而不是客户端格式")
     void openAiApiKeyUsesAccountProtocolAsUpstreamFormat() {
         AccountEntity chatAccount = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"openai_responses_supported\":true}", "[\"chat_completions\"]");
+                "{}", "[\"chat_completions\"]");
         AccountEntity responsesAccount = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"openai_responses_supported\":false}", "[\"responses\"]");
+                "{}", "[\"responses\"]");
 
         UpstreamRoute chat = resolver.resolve(request(chatAccount, Platform.OPENAI, "responses"));
         UpstreamRoute responses = resolver.resolve(request(responsesAccount, Platform.OPENAI, "chat_completions"));
@@ -153,7 +151,7 @@ class UpstreamRouteResolverTest {
     @DisplayName("OpenAI API Key 的 base_url 根据目标端点拼接路径")
     void openAiApiKeyBaseUrlUsesResolvedEndpointPath() {
         AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"base_url\":\"https://proxy.example.com\",\"openai_responses_supported\":false}");
+                "{\"base_url\":\"https://proxy.example.com\"}", "[\"chat_completions\"]");
 
         UpstreamRoute route = resolver.resolve(request(account, Platform.OPENAI, "responses"));
 
@@ -165,13 +163,13 @@ class UpstreamRouteResolverTest {
     @DisplayName("OpenAI API Key base_url 按 sub2api 规则避免重复 /v1")
     void openAiApiKeyBaseUrlAvoidsDuplicateV1() {
         AccountEntity chatAccount = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"base_url\":\"https://proxy.example.com/v1\",\"openai_responses_supported\":false}");
+                "{\"base_url\":\"https://proxy.example.com/v1\"}", "[\"chat_completions\"]");
         AccountEntity chatEndpointAccount = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"base_url\":\"https://proxy.example.com/v1/chat/completions\",\"openai_responses_supported\":false}");
+                "{\"base_url\":\"https://proxy.example.com/v1/chat/completions\"}", "[\"chat_completions\"]");
         AccountEntity responsesAccount = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"base_url\":\"https://proxy.example.com/v1\",\"openai_responses_supported\":true}");
+                "{\"base_url\":\"https://proxy.example.com/v1\"}", "[\"responses\"]");
         AccountEntity responsesEndpointAccount = account(Platform.OPENAI, AccountType.API_KEY,
-                "{\"base_url\":\"https://proxy.example.com/v1/responses\",\"openai_responses_supported\":true}");
+                "{\"base_url\":\"https://proxy.example.com/v1/responses\"}", "[\"responses\"]");
 
         UpstreamRoute chat = resolver.resolve(request(chatAccount, Platform.OPENAI, "responses"));
         UpstreamRoute chatEndpoint = resolver.resolve(request(chatEndpointAccount, Platform.OPENAI, "responses"));
@@ -195,12 +193,23 @@ class UpstreamRouteResolverTest {
     void anthropicUsesMessagesWithBaseUrl() {
         UpstreamRoute anthropic = resolver.resolve(request(
                 account(Platform.ANTHROPIC, AccountType.API_KEY,
-                        "{\"base_url\":\"https://anthropic-proxy.example.com\"}"),
+                        "{\"base_url\":\"https://anthropic-proxy.example.com\"}", "[\"messages\"]"),
                 Platform.OPENAI, "chat_completions"));
 
         assertEquals(EndpointKind.ANTHROPIC_MESSAGES, anthropic.endpointKind());
         assertEquals("messages", anthropic.upstreamFormat());
         assertEquals("https://anthropic-proxy.example.com/v1/messages", anthropic.targetUrl());
+    }
+
+    @Test
+    @DisplayName("账号缺少明确上游协议时拒绝路由")
+    void missingAccountProtocolFailsRouting() {
+        AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY, "{}", null);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> resolver.resolve(request(account, Platform.OPENAI, "responses")));
+
+        assertTrue(error.getMessage().contains("supportedProtocols must contain exactly one"));
     }
 
     private static UpstreamRouteRequest request(AccountEntity account, Platform requestPlatform, String requestFormat) {
