@@ -65,7 +65,7 @@ public class GatewayGroupResolver {
                 return currentGroup;
             }
 
-            log.info("Claude Code 分组降级: {} (claude_code_only=true) -> fallback_group_id={}",
+            log.debug("Claude Code 分组降级: {} (claude_code_only=true) -> fallback_group_id={}",
                     currentGroup.getName(), currentGroup.getFallbackGroupId());
 
             // claude_code_only 且非 CC 客户端：尝试降级

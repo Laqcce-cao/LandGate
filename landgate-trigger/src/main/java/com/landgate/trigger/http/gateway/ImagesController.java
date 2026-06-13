@@ -122,7 +122,7 @@ public class ImagesController {
         }
 
         String contentType = request.getContentType();
-        log.info("Image request: path={}, content_type={}, size={} bytes", path, contentType, body.length);
+        log.debug("Image request: path={}, content_type={}, size={} bytes", path, contentType, body.length);
 
         // ---- Step 2: 鉴权 ----
         Long apiKeyId = (Long) request.getAttribute("api_key_id");
@@ -286,7 +286,7 @@ public class ImagesController {
                         accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
 
                         // 记录用量日志
-                        log.info("Image request completed: model={}, account={}, images={}, size={}, stream={}, duration={}ms",
+                        log.debug("Image request completed: model={}, account={}, images={}, size={}, stream={}, duration={}ms",
                                 model, account.getName(), imageCount, imageSize, parsed.isStream(), durationMs);
 
                         // ---- Step 8: 图片计费 + 余额扣减 ----

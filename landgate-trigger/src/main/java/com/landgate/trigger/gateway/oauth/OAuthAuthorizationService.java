@@ -90,7 +90,7 @@ public class OAuthAuthorizationService implements IOAuthService {
         // Build authorize URL
         String authorizeUrl = buildAuthorizeUrl(provider, codeChallenge, state, redirectUri);
 
-        log.info("OAuth authorize URL generated: platform={}, state={}", platformKey, state);
+        log.debug("OAuth authorize URL generated: platform={}", platformKey);
 
         return new OAuthAuthorizeResponse(
                 authorizeUrl,
@@ -113,7 +113,7 @@ public class OAuthAuthorizationService implements IOAuthService {
             throw new BadRequestException("Unsupported OAuth platform: " + platformKey);
         }
 
-        log.info("OAuth callback: platform={}, state={}", platformKey, request.state());
+        log.debug("OAuth callback: platform={}", platformKey);
 
         try {
             // Exchange code for tokens (JSON for Anthropic, form-encoded for others)
@@ -291,7 +291,7 @@ public class OAuthAuthorizationService implements IOAuthService {
                 throw new BadRequestException("Invalid device code response from upstream");
             }
 
-            log.info("Device code generated: platform={}, device_auth_id={}", platformKey, deviceAuthId);
+            log.debug("Device code generated: platform={}", platformKey);
 
             return new DeviceCodeResponse(deviceAuthId, userCode, verificationUri, expiresIn, interval);
 
@@ -349,7 +349,7 @@ public class OAuthAuthorizationService implements IOAuthService {
                 throw new BadRequestException("Invalid device poll success response");
             }
 
-            log.info("Device code authorized, exchanging code for tokens");
+            log.debug("Device code authorized, exchanging code for tokens");
 
             // Step 3: Exchange code for tokens at the OAuth token endpoint
             String deviceRedirectUri = provider.getDeviceRedirectUri() != null

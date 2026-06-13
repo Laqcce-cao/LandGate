@@ -94,7 +94,7 @@ public class GatewayResponseService {
         StreamTranslator irToClient = null;
 
         if (needTranslation) {
-            log.info("[{}] 流式翻译: {} -> IR -> {} | account={}",
+            log.debug("[{}] 流式翻译: {} -> IR -> {} | account={}",
                     ctx.getRequestId(), upstreamFormat, clientFormat, ctx.getSelectedAccount().getName());
             if (clientFormat != null && upstreamFormat != null) {
                 ProtocolConverter clientConv = converterRegistry.get(clientFormat);
@@ -109,7 +109,7 @@ public class GatewayResponseService {
             }
             // 若任一 Converter 不可用，upstreamToIR/irToClient 为 null，fallback 到透传
         } else {
-            log.info("[{}] 流式透传模式: platform={}", ctx.getRequestId(), requestPlatform);
+            log.debug("[{}] 流式透传模式: platform={}", ctx.getRequestId(), requestPlatform);
         }
 
         boolean clientDisconnected = false;
@@ -197,7 +197,7 @@ public class GatewayResponseService {
             }
         }
 
-        log.info("[{}] 流式完成: parser={}, content_type={}, data_lines={}, usage_events={}, done_seen={}, client_disconnected={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
+        log.debug("[{}] 流式完成: parser={}, content_type={}, data_lines={}, usage_events={}, done_seen={}, client_disconnected={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
                 ctx.getRequestId(), usageParser.getClass().getSimpleName(),
                 upstreamResp.headers().firstValue("Content-Type").orElse(""),
                 sseDataLines, usageEventLines, doneSignalSeen, clientDisconnected, totalUsage.hasUsage(),
@@ -364,7 +364,7 @@ public class GatewayResponseService {
             output.flush();
         }
 
-        log.info("[{}] 流式聚合完成: has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
+        log.debug("[{}] 流式聚合完成: has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
                 ctx != null ? ctx.getRequestId() : "?", totalUsage.hasUsage(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
@@ -660,7 +660,7 @@ public class GatewayResponseService {
 
         // 协议翻译：上游格式 → 客户端格式。
         // 优先使用 UpstreamRoute 中的格式，保证与请求翻译、usage parser 的路由决策一致。
-        log.info("[{}] 非流式用量解析: parser={}, body_bytes={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
+        log.debug("[{}] 非流式用量解析: parser={}, body_bytes={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
                 ctx != null ? ctx.getRequestId() : "?",
                 usageParser.getClass().getSimpleName(),
                 responseBody.getBytes(StandardCharsets.UTF_8).length,
@@ -675,7 +675,7 @@ public class GatewayResponseService {
                 && !clientFormat.equals(upstreamFormat);
         String clientBody = responseBody;
         if (needRespTranslation) {
-            log.info("[{}] 响应协议翻译: {} -> {}",
+            log.debug("[{}] 响应协议翻译: {} -> {}",
                     ctx != null ? ctx.getRequestId() : "?", upstreamFormat, clientFormat);
             clientBody = translationService.translateResponse(responseBody, upstreamFormat, clientFormat);
         }

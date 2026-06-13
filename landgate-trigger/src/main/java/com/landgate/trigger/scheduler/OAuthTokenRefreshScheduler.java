@@ -71,7 +71,7 @@ public class OAuthTokenRefreshScheduler {
 
                 String newToken = tokenRefreshService.refreshAccessToken(accountId);
                 if (newToken != null) {
-                    log.info("Proactive OAuth token refreshed: account_id={}", accountId);
+                    log.debug("Proactive OAuth token refreshed: account_id={}", accountId);
                 }
             } catch (NumberFormatException e) {
                 set.remove(accountIdStr);

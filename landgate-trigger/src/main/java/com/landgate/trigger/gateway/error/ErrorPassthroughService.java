@@ -58,7 +58,7 @@ public class ErrorPassthroughService {
             }
             for (String keyword : rule.keywords) {
                 if (lowerBody.contains(keyword.toLowerCase())) {
-                    log.info("Error passthrough RETRY: status={}, platform={}, keyword={}",
+                    log.debug("Error passthrough RETRY: status={}, platform={}, keyword={}",
                             statusCode, platform, keyword);
                     return ErrorAction.RETRY;
                 }

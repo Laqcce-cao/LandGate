@@ -209,10 +209,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         String requestFormat = clientProfile.requestFormat();
         boolean isClaudeCode = clientProfile.claudeCode();
         String metadataUserId = clientProfile.metadataUserId();
-        log.info("[{}] 请求上下文: platform={}, format={}, group={}, api_key_id={}, user_id={}",
+        log.debug("[{}] 请求上下文: platform={}, format={}, group={}, api_key_id={}, user_id={}",
                 requestId, requestPlatform, requestFormat, group.getName(), apiKeyId, userId);
         if (requestPlatform == Platform.ANTHROPIC) {
-            log.info("[{}] Claude Code 检测: is_claude_code={}, metadata_user_id={}, format={}",
+            log.debug("[{}] Claude Code 检测: is_claude_code={}, metadata_user_id={}, format={}",
                     requestId, isClaudeCode, metadataUserId, requestFormat);
         }
 
@@ -229,7 +229,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         try {
             GroupEntity resolvedGroup = gatewayGroupResolver.resolveGatewayGroup(group, isClaudeCode);
             if (resolvedGroup != group) {
-                log.info("[{}] Claude Code 分组降级: {} -> {} (is_claude_code={})",
+                log.debug("[{}] Claude Code 分组降级: {} -> {} (is_claude_code={})",
                         requestId, group.getName(), resolvedGroup.getName(), isClaudeCode);
             }
             group = resolvedGroup;
@@ -253,7 +253,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         String upstreamPath = requestInfo.upstreamPath();
         boolean clientStream = requestInfo.clientStream();
 
-        log.info("[{}] 请求解析: model={}, stream={}, request_format={}",
+        log.debug("[{}] 请求解析: model={}, stream={}, request_format={}",
                 requestId, model, clientStream, requestFormat);
 
         // Step 4: Session 粘滞（IP + UA + API Key）
@@ -261,10 +261,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
         Long initialStickyAccountId = stickyAccountId;
         if (stickyAccountId != null) {
-            log.info("[{}] 粘滞会话命中: session_hash={}, account_id={}",
+            log.debug("[{}] 粘滞会话命中: session_hash={}, account_id={}",
                     requestId, sessionHash, stickyAccountId);
         } else {
-            log.info("[{}] 粘滞会话未命中: session_hash={}", requestId, sessionHash);
+            log.debug("[{}] 粘滞会话未命中: session_hash={}", requestId, sessionHash);
         }
 
         // Step 6: Failover 循环
@@ -274,7 +274,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         Set<Long> excludedAccountIds = new HashSet<>();
 
         while (failoverCount < MAX_FAILOVER_SWITCHES) {
-            log.info("[{}] Failover 尝试 #{}/{}: sticky_account={}",
+            log.debug("[{}] Failover 尝试 #{}/{}: sticky_account={}",
                     requestId, failoverCount + 1, MAX_FAILOVER_SWITCHES, stickyAccountId);
 
             // 粘滞账户优先，但须验证是否支持当前模型；不支持则清除粘滞走正常选择
@@ -282,7 +282,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 account = accountSelector.getById(stickyAccountId);
                 if (account != null && model != null
                         && !accountSelector.isModelSupportedByAccount(account, model)) {
-                    log.info("[{}] 粘滞账户不支持模型，清除粘滞: account_id={}, model={}",
+                    log.debug("[{}] 粘滞账户不支持模型，清除粘滞: account_id={}, model={}",
                             requestId, account.getId(), model);
                     sessionHashService.clearSession(sessionHash);
                     excludeForFailover(excludedAccountIds, account, requestId, "sticky_model_unsupported");
@@ -295,7 +295,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             if (account == null) {
                 account = accountSelector.selectAccount(group, model, excludedAccountIds);
                 if (account != null) {
-                    log.info("[{}] 账户选择结果: account_id={}, name={}, platform={}",
+                    log.debug("[{}] 账户选择结果: account_id={}, name={}, platform={}",
                             requestId, account.getId(), account.getName(), account.getPlatform());
                 }
             }
@@ -317,7 +317,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 failoverCount++;
                 continue;
             }
-            log.info("[{}] 并发槽位获取成功: account_id={}", requestId, account.getId());
+            log.debug("[{}] 并发槽位获取成功: account_id={}", requestId, account.getId());
 
             String accessToken = getAccessTokenService.getAccessToken(account);
             if (accessToken == null || accessToken.isEmpty()) {
@@ -343,7 +343,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     .upstreamPath(upstreamPath)
                     .requestedModel(model)
                     .build());
-            log.info("[{}] 上游路由: endpoint={}, upstream_format={}, target={}, reason={}",
+            log.debug("[{}] 上游路由: endpoint={}, upstream_format={}, target={}, reason={}",
                     requestId, upstreamRoute.endpointKind(), upstreamRoute.upstreamFormat(),
                     upstreamRoute.targetUrl(), upstreamRoute.reason());
 
@@ -370,7 +370,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             try {
                 Platform accountPlatform = account.getPlatform();
                 GatewayProtocolPlan protocolPlan = protocolPlanner.plan(requestPlatform, upstreamRoute);
-                log.info("[{}] 协议计划: client_format={}, upstream_format={}, passthrough={}, translation={}, reason={}",
+                log.debug("[{}] 协议计划: client_format={}, upstream_format={}, passthrough={}, translation={}, reason={}",
                         requestId, protocolPlan.clientFormat(), protocolPlan.upstreamFormat(),
                         protocolPlan.passthrough(), protocolPlan.translationRequired(), protocolPlan.reason());
                 String upstreamBody = protocolPlan.prepareRequestBody(
@@ -384,7 +384,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 // 对于 Chat Completions/Responses 客户端 → Anthropic 上游的场景，
                 // upstreamBody 此时已翻译为 Anthropic 格式。
                 if (shouldMimicClaudeCode) {
-                    log.info("[{}] OAuth 伪装: account_id={}, model={}, type={}",
+                    log.debug("[{}] OAuth 伪装: account_id={}, model={}, type={}",
                             requestId, account.getId(), model, account.getType());
                     if (model != null && !model.toLowerCase().contains("haiku")) {
                         upstreamBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
@@ -426,7 +426,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     continue;
                 }
 
-                log.info("[{}] 转发上游: account={}(id={}), model={}, platform={}, client_stream={}, upstream_stream={}, attempt={}/{}",
+                log.debug("[{}] 转发上游: account={}(id={}), model={}, platform={}, client_stream={}, upstream_stream={}, attempt={}/{}",
                         requestId, account.getName(), account.getId(), model,
                         accountPlatform.name(), clientStream, upstreamStream, failoverCount + 1, MAX_FAILOVER_SWITCHES);
 
@@ -455,21 +455,18 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 // --- 成功 (2xx) ---
                 if (statusCode >= 200 && statusCode < 300) {
                     sessionHashService.bindSession(sessionHash, account.getId());
-                    log.info("[{}] 粘滞会话绑定: account_id={}", requestId, account.getId());
+                    log.debug("[{}] 粘滞会话绑定: account_id={}", requestId, account.getId());
 
                     IUsageParser usageParser = getUsageParserFor(account);
                     UsageTokens usage;
                     boolean handleAsStreaming = shouldHandleResponseAsStreaming(upstreamStream, upstreamResp);
                     GatewayResponseResult streamingResult = null;
                     if (handleAsStreaming && clientStream) {
-                        log.info("[{}] 开始流式响应处理", requestId);
                         streamingResult = handleStreaming(upstreamResp, response, ctx, usageParser);
                         usage = streamingResult.usage();
                     } else if (handleAsStreaming) {
-                        log.info("[{}] 开始上游流式聚合为非流式响应", requestId);
                         usage = handleStreamingAsNonStreaming(upstreamResp, response, ctx, usageParser);
                     } else {
-                        log.info("[{}] 开始非流式响应处理", requestId);
                         usage = handleNonStreaming(upstreamResp, response, usageParser);
                     }
 
@@ -478,7 +475,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         double cacheHitRate = cacheEligibleInput > 0
                                 ? (double) usage.getCacheReadTokens() * 100.0 / cacheEligibleInput
                                 : 0.0;
-                        log.info("[{}] 用量统计: account_id={}, sticky_initial={}, sticky_hash={}, model={}, input={}, output={}, cache_write={}, cache_read={}, cache_hit_rate={}%, client_stream={}, upstream_stream={}",
+                        log.debug("[{}] 用量统计: account_id={}, sticky_initial={}, sticky_hash={}, model={}, input={}, output={}, cache_write={}, cache_read={}, cache_hit_rate={}%, client_stream={}, upstream_stream={}",
                                 requestId, account.getId(), initialStickyAccountId, sessionHash, model,
                                 usage.getInputTokens(), usage.getOutputTokens(),
                                 usage.getCacheCreationTokens(), usage.getCacheReadTokens(),
@@ -512,7 +509,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     }
                     accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
                     concurrencyService.release(slot);
-                    log.info("[{}] 请求完成: total_elapsed={}ms, account={}, model={}",
+                    log.debug("[{}] 请求完成: total_elapsed={}ms, account={}, model={}",
                             requestId, durationMs, account.getName(), model);
                     return;
                 }
@@ -633,7 +630,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     private void excludeForFailover(Set<Long> excludedAccountIds, AccountEntity account, String requestId, String reason) {
         if (account == null || account.getId() == null) return;
         excludedAccountIds.add(account.getId());
-        log.info("[{}] 本次请求排除账户: account_id={}, reason={}", requestId, account.getId(), reason);
+        log.debug("[{}] 本次请求排除账户: account_id={}, reason={}", requestId, account.getId(), reason);
     }
 
     protected GatewayResponseResult handleStreaming(HttpResponse<InputStream> upstreamResp,

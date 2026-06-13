@@ -68,7 +68,7 @@ public class GatewayBillingSettlementService {
                 try {
                     balanceDomainService.deduct(userId, logEntry.getActualCost());
                     deducted = true;
-                    log.info("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
+                    log.debug("[{}] 余额扣减: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
                 } catch (Exception e) {
                     log.error("[{}] 扣费失败，日志已保留待对账: log_id={}, user_id={}, cost={}",
                             requestId, logEntry.getId(), userId, logEntry.getActualCost(), e);
@@ -76,7 +76,7 @@ public class GatewayBillingSettlementService {
                     return;
                 }
             } else {
-                log.info("[{}] 特权用户跳过扣费: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
+                log.debug("[{}] 特权用户跳过扣费: user_id={}, cost={}", requestId, userId, logEntry.getActualCost());
             }
 
             billingDomainService.accumulateQuota(apiKeyId, logEntry.getActualCost());

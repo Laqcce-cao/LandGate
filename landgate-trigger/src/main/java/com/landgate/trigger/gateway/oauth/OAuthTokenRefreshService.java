@@ -113,7 +113,7 @@ public class OAuthTokenRefreshService {
                 try {
                     Instant expiresAt = Instant.parse(creds.get("token_expires_at").asText());
                     if (expiresAt.isAfter(Instant.now().plusSeconds(60))) {
-                        log.info("Token already fresh (expires_at={}), skipping refresh: account_id={}",
+                        log.debug("Token already fresh (expires_at={}), skipping refresh: account_id={}",
                                 expiresAt, accountId);
                         if (creds.has("access_token")) {
                             String token = creds.get("access_token").asText();
@@ -148,7 +148,7 @@ public class OAuthTokenRefreshService {
                 return null;
             }
 
-            log.info("Refreshing OAuth token: account_id={}, provider={}", accountId, providerKey);
+            log.debug("Refreshing OAuth token: account_id={}, provider={}", accountId, providerKey);
 
             String refreshScopes = provider.getRefreshScopes() != null
                     ? provider.getRefreshScopes()
@@ -206,7 +206,7 @@ public class OAuthTokenRefreshService {
                     Instant.now().plusSeconds(expiresIn), providerKey);
             scheduleProactiveRefresh(accountId, Instant.now().plusSeconds(expiresIn));
 
-            log.info("OAuth token refreshed successfully: account_id={}, expires_in={}s", accountId, expiresIn);
+            log.debug("OAuth token refreshed successfully: account_id={}, expires_in={}s", accountId, expiresIn);
             return newAccessToken;
 
         } catch (Exception e) {

@@ -1156,13 +1156,13 @@ public class OpenAiTransformer implements IRequestTransformer {
                                                          UpstreamRoute route,
                                                          CodexRequestShape before,
                                                          CodexRequestShape after) {
-        if (!log.isInfoEnabled()) return;
+        if (!log.isDebugEnabled()) return;
         GatewayRequestContext ctx = GatewayRequestContext.get();
         String effectiveRequestId = requestId != null && !requestId.isBlank()
                 ? requestId
                 : (ctx != null ? ctx.getRequestId() : "-");
         String endpoint = route != null && route.endpointKind() != null ? route.endpointKind().name() : "unknown";
-        log.info("[{}] Codex OAuth 请求规范化诊断: account_id={}, endpoint={}, preserve_prompt_cache_key={}, body_bytes={}->{}, body_hash={}->{}, "
+        log.debug("[{}] Codex OAuth 请求规范化诊断: account_id={}, endpoint={}, preserve_prompt_cache_key={}, body_bytes={}->{}, body_hash={}->{}, "
                         + "prefix64k_hash={}->{}, prefix128k_hash={}->{}, prefix192k_hash={}->{}, prefix256k_hash={}->{}, prefix384k_hash={}->{}, "
                         + "input_items={}->{}, input_bytes={}->{}, max_input_item={}->{}, tail_input_items={}->{}, "
                         + "system_or_developer_items={}->{}, instructions={}->{}, tools={}->{}, "

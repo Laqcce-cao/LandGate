@@ -29,7 +29,7 @@ public class OAuthController {
      */
     @PostMapping("/authorize")
     public ResponseEntity<?> authorize(@Valid @RequestBody OAuthAuthorizeRequest request) {
-        log.info("OAuth authorize request: platform={}", request.platform());
+        log.debug("OAuth authorize request: platform={}", request.platform());
         OAuthAuthorizeResponse response = oauthService.authorize(request);
         return ResponseEntity.ok(response);
     }
@@ -39,7 +39,7 @@ public class OAuthController {
      */
     @PostMapping("/callback")
     public ResponseEntity<?> callback(@Valid @RequestBody OAuthCallbackRequest request) {
-        log.info("OAuth callback: state={}", request.state());
+        log.debug("OAuth callback received");
         OAuthCallbackResponse response = oauthService.callback(request);
         return ResponseEntity.ok(response);
     }
@@ -49,7 +49,7 @@ public class OAuthController {
      */
     @PostMapping("/accounts/{id}/refresh")
     public ResponseEntity<?> refreshToken(@PathVariable Long id) {
-        log.info("Manual OAuth token refresh: account_id={}", id);
+        log.debug("Manual OAuth token refresh requested: account_id={}", id);
         oauthService.refreshToken(id);
         return ResponseEntity.ok(Map.of("success", true, "message", "Token refreshed"));
     }
@@ -59,7 +59,7 @@ public class OAuthController {
      */
     @PostMapping("/device-code")
     public ResponseEntity<?> initiateDeviceCode(@Valid @RequestBody DeviceCodeRequest request) {
-        log.info("Device code initiate: platform={}", request.platform());
+        log.debug("Device code initiate: platform={}", request.platform());
         DeviceCodeResponse response = oauthService.initiateDeviceCode(request);
         return ResponseEntity.ok(response);
     }
@@ -69,7 +69,7 @@ public class OAuthController {
      */
     @PostMapping("/device-code/poll")
     public ResponseEntity<?> pollDeviceCode(@Valid @RequestBody DeviceCodePollRequest request) {
-        log.info("Device code poll: device_auth_id={}", request.deviceAuthId());
+        log.debug("Device code poll");
         DeviceCodePollResponse response = oauthService.pollDeviceCode(request);
         return ResponseEntity.ok(response);
     }

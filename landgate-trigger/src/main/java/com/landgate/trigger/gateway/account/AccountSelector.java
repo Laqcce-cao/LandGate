@@ -157,7 +157,7 @@ public class AccountSelector {
 
         // Step 0: 排除模型检查
         if (model != null && isModelExcluded(group, model)) {
-            log.info("Model excluded by group config: model={}, group_id={}", model, group.getId());
+            log.debug("Model excluded by group config: model={}, group_id={}", model, group.getId());
             return null;
         }
 
@@ -183,7 +183,7 @@ public class AccountSelector {
             AccountEntity account = accountMap.get(link.getAccountId());
             if (account == null) continue;   // 账号已被删除或不存在
             if (excludedIds != null && excludedIds.contains(account.getId())) {
-                log.info("账户被本次请求 failover 排除: account_id={}, name={}", account.getId(), account.getName());
+                log.debug("账户被本次请求 failover 排除: account_id={}, name={}", account.getId(), account.getName());
                 continue;
             }
 
@@ -192,7 +192,7 @@ public class AccountSelector {
             for (AccountFilter filter : filterChain) {
                 if (!filter.pass(account, group, model)) {
                     passed = false;
-                    log.info("账户被 {} 过滤: account_id={}, name={}, platform={}",
+                    log.debug("账户被 {} 过滤: account_id={}, name={}, platform={}",
                             filter.name(), account.getId(), account.getName(), account.getPlatform());
                     break;
                 }
@@ -219,7 +219,7 @@ public class AccountSelector {
                         ? Instant.EPOCH : c.account.getLastUsedAt()));
 
         AccountEntity selected = candidates.get(0).account;
-        log.info("账户选择完成: account_id={}, name={}, platform={}, priority={}, load_rate={}, 候选数={}",
+        log.debug("账户选择完成: account_id={}, name={}, platform={}, priority={}, load_rate={}, 候选数={}",
                 selected.getId(), selected.getName(), selected.getPlatform(),
                 candidates.get(0).priority, String.format("%.2f", candidates.get(0).loadRate), candidates.size());
         return selected;
@@ -250,7 +250,7 @@ public class AccountSelector {
                     excludedJson, new TypeReference<List<String>>() {});
             boolean result = excluded.contains(model);
             if (result) {
-                log.info("模型被分组排除: model={}, group={}, excluded_list={}", model, group.getName(), excluded);
+                log.debug("模型被分组排除: model={}, group={}, excluded_list={}", model, group.getName(), excluded);
             }
             return result;
         } catch (Exception e) {
@@ -270,7 +270,7 @@ public class AccountSelector {
         String supportedJson = account.getSupportedModels();
         // null / 空字符串 / 空数组 [] = 不支持任何模型
         if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {
-            log.info("账户无模型白名单: account_id={}, name={}, supported_models=空", account.getId(), account.getName());
+            log.debug("账户无模型白名单: account_id={}, name={}, supported_models=空", account.getId(), account.getName());
             return false;
         }
         try {
@@ -282,7 +282,7 @@ public class AccountSelector {
             }
             boolean result = supported.contains(model);
             if (!result) {
-                log.info("模型不在账户白名单: model={}, account_id={}, name={}, supported={}",
+                log.debug("模型不在账户白名单: model={}, account_id={}, name={}, supported={}",
                         model, account.getId(), account.getName(), supported);
             }
             return result;
@@ -395,7 +395,7 @@ public class AccountSelector {
                         ? Instant.EPOCH : c.account.getLastUsedAt()));
 
         AccountEntity selected = candidates.get(0).account;
-        log.info("Image account selected: account_id={}, name={}, type={}, capability={}, load_rate={}",
+        log.debug("Image account selected: account_id={}, name={}, type={}, capability={}, load_rate={}",
                 selected.getId(), selected.getName(), selected.getType(), capability,
                 String.format("%.2f", candidates.get(0).loadRate));
         return selected;
@@ -447,7 +447,7 @@ public class AccountSelector {
             Instant currentResetAt = a.getRateLimitResetAt();
             Instant now = Instant.now();
             if (!explicitRetryAfter && currentResetAt != null && currentResetAt.isAfter(now)) {
-                log.info("Account already rate-limited, keep existing reset_at: id={}, name={}, reset_at={}",
+                log.debug("Account already rate-limited, keep existing reset_at: id={}, name={}, reset_at={}",
                         accountId, a.getName(), currentResetAt);
                 return;
             }

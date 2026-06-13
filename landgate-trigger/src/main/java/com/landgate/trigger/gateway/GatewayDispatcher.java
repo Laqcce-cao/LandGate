@@ -100,7 +100,7 @@ public class GatewayDispatcher {
         if (format != null) {
             request.setAttribute(ATTR_REQUEST_FORMAT, format);
         }
-        log.info("路由解析: path={} -> platform={}, format={}", path, platform.name(), format);
+        log.debug("路由解析: path={} -> platform={}, format={}", path, platform.name(), format);
 
         IGatewayHandler handler = factory.getHandler(platform);
         log.debug("派发到 Handler: {}", handler.getClass().getSimpleName());

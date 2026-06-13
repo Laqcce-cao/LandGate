@@ -59,7 +59,7 @@ public class ConcurrencyService {
         // 前置检查：无可用槽位时直接返回，不做无效等待
         int available = semaphore.availablePermits();
         if (available <= 0) {
-            log.info("并发槽位已满(快速失败): account_id={}, max={}, available={}",
+            log.debug("并发槽位已满(快速失败): account_id={}, max={}, available={}",
                     accountId, maxConcurrency, available);
             return null;
         }
@@ -83,7 +83,7 @@ public class ConcurrencyService {
                 long pollMs = Math.min(remaining, MAX_POLL_MS);
                 String permitId = semaphore.tryAcquire(pollMs, PERMIT_LEASE_SECONDS, TimeUnit.SECONDS);
                 if (permitId != null) {
-                    log.info("并发槽位获取成功: account_id={}, available_after={}, wait_iterations={}",
+                    log.debug("并发槽位获取成功: account_id={}, available_after={}, wait_iterations={}",
                             accountId, semaphore.availablePermits(), waitIteration);
                     return ConcurrencySlot.of(permitId, accountId);
                 }
@@ -122,7 +122,7 @@ public class ConcurrencyService {
         RPermitExpirableSemaphore semaphore = redissonClient.getPermitExpirableSemaphore(
                 SEMAPHORE_PREFIX + slot.getAccountId());
         semaphore.release(slot.getPermitId());
-        log.info("并发槽位释放: account_id={}, available_after={}",
+        log.debug("并发槽位释放: account_id={}, available_after={}",
                 slot.getAccountId(), semaphore.availablePermits());
     }
 
@@ -189,7 +189,7 @@ public class ConcurrencyService {
             boolean initialized = maxBucket.setIfAbsent(maxConcurrency);
             if (initialized) {
                 semaphore.trySetPermits(maxConcurrency);
-                log.info("Concurrency semaphore initialized: account_id={}, max={}", accountId, maxConcurrency);
+                log.debug("Concurrency semaphore initialized: account_id={}, max={}", accountId, maxConcurrency);
             }
             maxBucket.expire(MAX_BUCKET_TTL);
         } else if (currentMax != maxConcurrency) {
@@ -197,10 +197,10 @@ public class ConcurrencyService {
             if (maxBucket.compareAndSet(currentMax, maxConcurrency)) {
                 if (maxConcurrency > currentMax) {
                     semaphore.addPermits(maxConcurrency - currentMax);
-                    log.info("Concurrency max increased: account_id={}, {} -> {}",
+                    log.debug("Concurrency max increased: account_id={}, {} -> {}",
                             accountId, currentMax, maxConcurrency);
                 } else {
-                    log.info("Concurrency max decreased: account_id={}, {} -> {} (drains naturally)",
+                    log.debug("Concurrency max decreased: account_id={}, {} -> {} (drains naturally)",
                             accountId, currentMax, maxConcurrency);
                 }
             }

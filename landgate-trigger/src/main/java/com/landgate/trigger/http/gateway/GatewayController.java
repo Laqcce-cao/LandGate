@@ -44,7 +44,7 @@ public class GatewayController {
                          HttpServletResponse response) throws IOException {
         String requestId = UUID.randomUUID().toString();
         request.setAttribute(ATTR_REQUEST_ID, requestId);
-        log.info("[{}] => POST /v1/messages | content_length={} | remote_addr={} | ua={}",
+        log.debug("[{}] => POST /v1/messages | content_length={} | remote_addr={} | ua={}",
                 requestId, body != null ? body.length() : 0,
                 request.getRemoteAddr(), request.getHeader("User-Agent"));
         dispatcher.dispatch(request, response, body);
@@ -54,7 +54,7 @@ public class GatewayController {
     public void countTokens(@RequestBody String body,
                             HttpServletRequest request,
                             HttpServletResponse response) throws IOException {
-        log.info("POST /v1/messages/count_tokens");
+        log.debug("POST /v1/messages/count_tokens");
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write(
                 "{\"type\":\"error\",\"error\":{\"type\":\"not_implemented\",\"message\":\"count_tokens is not yet implemented\"}}");
@@ -62,7 +62,7 @@ public class GatewayController {
 
     @GetMapping("/v1/models")
     public void models(HttpServletRequest request, HttpServletResponse response) throws IOException {
-        log.info("GET /v1/models");
+        log.debug("GET /v1/models");
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write("{\"data\":[],\"has_more\":false,\"first_id\":null,\"last_id\":null}");
     }
@@ -126,7 +126,7 @@ public class GatewayController {
                                 HttpServletResponse response) throws IOException {
         String requestId = UUID.randomUUID().toString();
         request.setAttribute(ATTR_REQUEST_ID, requestId);
-        log.info("[{}] => POST /v1/chat/completions | content_length={} | remote_addr={} | ua={}",
+        log.debug("[{}] => POST /v1/chat/completions | content_length={} | remote_addr={} | ua={}",
                 requestId, body != null ? body.length() : 0,
                 request.getRemoteAddr(), request.getHeader("User-Agent"));
 
@@ -139,7 +139,7 @@ public class GatewayController {
                     "{\"error\":{\"message\":\"Missing API key\",\"type\":\"authentication_error\",\"param\":null,\"code\":null}}");
             return;
         }
-        log.info("[{}] 认证通过: group_id={}", requestId, groupId);
+        log.debug("[{}] 认证通过: group_id={}", requestId, groupId);
 
         dispatcher.dispatch(request, response, body);
     }
@@ -166,7 +166,7 @@ public class GatewayController {
                                  HttpServletResponse response) throws IOException {
         String requestId = UUID.randomUUID().toString();
         request.setAttribute(ATTR_REQUEST_ID, requestId);
-        log.info("[{}] => POST {} | content_length={} | remote_addr={} | ua={}",
+        log.debug("[{}] => POST {} | content_length={} | remote_addr={} | ua={}",
                 requestId, request.getServletPath(), body != null ? body.length() : 0,
                 request.getRemoteAddr(), request.getHeader("User-Agent"));
 
@@ -179,7 +179,7 @@ public class GatewayController {
                     "{\"error\":{\"message\":\"Missing API key\",\"type\":\"authentication_error\",\"param\":null,\"code\":null}}");
             return;
         }
-        log.info("[{}] 认证通过: group_id={}", requestId, groupId);
+        log.debug("[{}] 认证通过: group_id={}", requestId, groupId);
 
         request.setAttribute(ATTR_GATEWAY_UPSTREAM_PATH, canonicalResponsesPath(request.getServletPath()));
         dispatcher.dispatch(request, response, body);
