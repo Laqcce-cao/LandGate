@@ -18,6 +18,7 @@ import com.landgate.trigger.gateway.usage.OpenAiUsageParser;
 import com.landgate.trigger.gateway.usage.ResponsesUsageParser;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.GatewayStreamAggregationPolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -248,6 +249,212 @@ class GatewayRouteMatrixStreamingResponseTest {
         assertTrue(output.contains("response.completed"));
         assertEquals(9, result.usage().getCacheReadTokens());
         assertEquals(8, result.usage().getCacheCreationTokens());
+    }
+
+    @Test
+    @DisplayName("Anthropic Messages SSE passthrough keeps cached_tokens body unchanged while billing parser remains compatible")
+    void anthropicSseCachedTokensPassthroughBodyIsNotNormalized() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("anthropic_stream_cached_tokens_passthrough")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(account(Platform.ANTHROPIC, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "messages",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://upstream.example.com/v1/messages",
+                        true,
+                        false,
+                        "messages",
+                        "anthropic_stream_cached_tokens_passthrough"))
+                .stream(true)
+                .build());
+
+        String upstreamSse = """
+                data: {"type":"message_start","message":{"id":"msg_stream","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"usage":{"input_tokens":10,"cached_tokens":9,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":5}}}}
+
+                data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+                data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"cached stream"}}
+
+                data: {"type":"content_block_stop","index":0}
+
+                data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}
+
+                data: {"type":"message_stop"}
+
+                """;
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreaming(
+                new InputStreamHttpResponse(upstreamSse, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new AnthropicUsageParser());
+
+        String output = servletResponse.getContentAsString();
+        assertTrue(output.contains("\"cached_tokens\":9"));
+        assertFalse(output.contains("cache_read_input_tokens"));
+        assertFalse(output.contains("cache_creation_input_tokens"));
+        assertEquals(9, result.usage().getCacheReadTokens());
+        assertEquals(8, result.usage().getCacheCreationTokens());
+    }
+
+    @Test
+    @DisplayName("Anthropic Messages 流式响应缺少 terminal event 时标记协议错误")
+    void anthropicMessagesStreamMissingMessageStopReturnsProtocolError() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("anthropic_stream_missing_terminal")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(account(Platform.ANTHROPIC, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "messages",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://upstream.example.com/v1/messages",
+                        true,
+                        false,
+                        "messages",
+                        "anthropic_stream_missing_terminal"))
+                .stream(true)
+                .build());
+
+        String upstreamSse = """
+                data: {"type":"message_start","message":{"usage":{"input_tokens":11}}}
+
+                data: {"type":"message_delta","usage":{"output_tokens":5}}
+
+                """;
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreaming(
+                new InputStreamHttpResponse(upstreamSse, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new AnthropicUsageParser());
+
+        assertEquals(200, servletResponse.getStatus());
+        assertFalse(servletResponse.getContentAsString().contains("data: [DONE]"));
+        assertTrue(result.protocolError());
+        assertEquals(GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE,
+                result.protocolErrorMessage());
+        assertEquals(11, result.usage().getInputTokens());
+        assertEquals(5, result.usage().getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("Anthropic Messages passthrough 兼容 [DONE] terminal sentinel")
+    void anthropicMessagesDoneSentinelCountsAsTerminal() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("anthropic_stream_done_terminal")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(account(Platform.ANTHROPIC, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "messages",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://upstream.example.com/v1/messages",
+                        true,
+                        false,
+                        "messages",
+                        "anthropic_stream_done_terminal"))
+                .stream(true)
+                .build());
+
+        String upstreamSse = """
+                data: {"type":"message_start","message":{"usage":{"input_tokens":11}}}
+
+                data: {"type":"message_delta","usage":{"output_tokens":5}}
+
+                data: [DONE]
+
+                """;
+
+        GatewayResponseResult result = responseService.handleStreaming(
+                new InputStreamHttpResponse(upstreamSse, "text/event-stream"),
+                new MockHttpServletResponse(),
+                GatewayRequestContext.get(),
+                new AnthropicUsageParser());
+
+        assertFalse(result.protocolError());
+        assertEquals(11, result.usage().getInputTokens());
+        assertEquals(5, result.usage().getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("Responses 翻译到 Chat 时仅有 [DONE] 不算 Responses terminal")
+    void responsesToChatDoneSentinelWithoutResponsesTerminalReturnsProtocolError() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("responses_to_chat_done_without_terminal")
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("chat_completions")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.OAUTH))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "chat_completions",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://upstream.example.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "responses_to_chat_done_without_terminal"))
+                .stream(true)
+                .build());
+
+        GatewayResponseResult result = responseService.handleStreaming(
+                new InputStreamHttpResponse("data: [DONE]\n\n", "text/event-stream"),
+                new MockHttpServletResponse(),
+                GatewayRequestContext.get(),
+                new ResponsesUsageParser());
+
+        assertTrue(result.protocolError());
+        assertEquals(GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE,
+                result.protocolErrorMessage());
+        assertFalse(result.usage().hasUsage());
+    }
+
+    @Test
+    @DisplayName("Responses raw passthrough 保留 [DONE] terminal 兼容")
+    void responsesPassthroughDoneSentinelCountsAsTerminal() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("responses_passthrough_done_terminal")
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("responses")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "responses",
+                        "responses",
+                        EndpointKind.OPENAI_RESPONSES,
+                        "https://upstream.example.com/v1/responses",
+                        true,
+                        false,
+                        "responses",
+                        "responses_passthrough_done_terminal"))
+                .stream(true)
+                .build());
+
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+        GatewayResponseResult result = responseService.handleStreaming(
+                new InputStreamHttpResponse("data: [DONE]\n\n", "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new ResponsesUsageParser());
+
+        assertFalse(result.protocolError());
+        assertTrue(servletResponse.getContentAsString().contains("data: [DONE]"));
     }
 
     private static void assertClientSseShape(String clientFormat, String output, String name) {

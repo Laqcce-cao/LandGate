@@ -3,6 +3,7 @@ package com.landgate.trigger.gateway.oauth;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import com.landgate.types.gateway.MetadataUserIdParser;
 import lombok.extern.slf4j.Slf4j;
@@ -141,7 +142,7 @@ public class UserIdRewriter {
      */
     private static String extractVersion(String ua) {
         if (ua == null) return "";
-        java.util.regex.Matcher m = ClaudeConstants.CLAUDE_CLI_UA_PATTERN.matcher(ua);
+        java.util.regex.Matcher m = AnthropicClaudeCodeProfile.CLAUDE_CLI_UA_PATTERN.matcher(ua);
         if (m.find()) {
             String matched = m.group();
             int slash = matched.indexOf('/');

@@ -27,6 +27,24 @@ class ErrorResponsePolicyTest {
     void safeMessageExtraction() {
         assertEquals("bad param",
                 ErrorResponsePolicy.safeMessageForStatus(400, "{\"error\":{\"message\":\"bad param\"}}"));
+        assertEquals("bad param with spaces",
+                ErrorResponsePolicy.safeMessageForStatus(400, """
+                        {
+                          "error": {
+                            "message": "bad param with spaces"
+                          }
+                        }
+                        """));
+        assertEquals("top level message",
+                ErrorResponsePolicy.safeMessageForStatus(400, "{\"message\":\"top level message\"}"));
+        assertEquals("internal detail",
+                ErrorResponsePolicy.safeMessageForStatus(400, "{\"detail\":\"internal detail\"}"));
+        assertEquals("stream failed",
+                ErrorResponsePolicy.safeMessageForStatus(400,
+                        "{\"response\":{\"error\":{\"message\":\"stream failed\"}},\"message\":\"fallback\"}"));
+        assertEquals("inner bad param",
+                ErrorResponsePolicy.safeMessageForStatus(400,
+                        "{\"error\":{\"message\":\"{\\\"error\\\":{\\\"message\\\":\\\"inner bad param\\\"}}\"}}"));
         assertEquals("The service is temporarily unavailable. Please try again later.",
                 ErrorResponsePolicy.safeMessageForStatus(402, "{\"error\":{\"message\":\"billing failed\"}}"));
         assertEquals("Too many requests. Please slow down.",
@@ -44,5 +62,22 @@ class ErrorResponsePolicyTest {
 
         assertEquals(203, safe.length());
         assertEquals("...", safe.substring(200));
+    }
+
+    @Test
+    @DisplayName("Upstream error code and top-level detail extraction support OpenAI auth policy")
+    void extractsCodeAndDetail() {
+        assertEquals("token_revoked",
+                ErrorResponsePolicy.extractUpstreamErrorCode(
+                        "{\"error\":{\"code\":\"token_revoked\",\"message\":\"revoked\"}}"));
+        assertEquals("token_invalidated",
+                ErrorResponsePolicy.extractUpstreamErrorCode(
+                        "{\"error\":{\"message\":\"{\\\"error\\\":{\\\"code\\\":\\\"token_invalidated\\\"}}\"}}"));
+        assertEquals("Unauthorized",
+                ErrorResponsePolicy.extractTopLevelDetail("{\"detail\":\"Unauthorized\"}"));
+        assertEquals("",
+                ErrorResponsePolicy.extractTopLevelDetail("{\"error\":{\"message\":\"Unauthorized\"}}"));
+        assertEquals("deactivated_workspace",
+                ErrorResponsePolicy.extractDetailCode("{\"detail\":{\"code\":\"deactivated_workspace\"}}"));
     }
 }

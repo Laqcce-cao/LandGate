@@ -277,6 +277,62 @@ class GatewayRouteMatrixResponseTest {
         assertEquals(9, usage.getCacheReadTokens());
     }
 
+    @Test
+    @DisplayName("Anthropic Messages passthrough keeps cached_tokens body unchanged while billing parser remains compatible")
+    void anthropicCachedTokensPassthroughBodyIsNotNormalized() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("anthropic_cached_tokens_passthrough")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(account(Platform.ANTHROPIC, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "messages",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://upstream.example.com/v1/messages",
+                        false,
+                        false,
+                        "messages",
+                        "anthropic_cached_tokens_passthrough"))
+                .build());
+
+        String upstreamBody = """
+                {
+                  "id":"msg_cached",
+                  "type":"message",
+                  "role":"assistant",
+                  "model":"claude-sonnet-4-5",
+                  "content":[{"type":"text","text":"cached"}],
+                  "stop_reason":"end_turn",
+                  "stop_sequence":null,
+                  "usage":{
+                    "input_tokens":10,
+                    "output_tokens":2,
+                    "cached_tokens":9,
+                    "cache_creation":{
+                      "ephemeral_5m_input_tokens":3,
+                      "ephemeral_1h_input_tokens":5
+                    }
+                  }
+                }""";
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        UsageTokens usage = responseService.handleNonStreaming(
+                        new InputStreamHttpResponse(upstreamBody, "application/json"),
+                        servletResponse,
+                        new AnthropicUsageParser())
+                .usage();
+
+        String clientBody = servletResponse.getContentAsString();
+        assertTrue(clientBody.contains("\"cached_tokens\":9"));
+        assertFalse(clientBody.contains("cache_read_input_tokens"));
+        assertFalse(clientBody.contains("cache_creation_input_tokens"));
+        assertEquals(8, usage.getCacheCreationTokens());
+        assertEquals(9, usage.getCacheReadTokens());
+    }
+
     private static void assertClientShape(String clientFormat, JsonNode root, String name) {
         switch (clientFormat) {
             case "messages" -> {

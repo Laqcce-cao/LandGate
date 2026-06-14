@@ -66,6 +66,13 @@ public final class OpenAiResponsesBodyPolicy {
     public static final String REASONING_EFFORT_NONE = "none";
     public static final String REASONING_SUMMARY_AUTO = "auto";
 
+    public static final String SERVICE_TIER_AUTO = "auto";
+    public static final String SERVICE_TIER_DEFAULT = "default";
+    public static final String SERVICE_TIER_FAST = "fast";
+    public static final String SERVICE_TIER_FLEX = "flex";
+    public static final String SERVICE_TIER_PRIORITY = "priority";
+    public static final String SERVICE_TIER_SCALE = "scale";
+
     public static final String ROLE_ASSISTANT = "assistant";
     public static final String ROLE_DEVELOPER = "developer";
     public static final String ROLE_USER = "user";
@@ -120,11 +127,12 @@ public final class OpenAiResponsesBodyPolicy {
         if (raw == null) return "";
         String value = raw.trim().toLowerCase();
         if (value.isBlank()) return "";
-        if ("fast".equals(value)) {
-            value = "priority";
+        if (SERVICE_TIER_FAST.equals(value)) {
+            value = SERVICE_TIER_PRIORITY;
         }
         return switch (value) {
-            case "priority", "flex", "auto", "default", "scale" -> value;
+            case SERVICE_TIER_PRIORITY, SERVICE_TIER_FLEX, SERVICE_TIER_AUTO,
+                    SERVICE_TIER_DEFAULT, SERVICE_TIER_SCALE -> value;
             default -> "";
         };
     }

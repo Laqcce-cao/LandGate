@@ -15,9 +15,12 @@ import com.landgate.types.gateway.OpenAiCompatModelPolicy;
 import com.landgate.types.gateway.OpenAiCompactAccountPolicy;
 import com.landgate.types.gateway.OpenAiCompactRequestBodyPolicy;
 import com.landgate.types.gateway.OpenAiCodexBodyShapeProfile;
+import com.landgate.types.gateway.OpenAiFastPolicy;
+import com.landgate.types.gateway.OpenAiForcedCodexInstructionsPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import com.landgate.types.gateway.OpenAiToolContinuationPolicy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -26,6 +29,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Iterator;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static com.landgate.types.gateway.OpenAiCodexBodyShapeProfile.*;
 
@@ -41,6 +45,31 @@ import static com.landgate.types.gateway.OpenAiCodexBodyShapeProfile.*;
 class OpenAiCodexBodyNormalizer {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private final Supplier<String> forcedInstructionsTemplateSupplier;
+    private final OpenAiFastPolicyProvider fastPolicyProvider;
+
+    OpenAiCodexBodyNormalizer() {
+        this(() -> "", null);
+    }
+
+    @Autowired
+    OpenAiCodexBodyNormalizer(OpenAiForcedCodexInstructionsTemplateProvider templateProvider,
+                              OpenAiFastPolicyProvider fastPolicyProvider) {
+        this(templateProvider == null ? () -> "" : templateProvider::templateText,
+                fastPolicyProvider);
+    }
+
+    OpenAiCodexBodyNormalizer(Supplier<String> forcedInstructionsTemplateSupplier) {
+        this(forcedInstructionsTemplateSupplier, null);
+    }
+
+    OpenAiCodexBodyNormalizer(Supplier<String> forcedInstructionsTemplateSupplier,
+                              OpenAiFastPolicyProvider fastPolicyProvider) {
+        this.forcedInstructionsTemplateSupplier = forcedInstructionsTemplateSupplier == null
+                ? () -> ""
+                : forcedInstructionsTemplateSupplier;
+        this.fastPolicyProvider = fastPolicyProvider;
+    }
 
     String normalize(String body,
                      AccountEntity account,
@@ -59,6 +88,7 @@ class OpenAiCodexBodyNormalizer {
         try {
             ObjectNode root = (ObjectNode) JSON.readTree(body);
             CodexRequestShape beforeShape = CodexRequestShape.from(root, body);
+            String originalModel = textValue(root.get(FIELD_MODEL));
 
             boolean compactModelChanged = false;
             if (isCodexCompactEndpoint(route)) {
@@ -77,7 +107,7 @@ class OpenAiCodexBodyNormalizer {
                 }
             }
             normalizeCodexTextVerbosity(root);
-            normalizeOpenAIServiceTier(root);
+            normalizeOpenAIServiceTier(root, account);
             normalizeCodexEndpointFields(root, route);
             if (isCodexCompactEndpoint(route)) {
                 retainCompactRequestFields(root);
@@ -92,6 +122,7 @@ class OpenAiCodexBodyNormalizer {
             normalizeCodexTools(root);
             normalizeCodexToolChoice(root);
             extractSystemMessagesToInstructions(root);
+            applyForcedCodexInstructionsTemplate(root, route, originalModel, requestedModel);
             if (isBlankText(root.get(FIELD_INSTRUCTIONS))) {
                 root.put(FIELD_INSTRUCTIONS, OpenAiNormalizerProfile.DEFAULT_CODEX_INSTRUCTIONS);
             }
@@ -112,11 +143,44 @@ class OpenAiCodexBodyNormalizer {
             CodexRequestShape afterShape = CodexRequestShape.from(root, normalized);
             logCodexNormalizationDiagnostics(requestId, account, route, beforeShape, afterShape);
             return normalized;
+        } catch (OpenAiFastPolicyBlockedException e) {
+            throw e;
         } catch (Exception e) {
             log.warn("Failed to normalize Codex OAuth request body: account_id={}",
                     account != null ? account.getId() : null, e);
             return body;
         }
+    }
+
+    private void applyForcedCodexInstructionsTemplate(ObjectNode root,
+                                                      UpstreamRoute route,
+                                                      String originalModel,
+                                                      String requestedModel) {
+        if (!isAnthropicMessagesCompat(route)) {
+            return;
+        }
+        String templateText = forcedInstructionsTemplateSupplier.get();
+        if (templateText == null || templateText.isBlank()) {
+            return;
+        }
+        String normalizedModel = textValue(root.get(FIELD_MODEL));
+        String existingInstructions = textValue(root.get(FIELD_INSTRUCTIONS));
+        String upstreamModel = firstNonBlank(normalizedModel, requestedModel, originalModel);
+        String rendered = OpenAiForcedCodexInstructionsPolicy.render(templateText,
+                new OpenAiForcedCodexInstructionsPolicy.TemplateData(
+                        existingInstructions,
+                        originalModel,
+                        normalizedModel,
+                        firstNonBlank(requestedModel, normalizedModel, originalModel),
+                        upstreamModel));
+        if (rendered.isBlank()) {
+            return;
+        }
+        JsonNode existing = root.get(FIELD_INSTRUCTIONS);
+        if (!isBlankText(existing) && existing.asText().trim().equals(rendered)) {
+            return;
+        }
+        root.put(FIELD_INSTRUCTIONS, rendered);
     }
 
     private static boolean applyCompactModelMapping(ObjectNode root, AccountEntity account) {
@@ -488,7 +552,7 @@ class OpenAiCodexBodyNormalizer {
         return normalized;
     }
 
-    private static void normalizeOpenAIServiceTier(ObjectNode root) {
+    private void normalizeOpenAIServiceTier(ObjectNode root, AccountEntity account) {
         JsonNode value = root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
         if (value == null || !value.isTextual()) {
             return;
@@ -496,9 +560,29 @@ class OpenAiCodexBodyNormalizer {
         String normalized = OpenAiNormalizerProfile.normalizeServiceTier(value.asText());
         if (normalized.isBlank()) {
             root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            return;
+        }
+        OpenAiFastPolicy.Decision decision = OpenAiFastPolicy.evaluate(
+                fastPolicySettings(),
+                account == null ? null : account.getType(),
+                textValue(root.get(FIELD_MODEL)),
+                normalized);
+        if (decision.blocks()) {
+            String model = textValue(root.get(FIELD_MODEL));
+            String message = decision.message().isBlank()
+                    ? OpenAiFastPolicy.defaultBlockMessage(normalized, model)
+                    : decision.message();
+            throw new OpenAiFastPolicyBlockedException(message, normalized, model);
+        }
+        if (decision.filters()) {
+            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
         } else {
             root.put(OpenAiNormalizerProfile.FIELD_SERVICE_TIER, normalized);
         }
+    }
+
+    private OpenAiFastPolicy.Settings fastPolicySettings() {
+        return fastPolicyProvider == null ? OpenAiFastPolicy.defaultSettings() : fastPolicyProvider.current();
     }
 
     private static void normalizeCodexOAuthModel(ObjectNode root) {

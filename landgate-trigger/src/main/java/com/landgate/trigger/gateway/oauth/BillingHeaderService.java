@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.oauth;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -23,11 +24,14 @@ public class BillingHeaderService {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /** cc_version 版本号正则（匹配 X.Y.Z 三段 semver） */
-    private static final Pattern CC_VERSION_PATTERN = Pattern.compile("cc_version=\\d+\\.\\d+\\.\\d+");
+    private static final Pattern CC_VERSION_PATTERN = Pattern.compile(
+            AnthropicClaudeCodeProfile.BILLING_CC_VERSION_KEY + "=\\d+\\.\\d+\\.\\d+");
 
     /** CCH 占位符正则（限定在 x-anthropic-billing-header 上下文中） */
     private static final Pattern CCH_PLACEHOLDER_PATTERN =
-            Pattern.compile("(x-anthropic-billing-header:[^\"]*?\\bcch=)(00000)(;)");
+            Pattern.compile("(" + AnthropicClaudeCodeProfile.BILLING_HEADER_NAME
+                    + ":[^\"]*?\\b" + AnthropicClaudeCodeProfile.BILLING_CCH_KEY + "=)("
+                    + AnthropicClaudeCodeProfile.BILLING_CCH_PLACEHOLDER + ")(;)");
 
     /**
      * 构造 billing attribution block JSON。
@@ -47,9 +51,7 @@ public class BillingHeaderService {
             throw new IllegalArgumentException("cliVersion required");
         }
         String fp = computeClaudeCodeFingerprint(body, cliVersion);
-        String text = String.format(
-                "x-anthropic-billing-header: cc_version=%s.%s; cc_entrypoint=cli; cch=00000;",
-                cliVersion, fp);
+        String text = AnthropicClaudeCodeProfile.billingHeaderText(cliVersion, fp);
         try {
             var node = JSON.createObjectNode();
             node.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_TEXT);
@@ -86,7 +88,7 @@ public class BillingHeaderService {
         }
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
-            String input = ClaudeConstants.FINGERPRINT_SALT + chars + version;
+            String input = AnthropicClaudeCodeProfile.FINGERPRINT_SALT + chars + version;
             byte[] hash = md.digest(input.getBytes(StandardCharsets.UTF_8));
             return String.format("%02x%02x", hash[0], hash[1]).substring(0, 3);
         } catch (Exception e) {
@@ -113,7 +115,7 @@ public class BillingHeaderService {
             JsonNode system = root.get(AnthropicMessagesBodyPolicy.FIELD_SYSTEM);
             if (!system.isArray()) return body;
 
-            String replacement = "cc_version=" + version;
+            String replacement = AnthropicClaudeCodeProfile.BILLING_CC_VERSION_KEY + "=" + version;
             boolean modified = false;
 
             for (int i = 0; i < system.size(); i++) {
@@ -121,7 +123,7 @@ public class BillingHeaderService {
                 if (item.has(AnthropicMessagesBodyPolicy.FIELD_TEXT)
                         && item.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).isTextual()) {
                     String text = item.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).asText();
-                    if (text != null && text.startsWith("x-anthropic-billing-header")) {
+                    if (AnthropicClaudeCodeProfile.isBillingHeaderText(text)) {
                         String newText = CC_VERSION_PATTERN.matcher(text).replaceAll(replacement);
                         if (!newText.equals(text)) {
                             body = replaceJsonPathValue(
@@ -154,7 +156,7 @@ public class BillingHeaderService {
     public String signBillingHeaderCCH(String body) {
         if (!CCH_PLACEHOLDER_PATTERN.matcher(body).find()) return body;
 
-        long hash = xxHash64(body.getBytes(StandardCharsets.UTF_8), ClaudeConstants.CCH_SEED);
+        long hash = xxHash64(body.getBytes(StandardCharsets.UTF_8), AnthropicClaudeCodeProfile.CCH_SEED);
         String cch = String.format("%05x", hash & 0xFFFFFL);
 
         return CCH_PLACEHOLDER_PATTERN.matcher(body).replaceAll("$1" + cch + "$3");
@@ -206,7 +208,7 @@ public class BillingHeaderService {
      */
     private static String extractVersion(String ua) {
         if (ua == null) return "";
-        java.util.regex.Matcher m = ClaudeConstants.CLAUDE_CLI_UA_PATTERN.matcher(ua);
+        java.util.regex.Matcher m = AnthropicClaudeCodeProfile.CLAUDE_CLI_UA_PATTERN.matcher(ua);
         if (m.find()) {
             String matched = m.group();
             int slash = matched.indexOf('/');

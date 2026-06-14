@@ -26,6 +26,14 @@ class MetadataUserIdParserTest {
     }
 
     @Test
+    @DisplayName("Claude Code JSON metadata 字段名集中在 parser policy")
+    void jsonMetadataFieldNamesAreCentralized() {
+        assertEquals("device_id", MetadataUserIdParser.FIELD_DEVICE_ID);
+        assertEquals("account_uuid", MetadataUserIdParser.FIELD_ACCOUNT_UUID);
+        assertEquals("session_id", MetadataUserIdParser.FIELD_SESSION_ID);
+    }
+
+    @Test
     @DisplayName("Parses legacy metadata.user_id")
     void parsesLegacyMetadataUserId() {
         String device = "a".repeat(64);

@@ -20,7 +20,7 @@ class OpenAiResponsesRequestNormalizerTest {
     private final OpenAiResponsesRequestNormalizer normalizer = new OpenAiResponsesRequestNormalizer();
 
     @Test
-    @DisplayName("Public Responses 清理不支持字段并归一化 service_tier")
+    @DisplayName("Public Responses 清理不支持字段并按默认 fast policy 过滤 priority service_tier")
     void normalizesPublicResponsesCompatibilityFields() throws Exception {
         String normalized = normalizer.normalize("""
                 {
@@ -39,7 +39,7 @@ class OpenAiResponsesRequestNormalizerTest {
 
         JsonNode root = JSON.readTree(normalized);
 
-        assertEquals("priority", root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER).asText());
+        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
         assertEquals("none", root.get(OpenAiResponsesBodyPolicy.FIELD_REASONING)
                 .get(OpenAiResponsesBodyPolicy.FIELD_EFFORT).asText());
         assertFalse(root.has(OpenAiNormalizerProfile.FIELD_MAX_OUTPUT_TOKENS));
@@ -48,6 +48,80 @@ class OpenAiResponsesRequestNormalizerTest {
         assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SAFETY_IDENTIFIER));
         assertEquals("tenant:thread", root.get(OpenAiNormalizerProfile.FIELD_PROMPT_CACHE_KEY).asText());
         assertEquals("resp_internal", root.get(OpenAiResponsesBodyPolicy.FIELD_PREVIOUS_RESPONSE_ID).asText());
+    }
+
+    @Test
+    @DisplayName("Public Responses 默认 fast policy 保留官方非 priority service_tier")
+    void publicResponsesPreservesOfficialNonPriorityServiceTiers() throws Exception {
+        for (String tier : java.util.List.of("flex", "auto", "default", "scale")) {
+            String normalized = normalizer.normalize("""
+                    {"model":"gpt-5.5","service_tier":"%s","input":"Hi"}
+                    """.formatted(tier));
+
+            JsonNode root = JSON.readTree(normalized);
+
+            assertEquals(tier, root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER).asText(), tier);
+        }
+    }
+
+    @Test
+    @DisplayName("Public Responses 未知 service_tier 被移除")
+    void publicResponsesDropsUnknownServiceTier() throws Exception {
+        String normalized = normalizer.normalize("""
+                {"model":"gpt-5.5","service_tier":"turbo","input":"Hi"}
+                """);
+
+        JsonNode root = JSON.readTree(normalized);
+
+        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+    }
+
+    @Test
+    @DisplayName("Public Responses 自定义 fast policy 可过滤所有官方 service_tier")
+    void publicResponsesConfiguredPolicyFiltersAllRecognizedServiceTiers() throws Exception {
+        OpenAiResponsesRequestNormalizer configured = new OpenAiResponsesRequestNormalizer(
+                new OpenAiFastPolicyProvider("""
+                        {"rules":[{"service_tier":"all","action":"filter","scope":"all"}]}
+                        """));
+        AccountEntity account = AccountEntity.builder()
+                .id(20L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .credentials("{}")
+                .build();
+
+        String normalized = configured.normalize("""
+                {"model":"gpt-5.5","service_tier":"flex","input":"Hi"}
+                """, responsesRoute(), account);
+
+        JsonNode root = JSON.readTree(normalized);
+        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+    }
+
+    @Test
+    @DisplayName("Public Responses 自定义 fast policy block 返回明确异常")
+    void publicResponsesConfiguredPolicyBlocksRequest() {
+        OpenAiResponsesRequestNormalizer configured = new OpenAiResponsesRequestNormalizer(
+                new OpenAiFastPolicyProvider("""
+                        {"rules":[{"service_tier":"priority","action":"block","scope":"apikey",
+                          "error_message":"fast mode is not allowed","model_whitelist":["gpt-5.5"]}]}
+                        """));
+        AccountEntity account = AccountEntity.builder()
+                .id(21L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .credentials("{}")
+                .build();
+
+        OpenAiFastPolicyBlockedException blocked = assertThrows(
+                OpenAiFastPolicyBlockedException.class,
+                () -> configured.normalize("""
+                        {"model":"gpt-5.5","service_tier":"fast","input":"Hi"}
+                        """, responsesRoute(), account));
+
+        assertEquals("fast mode is not allowed", blocked.getMessage());
+        assertEquals("priority", blocked.tier());
+        assertEquals("gpt-5.5", blocked.model());
     }
 
     @Test

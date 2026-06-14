@@ -3,6 +3,7 @@ package com.landgate.trigger.gateway.oauth;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.types.gateway.AnthropicApiProfile;
+import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import com.landgate.types.gateway.GatewayHeaderPolicy;
 import com.landgate.types.gateway.MetadataUserIdParser;
@@ -40,7 +41,7 @@ public class ClaudeCodeDetector {
                                         String systemPrompt, int maxTokens, String model,
                                         Map<String, String> headers) {
         // Step 1: UA 必须匹配 claude-cli/X.Y.Z
-        if (userAgent == null || !ClaudeConstants.CLAUDE_CLI_UA_PATTERN.matcher(userAgent).matches()) {
+        if (userAgent == null || !AnthropicClaudeCodeProfile.CLAUDE_CLI_UA_PATTERN.matcher(userAgent).matches()) {
             return false;
         }
 
@@ -75,7 +76,7 @@ public class ClaudeCodeDetector {
      */
     public boolean validateForNonMessages(String userAgent) {
         return userAgent != null
-                && ClaudeConstants.CLAUDE_CLI_UA_PATTERN.matcher(userAgent).matches();
+                && AnthropicClaudeCodeProfile.CLAUDE_CLI_UA_PATTERN.matcher(userAgent).matches();
     }
 
     /**
@@ -112,9 +113,9 @@ public class ClaudeCodeDetector {
      * 检查 system prompt 文本是否匹配已知的 CC 模板（Dice 系数 >= 0.5）。
      */
     private static boolean matchesKnownCCPrompt(String candidate) {
-        for (String template : ClaudeConstants.KNOWN_CC_PROMPTS) {
+        for (String template : AnthropicClaudeCodeProfile.KNOWN_CC_PROMPTS) {
             double sim = diceCoefficient(candidate, template);
-            if (sim >= ClaudeConstants.SYSTEM_PROMPT_THRESHOLD) {
+            if (sim >= AnthropicClaudeCodeProfile.SYSTEM_PROMPT_THRESHOLD) {
                 return true;
             }
         }

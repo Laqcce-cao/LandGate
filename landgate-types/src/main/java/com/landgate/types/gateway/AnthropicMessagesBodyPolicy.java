@@ -86,7 +86,6 @@ public final class AnthropicMessagesBodyPolicy {
     public static final String TYPE_WEB_SEARCH_TOOL_RESULT = "web_search_tool_result";
 
     public static final String CACHE_CONTROL_TYPE_EPHEMERAL = "ephemeral";
-    public static final String BILLING_HEADER_PREFIX = "x-anthropic-billing-header: ";
     public static final String STOP_REASON_END_TURN = "end_turn";
     public static final String STOP_REASON_MAX_TOKENS = "max_tokens";
     public static final String STOP_REASON_MODEL_CONTEXT_WINDOW_EXCEEDED = "model_context_window_exceeded";

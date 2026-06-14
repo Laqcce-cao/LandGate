@@ -15,6 +15,9 @@ import java.util.regex.Pattern;
 public final class MetadataUserIdParser {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    public static final String FIELD_DEVICE_ID = "device_id";
+    public static final String FIELD_ACCOUNT_UUID = "account_uuid";
+    public static final String FIELD_SESSION_ID = "session_id";
     private static final Pattern LEGACY_PATTERN = Pattern.compile(
             "^user_([a-fA-F0-9]{64})_account_([a-fA-F0-9-]*)_session_([a-fA-F0-9-]{36})$");
 
@@ -32,9 +35,9 @@ public final class MetadataUserIdParser {
     private static ParsedMetadataUserId parseJson(String raw) {
         try {
             JsonNode root = JSON.readTree(raw);
-            String deviceId = root.has("device_id") ? root.get("device_id").asText() : null;
-            String accountUuid = root.has("account_uuid") ? root.get("account_uuid").asText() : null;
-            String sessionId = root.has("session_id") ? root.get("session_id").asText() : null;
+            String deviceId = root.has(FIELD_DEVICE_ID) ? root.get(FIELD_DEVICE_ID).asText() : null;
+            String accountUuid = root.has(FIELD_ACCOUNT_UUID) ? root.get(FIELD_ACCOUNT_UUID).asText() : null;
+            String sessionId = root.has(FIELD_SESSION_ID) ? root.get(FIELD_SESSION_ID).asText() : null;
             if (deviceId == null || deviceId.isEmpty() || sessionId == null || sessionId.isEmpty()) {
                 return null;
             }
@@ -74,9 +77,9 @@ public final class MetadataUserIdParser {
     private static String formatJson(String deviceId, String accountUuid, String sessionId) {
         try {
             var obj = JSON.createObjectNode();
-            obj.put("device_id", deviceId != null ? deviceId : "");
-            obj.put("account_uuid", accountUuid != null ? accountUuid : "");
-            obj.put("session_id", sessionId != null ? sessionId : UUID.randomUUID().toString());
+            obj.put(FIELD_DEVICE_ID, deviceId != null ? deviceId : "");
+            obj.put(FIELD_ACCOUNT_UUID, accountUuid != null ? accountUuid : "");
+            obj.put(FIELD_SESSION_ID, sessionId != null ? sessionId : UUID.randomUUID().toString());
             return JSON.writeValueAsString(obj);
         } catch (Exception ignored) {
             return "{}";

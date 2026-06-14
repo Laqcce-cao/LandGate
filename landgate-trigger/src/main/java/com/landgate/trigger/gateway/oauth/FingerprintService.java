@@ -87,7 +87,7 @@ public class FingerprintService {
     private static ClientFingerprint createFingerprint(String clientId, Map<String, String> requestHeaders) {
         String userAgent = GatewayHeaderPolicy.value(requestHeaders, AnthropicApiProfile.HEADER_USER_AGENT);
         if (userAgent.isBlank()) {
-            userAgent = ClaudeConstants.DEFAULT_CLAUDE_CLI_USER_AGENT;
+            userAgent = AnthropicClaudeCodeProfile.DEFAULT_CLAUDE_CLI_USER_AGENT;
         }
         return new ClientFingerprint(
                 clientId,
@@ -234,7 +234,7 @@ public class FingerprintService {
         private static String computeHash(String clientId) {
             try {
                 MessageDigest md = MessageDigest.getInstance("SHA-256");
-                String input = ClaudeConstants.FINGERPRINT_SALT + clientId;
+                String input = AnthropicClaudeCodeProfile.FINGERPRINT_SALT + clientId;
                 byte[] hash = md.digest(input.getBytes());
                 int val = ((hash[0] & 0xFF) << 8 | (hash[1] & 0xFF)) & 0xFFF;
                 return String.format("%03x", val);

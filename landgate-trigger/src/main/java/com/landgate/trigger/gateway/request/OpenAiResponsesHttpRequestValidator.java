@@ -73,7 +73,7 @@ public class OpenAiResponsesHttpRequestValidator {
         if (!toolContinuation.hasFunctionCallOutput()) {
             return ValidationResult.acceptedResult();
         }
-        if (toolContinuation.hasToolCallContext() || toolContinuation.hasItemReferenceForAllCallIds()) {
+        if (toolContinuation.hasToolCallContext()) {
             return ValidationResult.acceptedResult();
         }
         if (toolContinuation.hasFunctionCallOutputMissingCallId()) {
@@ -82,6 +82,9 @@ public class OpenAiResponsesHttpRequestValidator {
                     OpenAiResponsesHttpRequestPolicy.ERROR_CODE_INVALID_REQUEST,
                     OpenAiResponsesHttpRequestPolicy.MESSAGE_FUNCTION_CALL_OUTPUT_REQUIRES_CALL_ID,
                     kind);
+        }
+        if (toolContinuation.hasItemReferenceForAllCallIds()) {
+            return ValidationResult.acceptedResult();
         }
         return ValidationResult.rejected(
                 OpenAiResponsesHttpRequestPolicy.STATUS_BAD_REQUEST,

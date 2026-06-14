@@ -20,6 +20,7 @@ public final class OpenAiCodexProfile {
     public static final String ORIGINATOR_CODEX_CLI_RS = "codex_cli_rs";
     public static final String OPENAI_BETA_RESPONSES_EXPERIMENTAL = "responses=experimental";
     public static final String CREDENTIAL_CHATGPT_ACCOUNT_ID = "chatgpt_account_id";
+    public static final String CREDENTIAL_USER_AGENT = "user_agent";
     public static final String ACCOUNT_EXTRA_CODEX_CLI_ONLY = "codex_cli_only";
     public static final String FIELD_PROMPT_CACHE_KEY = OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY;
 

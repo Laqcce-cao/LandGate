@@ -1,6 +1,7 @@
 package com.landgate.trigger.gateway.error;
 
 import com.landgate.types.gateway.ErrorResponsePolicy;
+import com.landgate.types.gateway.OpenAiUpstreamErrorPolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -48,7 +49,19 @@ public class ErrorPassthroughService {
             }
         }
 
+        if (isOpenAi(platform)
+                && OpenAiUpstreamErrorPolicy.shouldFailover(
+                statusCode, ErrorResponsePolicy.extractUpstreamErrorMessage(responseBody), responseBody)) {
+            log.debug("Error passthrough RETRY: status={}, platform={}, rule=openai_upstream_failover",
+                    statusCode, platform);
+            return ErrorAction.RETRY;
+        }
+
         return ErrorAction.MASK;
+    }
+
+    private static boolean isOpenAi(String platform) {
+        return platform != null && "OPENAI".equalsIgnoreCase(platform.trim());
     }
 
     /**

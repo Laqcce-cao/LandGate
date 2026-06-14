@@ -8,6 +8,7 @@ import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.oauth.UserIdRewriter;
 import com.landgate.types.enums.AccountType;
+import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.AnthropicForwardingRuntimePolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -99,7 +100,7 @@ public class AnthropicCountTokensOAuthNormalizer {
                 return "";
             }
             JsonNode extra = JSON.readTree(account.getExtra());
-            return extra.path("account_uuid").asText("").trim();
+            return extra.path(AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_ACCOUNT_UUID).asText("").trim();
         } catch (Exception e) {
             log.debug("Failed to parse account_uuid for count_tokens OAuth normalization: account_id={}",
                     account != null ? account.getId() : null);

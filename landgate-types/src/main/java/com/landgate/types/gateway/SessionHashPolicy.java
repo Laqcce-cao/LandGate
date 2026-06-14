@@ -19,6 +19,7 @@ public final class SessionHashPolicy {
     public static final String PROMPT_CACHE_KEY_HASH_NAMESPACE =
             OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY + KEY_SEPARATOR;
     public static final String ANTHROPIC_CACHE_HASH_NAMESPACE = "anthropic_cache" + KEY_SEPARATOR;
+    public static final String OPENAI_CONTENT_SEED_HASH_NAMESPACE = "openai_content_seed" + KEY_SEPARATOR;
     public static final String SEMVER_PATTERN = "\\d+\\.\\d+\\.\\d+";
     public static final String SEMVER_PLACEHOLDER = "X.Y.Z";
 
@@ -31,6 +32,10 @@ public final class SessionHashPolicy {
 
     public static String anthropicCacheAnchorMaterial(Long apiKeyId, String anchor) {
         return ANTHROPIC_CACHE_HASH_NAMESPACE + apiKeyId + KEY_SEPARATOR + trim(anchor);
+    }
+
+    public static String openAiContentSeedMaterial(Long apiKeyId, String seed) {
+        return OPENAI_CONTENT_SEED_HASH_NAMESPACE + apiKeyId + KEY_SEPARATOR + trim(seed);
     }
 
     public static String requestContextMaterial(String clientIp, String userAgent, Long apiKeyId) {

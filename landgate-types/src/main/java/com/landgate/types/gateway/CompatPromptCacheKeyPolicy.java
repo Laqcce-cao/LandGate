@@ -2,12 +2,15 @@ package com.landgate.types.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.TreeSet;
 
 /**
  * OpenAI Responses compatibility prompt-cache-key derivation policy.
@@ -20,6 +23,7 @@ public final class CompatPromptCacheKeyPolicy {
     private static final String ANTHROPIC_CACHE_PREFIX = "anthropic-cache-";
     private static final String ANTHROPIC_METADATA_PREFIX = "anthropic-metadata-";
     private static final String ANTHROPIC_DIGEST_PREFIX = "anthropic-digest-";
+    private static final String CHAT_COMPLETIONS_COMPAT_PREFIX = "compat_cc_";
 
     private CompatPromptCacheKeyPolicy() {
     }
@@ -39,6 +43,61 @@ public final class CompatPromptCacheKeyPolicy {
             return "";
         }
         return promptCacheKeyFromAnthropicDigest(buildOpenAICompatAnthropicDigestChain(anthropicRequest));
+    }
+
+    public static String deriveChatCompletionsCompatPromptCacheKey(String chatCompletionsBody, String mappedModel) {
+        if (chatCompletionsBody == null || chatCompletionsBody.isBlank()) return "";
+        try {
+            return deriveChatCompletionsCompatPromptCacheKey(JSON.readTree(chatCompletionsBody), mappedModel);
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    public static String deriveChatCompletionsCompatPromptCacheKey(JsonNode chatRequest, String mappedModel) {
+        if (chatRequest == null || !chatRequest.isObject()) return "";
+
+        String normalizedModel = normalizeCodexModel(firstNonBlank(
+                mappedModel,
+                textOrDefault(chatRequest.get(OpenAiChatCompletionsBodyPolicy.FIELD_MODEL), "")));
+
+        List<String> seedParts = new ArrayList<>();
+        seedParts.add("model=" + normalizedModel);
+
+        String reasoningEffort = textOrDefault(
+                chatRequest.get(OpenAiChatCompletionsBodyPolicy.FIELD_REASONING_EFFORT), "").trim();
+        if (!reasoningEffort.isBlank()) {
+            seedParts.add("reasoning_effort=" + reasoningEffort);
+        }
+        JsonNode toolChoice = chatRequest.get(OpenAiChatCompletionsBodyPolicy.FIELD_TOOL_CHOICE);
+        if (toolChoice != null && !toolChoice.isNull()) {
+            seedParts.add("tool_choice=" + normalizeCompatSeedJson(toolChoice));
+        }
+        JsonNode tools = chatRequest.get(OpenAiChatCompletionsBodyPolicy.FIELD_TOOLS);
+        if (tools != null && tools.isArray() && tools.size() > 0) {
+            seedParts.add("tools=" + normalizeCompatSeedJson(tools));
+        }
+        JsonNode functions = chatRequest.get(OpenAiChatCompletionsBodyPolicy.FIELD_FUNCTIONS);
+        if (functions != null && functions.isArray() && functions.size() > 0) {
+            seedParts.add("functions=" + normalizeCompatSeedJson(functions));
+        }
+
+        boolean firstUserCaptured = false;
+        JsonNode messages = chatRequest.get(OpenAiChatCompletionsBodyPolicy.FIELD_MESSAGES);
+        if (messages != null && messages.isArray()) {
+            for (JsonNode message : messages) {
+                String role = textOrDefault(message.get(OpenAiChatCompletionsBodyPolicy.FIELD_ROLE), "").trim();
+                JsonNode content = message.get(OpenAiChatCompletionsBodyPolicy.FIELD_CONTENT);
+                if (OpenAiChatCompletionsBodyPolicy.ROLE_SYSTEM.equals(role)) {
+                    seedParts.add("system=" + normalizeCompatSeedJson(content));
+                } else if (OpenAiChatCompletionsBodyPolicy.ROLE_USER.equals(role) && !firstUserCaptured) {
+                    seedParts.add("first_user=" + normalizeCompatSeedJson(content));
+                    firstUserCaptured = true;
+                }
+            }
+        }
+
+        return CHAT_COMPLETIONS_COMPAT_PREFIX + sha256Hex8(String.join("|", seedParts));
     }
 
     public static String promptCacheKeyFromAnthropicMetadataSession(JsonNode anthropicRequest) {
@@ -195,7 +254,64 @@ public final class CompatPromptCacheKeyPolicy {
     public static boolean shouldAutoInjectPromptCacheKeyForCompat(String model) {
         if (model == null) return false;
         String normalized = model.trim().toLowerCase();
-        return normalized.contains("gpt-5") || normalized.contains("codex");
+        if (!normalized.contains("gpt-5") && !normalized.contains("codex")) {
+            return false;
+        }
+        String codexModel = normalizeCodexModel(normalized).toLowerCase();
+        return codexModel.startsWith("gpt-5") || codexModel.contains("codex");
+    }
+
+    private static String normalizeCodexModel(String model) {
+        return OpenAiCodexProfile.normalizeModel(model);
+    }
+
+    public static String normalizeCompatSeedJson(JsonNode value) {
+        if (value == null || value.isMissingNode()) return "";
+        try {
+            return JSON.writeValueAsString(canonicalize(value));
+        } catch (Exception ignored) {
+            return value.toString();
+        }
+    }
+
+    private static JsonNode canonicalize(JsonNode value) {
+        if (value == null || value.isNull() || value.isValueNode()) {
+            return value;
+        }
+        if (value.isArray()) {
+            ArrayNode out = JSON.createArrayNode();
+            for (JsonNode item : value) {
+                out.add(canonicalize(item));
+            }
+            return out;
+        }
+        if (value.isObject()) {
+            ObjectNode out = JSON.createObjectNode();
+            TreeSet<String> names = new TreeSet<>();
+            Iterator<String> it = value.fieldNames();
+            while (it.hasNext()) {
+                names.add(it.next());
+            }
+            for (String name : names) {
+                out.set(name, canonicalize(value.get(name)));
+            }
+            return out;
+        }
+        return value;
+    }
+
+    private static String sha256Hex8(String value) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(value.trim().getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) {
+                sb.append(String.format("%02x", digest[i]));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(value.hashCode());
+        }
     }
 
     private static String sha256Hex16(String value) {
@@ -218,6 +334,15 @@ public final class CompatPromptCacheKeyPolicy {
 
     private static String textOrDefault(JsonNode node, String defaultValue) {
         return node != null && node.isTextual() && !node.asText().isBlank() ? node.asText() : defaultValue;
+    }
+
+    private static String firstNonBlank(String... values) {
+        if (values == null) return "";
+        for (String value : values) {
+            String trimmed = trim(value);
+            if (!trimmed.isBlank()) return trimmed;
+        }
+        return "";
     }
 
     private static String trim(String value) {

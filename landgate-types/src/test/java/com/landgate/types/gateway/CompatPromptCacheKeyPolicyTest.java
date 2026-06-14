@@ -79,4 +79,76 @@ class CompatPromptCacheKeyPolicyTest {
         assertEquals("derived", CompatPromptCacheKeyPolicy.extractPromptCacheKey(injected));
         assertFalse(CompatPromptCacheKeyPolicy.shouldAutoInjectPromptCacheKeyForCompat("gpt-4.1"));
     }
+
+    @Test
+    @DisplayName("Chat Completions compat prompt_cache_key is stable across later turns")
+    void chatCompletionsCompatPromptCacheKeyStableAcrossLaterTurns() throws Exception {
+        var base = JSON.readTree("""
+                {
+                  "model":"gpt-5.4",
+                  "messages":[
+                    {"role":"system","content":"You are helpful."},
+                    {"role":"user","content":"Hello"}
+                  ]
+                }
+                """);
+        var extended = JSON.readTree("""
+                {
+                  "model":"gpt-5.4",
+                  "messages":[
+                    {"role":"system","content":"You are helpful."},
+                    {"role":"user","content":"Hello"},
+                    {"role":"assistant","content":"Hi there!"},
+                    {"role":"user","content":"How are you?"}
+                  ]
+                }
+                """);
+
+        String first = CompatPromptCacheKeyPolicy.deriveChatCompletionsCompatPromptCacheKey(base, "gpt-5.4");
+        String second = CompatPromptCacheKeyPolicy.deriveChatCompletionsCompatPromptCacheKey(extended, "gpt-5.4");
+
+        assertTrue(first.startsWith("compat_cc_"));
+        assertEquals(26, first.length());
+        assertEquals(first, second);
+    }
+
+    @Test
+    @DisplayName("Chat Completions compat prompt_cache_key uses canonical JSON for tools")
+    void chatCompletionsCompatPromptCacheKeyCanonicalizesJson() throws Exception {
+        var compact = JSON.readTree("""
+                {"model":"gpt-5.4","tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather"}}],"messages":[{"role":"user","content":"Hi"}]}
+                """);
+        var spaced = JSON.readTree("""
+                {
+                  "model":"gpt-5.4",
+                  "tools":[{"type":"function","function":{"description":"Get weather","name":"get_weather"}}],
+                  "messages":[{"role":"user","content":"Hi"}]
+                }
+                """);
+
+        assertEquals(
+                CompatPromptCacheKeyPolicy.deriveChatCompletionsCompatPromptCacheKey(compact, "gpt-5.4"),
+                CompatPromptCacheKeyPolicy.deriveChatCompletionsCompatPromptCacheKey(spaced, "gpt-5.4"));
+    }
+
+    @Test
+    @DisplayName("Chat Completions compat prompt_cache_key changes for first user and resolved model")
+    void chatCompletionsCompatPromptCacheKeySessionInputsMatter() throws Exception {
+        var first = JSON.readTree("""
+                {"model":"gpt-5.4","messages":[{"role":"user","content":"Question A"}]}
+                """);
+        var second = JSON.readTree("""
+                {"model":"gpt-5.4","messages":[{"role":"user","content":"Question B"}]}
+                """);
+
+        String keyA = CompatPromptCacheKeyPolicy.deriveChatCompletionsCompatPromptCacheKey(first, "gpt-5.4");
+        String keyB = CompatPromptCacheKeyPolicy.deriveChatCompletionsCompatPromptCacheKey(second, "gpt-5.4");
+        String keySpark = CompatPromptCacheKeyPolicy.deriveChatCompletionsCompatPromptCacheKey(first,
+                " openai/gpt-5.3-codex-spark ");
+
+        assertFalse(keyA.equals(keyB));
+        assertFalse(keyA.equals(keySpark));
+        assertTrue(CompatPromptCacheKeyPolicy.shouldAutoInjectPromptCacheKeyForCompat("gpt-5.3-codex-spark"));
+        assertFalse(CompatPromptCacheKeyPolicy.shouldAutoInjectPromptCacheKeyForCompat("gpt-4o"));
+    }
 }

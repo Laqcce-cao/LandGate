@@ -27,6 +27,17 @@ class OpenAiEncryptedReasoningRetryPolicyTest {
         assertFalse(policy.shouldRetry(500, """
                 {"error":{"code":"invalid_encrypted_content","message":"bad encrypted content"}}
                 """));
+        assertFalse(policy.shouldRetry(400, """
+                {"code":"invalid_encrypted_content","message":"top-level code is not a Sub2API upstream code path"}
+                """));
+    }
+
+    @Test
+    @DisplayName("retries nested JSON error.message invalid_encrypted_content errors")
+    void retriesNestedJsonErrorMessageInvalidEncryptedContentErrors() {
+        assertTrue(policy.shouldRetry(400, """
+                {"error":{"message":"{\\"error\\":{\\"code\\":\\"invalid_encrypted_content\\",\\"message\\":\\"bad encrypted content\\"}}"}}
+                """));
     }
 
     @Test

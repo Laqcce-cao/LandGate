@@ -10,6 +10,7 @@ package com.landgate.types.gateway;
 public final class GatewayHttpHeaderPolicy {
 
     public static final String HEADER_CONTENT_TYPE = "Content-Type";
+    public static final String HEADER_RETRY_AFTER = "Retry-After";
     public static final String HEADER_USER_AGENT = "User-Agent";
     public static final String MEDIA_TYPE_FORM_URLENCODED = "application/x-www-form-urlencoded";
     public static final String MEDIA_TYPE_JSON = "application/json";

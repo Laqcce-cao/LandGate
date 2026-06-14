@@ -50,7 +50,7 @@ class UpstreamRouteResolverTest {
 
                 matrix("messages -> OpenAI API Key responses", Platform.OPENAI, AccountType.API_KEY, "responses",
                         Platform.ANTHROPIC, "messages", EndpointKind.OPENAI_RESPONSES,
-                        "responses", false, false, false),
+                        "responses", true, false, false),
                 matrix("responses -> OpenAI API Key responses", Platform.OPENAI, AccountType.API_KEY, "responses",
                         Platform.OPENAI, "responses", EndpointKind.OPENAI_RESPONSES,
                         "responses", false, false, true),

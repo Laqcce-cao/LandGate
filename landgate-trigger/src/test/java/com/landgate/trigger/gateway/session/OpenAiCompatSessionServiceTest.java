@@ -166,6 +166,172 @@ class OpenAiCompatSessionServiceTest {
     }
 
     @Test
+    @DisplayName("OpenAI API Key messages compat 续接时附加 previous_response_id 并裁剪到最新轮")
+    void apiKeyMessagesCompatAttachesPreviousResponseIdAndTrimsToLatestTurn() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        service.bindResponseId(account, 42L, "stable-cache-key", "resp_first");
+        String anthropic = """
+                {"model":"gpt-5.5","messages":[
+                  {"role":"user","content":"first"},
+                  {"role":"assistant","content":"ok"},
+                  {"role":"user","content":"second"}
+                ]}""";
+        String responsesBody = """
+                {
+                  "model":"gpt-5.5",
+                  "prompt_cache_key":"stable-cache-key",
+                  "input":[
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]},
+                    {"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"second"}]}
+                  ]
+                }""";
+
+        OpenAiCompatSessionService.CompatState state = service.prepareAnthropicMessagesCompat(
+                account, 42L, anthropic, responsesBody, "gpt-5.5");
+        JsonNode root = JSON.readTree(state.body());
+        JsonNode input = root.get("input");
+
+        assertEquals("resp_first", root.get("previous_response_id").asText());
+        assertEquals("resp_first", state.previousResponseId());
+        assertEquals(2, input.size());
+        assertEquals("developer", input.get(0).get("role").asText());
+        assertTrue(input.get(0).get("content").get(0).get("text").asText()
+                .contains(OpenAiAnthropicMessagesCompatPolicy.TODO_GUARD_MARKER));
+        assertEquals("second", input.get(1).get("content").get(0).get("text").asText());
+    }
+
+    @Test
+    @DisplayName("OpenAI API Key messages compat 续接裁剪保留多工具调用上下文")
+    void apiKeyMessagesCompatKeepsMultiToolCallContextWhenAttachingPreviousResponseId() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        service.bindResponseId(account, 42L, "stable-cache-key", "resp_first_tools");
+        String anthropic = """
+                {"model":"gpt-5.5","messages":[
+                  {"role":"user","content":"inspect files"},
+                  {"role":"assistant","content":[
+                    {"type":"tool_use","id":"call_one","name":"Read","input":{"file_path":"a.go"}},
+                    {"type":"tool_use","id":"call_two","name":"Read","input":{"file_path":"b.go"}}
+                  ]},
+                  {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"call_one","content":"package a"},
+                    {"type":"tool_result","tool_use_id":"call_two","content":"package b"},
+                    {"type":"text","text":"continue"}
+                  ]}
+                ]}""";
+        String responsesBody = """
+                {
+                  "model":"gpt-5.5",
+                  "prompt_cache_key":"stable-cache-key",
+                  "input":[
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"inspect files"}]},
+                    {"type":"function_call","call_id":"call_one","name":"Read","arguments":"{\\"file_path\\":\\"a.go\\"}"},
+                    {"type":"function_call","call_id":"call_two","name":"Read","arguments":"{\\"file_path\\":\\"b.go\\"}"},
+                    {"type":"function_call_output","call_id":"call_one","output":"package a"},
+                    {"type":"function_call_output","call_id":"call_two","output":"package b"},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+                  ]
+                }""";
+
+        OpenAiCompatSessionService.CompatState state = service.prepareAnthropicMessagesCompat(
+                account, 42L, anthropic, responsesBody, "gpt-5.5");
+        JsonNode root = JSON.readTree(state.body());
+        JsonNode input = root.get("input");
+
+        assertEquals("resp_first_tools", root.get("previous_response_id").asText());
+        assertEquals(6, input.size());
+        assertEquals("developer", input.get(0).get("role").asText());
+        assertTrue(input.get(0).get("content").get(0).get("text").asText()
+                .contains(OpenAiAnthropicMessagesCompatPolicy.TODO_GUARD_MARKER));
+        assertEquals("function_call", input.get(1).get("type").asText());
+        assertEquals("call_one", input.get(1).get("call_id").asText());
+        assertEquals("function_call", input.get(2).get("type").asText());
+        assertEquals("call_two", input.get(2).get("call_id").asText());
+        assertEquals("function_call_output", input.get(3).get("type").asText());
+        assertEquals("call_one", input.get(3).get("call_id").asText());
+        assertEquals("function_call_output", input.get(4).get("type").asText());
+        assertEquals("call_two", input.get(4).get("call_id").asText());
+        assertEquals("continue", input.get(5).get("content").get(0).get("text").asText());
+    }
+
+    @Test
+    @DisplayName("OpenAI API Key messages compat 禁用续接后不再附加 previous_response_id")
+    void apiKeyMessagesCompatSkipsPreviousResponseIdAfterContinuationDisabled() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        service.bindResponseId(account, 42L, "stable-cache-key", "resp_first");
+        service.disableContinuation(account, 42L, "stable-cache-key");
+        String anthropic = """
+                {"model":"gpt-5.5","messages":[{"role":"user","content":"second"}]}""";
+        String responsesBody = """
+                {
+                  "model":"gpt-5.5",
+                  "prompt_cache_key":"stable-cache-key",
+                  "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"second"}]}]
+                }""";
+
+        OpenAiCompatSessionService.CompatState state = service.prepareAnthropicMessagesCompat(
+                account, 42L, anthropic, responsesBody, "gpt-5.5");
+        JsonNode root = JSON.readTree(state.body());
+
+        assertFalse(root.has("previous_response_id"));
+        assertEquals("", state.previousResponseId());
+        assertTrue(state.continuationDisabled());
+    }
+
+    @Test
+    @DisplayName("OpenAI OAuth messages compat 使用 turn-state 而不是 previous_response_id")
+    void oauthMessagesCompatUsesTurnStateInsteadOfPreviousResponseId() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .build();
+        service.bindResponseId(account, 42L, "stable-cache-key", "resp_should_not_attach");
+        service.bindTurnState(account, 42L, "stable-cache-key", "turn_state_first");
+        String anthropic = """
+                {"model":"gpt-5.5","messages":[
+                  {"role":"user","content":"first"},
+                  {"role":"assistant","content":"ok"},
+                  {"role":"user","content":"second"}
+                ]}""";
+        String responsesBody = """
+                {
+                  "model":"gpt-5.5",
+                  "prompt_cache_key":"stable-cache-key",
+                  "input":[
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]},
+                    {"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"second"}]}
+                  ]
+                }""";
+
+        OpenAiCompatSessionService.CompatState state = service.prepareAnthropicMessagesCompat(
+                account, 42L, anthropic, responsesBody, "gpt-5.5");
+        JsonNode root = JSON.readTree(state.body());
+
+        assertEquals("turn_state_first", service.getTurnState(account, 42L, "stable-cache-key"));
+        assertFalse(root.has("previous_response_id"));
+        assertEquals("", state.previousResponseId());
+        assertEquals(3, root.get("input").size());
+    }
+
+    @Test
     @DisplayName("OpenAI API Key messages compat 对映射后的 Codex 模型执行 full replay trim")
     void apiKeyCompatTrimsFullReplayForMappedCodexModel() throws Exception {
         OpenAiCompatSessionService service = newService();

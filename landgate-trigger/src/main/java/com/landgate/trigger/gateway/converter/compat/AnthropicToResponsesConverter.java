@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import com.landgate.types.gateway.AnthropicMessagesSsePolicy;
 import com.landgate.types.gateway.AnthropicThinkingPolicy;
@@ -787,7 +788,7 @@ public class AnthropicToResponsesConverter {
 
         if (system.isTextual()) {
             String text = system.asText();
-            if (!text.isEmpty() && !text.startsWith(AnthropicMessagesBodyPolicy.BILLING_HEADER_PREFIX)) {
+            if (!text.isEmpty() && !AnthropicClaudeCodeProfile.isBillingHeaderText(text)) {
                 texts.add(text);
             }
             return texts;
@@ -799,7 +800,7 @@ public class AnthropicToResponsesConverter {
                 if (AnthropicMessagesBodyPolicy.TYPE_TEXT.equals(blockType)
                         && block.has(AnthropicMessagesBodyPolicy.FIELD_TEXT)) {
                     String text = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TEXT), "");
-                    if (!text.isEmpty() && !text.startsWith(AnthropicMessagesBodyPolicy.BILLING_HEADER_PREFIX)) {
+                    if (!text.isEmpty() && !AnthropicClaudeCodeProfile.isBillingHeaderText(text)) {
                         texts.add(text);
                     }
                 }

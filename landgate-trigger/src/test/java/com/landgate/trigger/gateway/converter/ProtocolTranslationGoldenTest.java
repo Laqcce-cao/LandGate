@@ -106,6 +106,9 @@ class ProtocolTranslationGoldenTest {
         assertEquals("function", toolCall.get("type").asText());
         assertEquals("get_weather", toolCall.get("function").get("name").asText());
         assertEquals("{\"city\":\"NYC\"}", toolCall.get("function").get("arguments").asText());
+        assertEquals(100, chat.get("usage").get("prompt_tokens").asInt());
+        assertEquals(10, chat.get("usage").get("completion_tokens").asInt());
+        assertEquals(110, chat.get("usage").get("total_tokens").asInt());
         assertEquals(80, chat.get("usage").get("prompt_tokens_details").get("cached_tokens").asInt());
     }
 
@@ -141,6 +144,60 @@ class ProtocolTranslationGoldenTest {
         assertEquals(20, usage.get("input_tokens").asInt());
         assertEquals(80, usage.get("cache_read_input_tokens").asInt());
         assertEquals(10, usage.get("output_tokens").asInt());
+    }
+
+    @Test
+    @DisplayName("Chat response cached usage keeps OpenAI raw prompt semantics when translated to Responses")
+    void chatCachedUsageTranslateToResponses() throws Exception {
+        String chatBody = """
+                {
+                  "id":"chatcmpl_cached",
+                  "object":"chat.completion",
+                  "created":1,
+                  "model":"gpt-5.4",
+                  "choices":[{"index":0,"message":{"role":"assistant","content":"cached"},"finish_reason":"stop"}],
+                  "usage":{
+                    "prompt_tokens":100,
+                    "completion_tokens":10,
+                    "total_tokens":110,
+                    "prompt_tokens_details":{"cached_tokens":80}
+                  }
+                }""";
+
+        JsonNode responses = JSON.readTree(service.translateResponse(chatBody, "chat_completions", "responses"));
+        JsonNode usage = responses.get("usage");
+
+        assertEquals(100, usage.get("input_tokens").asInt());
+        assertEquals(10, usage.get("output_tokens").asInt());
+        assertEquals(110, usage.get("total_tokens").asInt());
+        assertEquals(80, usage.get("input_tokens_details").get("cached_tokens").asInt());
+    }
+
+    @Test
+    @DisplayName("Anthropic response cached usage keeps Anthropic input semantics when translated to Responses")
+    void anthropicCachedUsageTranslateToResponses() throws Exception {
+        String messagesBody = """
+                {
+                  "id":"msg_cached",
+                  "type":"message",
+                  "role":"assistant",
+                  "model":"claude-sonnet-4-5",
+                  "content":[{"type":"text","text":"cached"}],
+                  "stop_reason":"end_turn",
+                  "usage":{
+                    "input_tokens":20,
+                    "output_tokens":10,
+                    "cache_read_input_tokens":80
+                  }
+                }""";
+
+        JsonNode responses = JSON.readTree(service.translateResponse(messagesBody, "messages", "responses"));
+        JsonNode usage = responses.get("usage");
+
+        assertEquals(20, usage.get("input_tokens").asInt());
+        assertEquals(10, usage.get("output_tokens").asInt());
+        assertEquals(30, usage.get("total_tokens").asInt());
+        assertEquals(80, usage.get("input_tokens_details").get("cached_tokens").asInt());
     }
 
     private static ProtocolTranslationService translationService() {

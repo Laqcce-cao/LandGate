@@ -122,6 +122,35 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("Chat endpoint 同时存在 messages 与 input 时 messages 优先")
+        void bothMessagesAndInputUseNormalChatConversion() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.4",
+                        "messages": [{"role": "user", "content": "Hello from messages"}],
+                        "input": [
+                            {"type": "message", "role": "user", "content": "Wrong Responses-shape input"}
+                        ],
+                        "prompt_cache_retention": "24h",
+                        "safety_identifier": "safe-user",
+                        "metadata": {"trace_id": "req_1"},
+                        "stream_options": {"include_usage": true}
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals(1, resp.get("input").size());
+            assertEquals("Hello from messages", resp.get("input").get(0).get("content").asText());
+            assertFalse(resp.toString().contains("Wrong Responses-shape input"));
+            assertFalse(resp.has("prompt_cache_retention"));
+            assertFalse(resp.has("safety_identifier"));
+            assertFalse(resp.has("metadata"));
+            assertFalse(resp.has("stream_options"));
+            assertTrue(resp.get("stream").asBoolean());
+            assertFalse(resp.get("store").asBoolean());
+        }
+
+        @Test
         @DisplayName("非法 max token 字段不写入 Responses IR")
         void invalidMaxTokensAreIgnored() {
             String zero = """

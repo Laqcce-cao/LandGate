@@ -50,6 +50,20 @@ public final class OpenAiCompatModelPolicy {
                         platform, credentialsJson, anthropicModel, requestedModel, responsesModel));
     }
 
+    public static String resolveOpenAiOAuthCodexModel(Platform platform,
+                                                      String credentialsJson,
+                                                      String model) {
+        String candidate = trim(model);
+        if (platform == Platform.OPENAI && !candidate.isBlank()) {
+            OpenAiModelMappingPolicy.MappedModel mapped =
+                    OpenAiModelMappingPolicy.resolveMappedModel(platform, credentialsJson, candidate);
+            if (mapped.matched()) {
+                candidate = mapped.model();
+            }
+        }
+        return OpenAiCodexProfile.normalizeModel(candidate);
+    }
+
     private static String firstNonBlank(String... values) {
         if (values == null) return "";
         for (String value : values) {

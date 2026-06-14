@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.types.gateway.ErrorResponsePolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
 import lombok.extern.slf4j.Slf4j;
@@ -25,18 +26,8 @@ public class OpenAiEncryptedReasoningRetryPolicy {
         if (statusCode != 400 || errorBody == null || errorBody.isBlank()) {
             return false;
         }
-        try {
-            JsonNode root = JSON.readTree(errorBody);
-            JsonNode error = root.get(OpenAiResponsesJsonPolicy.FIELD_ERROR);
-            JsonNode code = error != null && error.isObject()
-                    ? error.get(OpenAiResponsesJsonPolicy.FIELD_CODE)
-                    : root.get(OpenAiResponsesJsonPolicy.FIELD_CODE);
-            return code != null
-                    && code.isTextual()
-                    && OpenAiResponsesJsonPolicy.ERROR_CODE_INVALID_ENCRYPTED_CONTENT.equals(code.asText().trim());
-        } catch (Exception ignored) {
-            return false;
-        }
+        return OpenAiResponsesJsonPolicy.ERROR_CODE_INVALID_ENCRYPTED_CONTENT.equals(
+                ErrorResponsePolicy.extractUpstreamErrorCode(errorBody));
     }
 
     public SanitizedBody sanitizePreparedBody(String body) {

@@ -25,6 +25,8 @@ public final class RedisKeys {
     public static final String OAUTH_TOKEN_REFRESH_LOCK_PREFIX = "oauth:token:refresh:lock:";
     /** 分组支持模型并集缓存（TTL 5 分钟） */
     public static final String GROUP_SUPPORTED_MODELS_PREFIX = "group:supported_models:";
+    /** OpenAI 上游 403 连续失败计数 */
+    public static final String OPENAI_403_COUNTER_PREFIX = "openai:403:counter:";
 
     // ==================== Key 构造方法 ====================
 
@@ -62,5 +64,9 @@ public final class RedisKeys {
 
     public static String groupSupportedModelsKey(Long groupId) {
         return GROUP_SUPPORTED_MODELS_PREFIX + groupId;
+    }
+
+    public static String openAi403CounterKey(Long accountId) {
+        return OPENAI_403_COUNTER_PREFIX + accountId;
     }
 }

@@ -80,6 +80,34 @@ public class OAuthTokenRefreshService {
     }
 
     /**
+     * Marks an OAuth access token as expired so the next scheduler/request path
+     * refreshes it instead of reusing a token that upstream just rejected.
+     */
+    @Transactional
+    public boolean forceExpireAccessToken(Long accountId, Instant expiresAt) {
+        AccountEntity account = accountRepository.findById(accountId).orElse(null);
+        if (account == null || account.getDeletedAt() != null || account.getType() != AccountType.OAUTH) {
+            return false;
+        }
+        try {
+            String credentials = account.getCredentials();
+            JsonNode parsed = credentials == null || credentials.isBlank()
+                    ? JSON.createObjectNode()
+                    : JSON.readTree(credentials);
+            ObjectNode creds = parsed instanceof ObjectNode objectNode ? objectNode : JSON.createObjectNode();
+            Instant effective = expiresAt == null ? Instant.now() : expiresAt;
+            creds.put("token_expires_at", effective.toString());
+            account.setCredentials(creds.toString());
+            accountRepository.save(account);
+            scheduleProactiveRefresh(accountId, effective);
+            return true;
+        } catch (Exception e) {
+            log.warn("Failed to force-expire OAuth token: account_id={}", accountId, e);
+            return false;
+        }
+    }
+
+    /**
      * 执行实际的 token 刷新流程（由 {@link #refreshAccessToken} 在持锁后调用）。
      * <ol>
      *   <li>校验账号存在且为 OAUTH 类型</li>

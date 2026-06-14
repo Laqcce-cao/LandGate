@@ -72,13 +72,14 @@ public class OAuthMimicryService {
             // 2. 构造 billing block + CC prompt 两段 system 数组
             BillingHeaderService billingService = new BillingHeaderService();
             String billingBlockJson = billingService.buildBillingAttributionBlockJSON(
-                    body, ClaudeConstants.CLI_CURRENT_VERSION);
+                    body, AnthropicClaudeCodeProfile.CLI_CURRENT_VERSION);
             if (billingBlockJson == null) return body;
 
             JsonNode billingBlock = JSON.readTree(billingBlockJson);
             ObjectNode ccPromptBlock = JSON.createObjectNode();
             ccPromptBlock.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_TEXT);
-            ccPromptBlock.put(AnthropicMessagesBodyPolicy.FIELD_TEXT, ClaudeConstants.CLAUDE_CODE_SYSTEM_PROMPT);
+            ccPromptBlock.put(AnthropicMessagesBodyPolicy.FIELD_TEXT,
+                    AnthropicClaudeCodeProfile.CLAUDE_CODE_SYSTEM_PROMPT);
             ObjectNode cacheControl = JSON.createObjectNode();
             cacheControl.put(AnthropicMessagesBodyPolicy.FIELD_TYPE,
                     AnthropicMessagesBodyPolicy.CACHE_CONTROL_TYPE_EPHEMERAL);
@@ -92,10 +93,10 @@ public class OAuthMimicryService {
             rootObj.set(AnthropicMessagesBodyPolicy.FIELD_SYSTEM, newSystem);
 
             // 3. 将原始 system prompt 作为 user/assistant 消息对注入到 messages 开头
-            String ccPromptTrimmed = ClaudeConstants.CLAUDE_CODE_SYSTEM_PROMPT.trim();
+            String ccPromptTrimmed = AnthropicClaudeCodeProfile.CLAUDE_CODE_SYSTEM_PROMPT.trim();
             if (originalSystemText != null && !originalSystemText.isEmpty()
                     && !originalSystemText.equals(ccPromptTrimmed)
-                    && !originalSystemText.startsWith(ClaudeConstants.CLAUDE_CODE_PROMPT_PREFIX)) {
+                    && !originalSystemText.startsWith(AnthropicClaudeCodeProfile.CLAUDE_CODE_PROMPT_PREFIX)) {
 
                 // 构造 instruction 消息
                 ObjectNode instrMsg = JSON.createObjectNode();
@@ -103,7 +104,8 @@ public class OAuthMimicryService {
                 ArrayNode instrContent = JSON.createArrayNode();
                 ObjectNode instrText = JSON.createObjectNode();
                 instrText.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_TEXT);
-                instrText.put(AnthropicMessagesBodyPolicy.FIELD_TEXT, "[System Instructions]\n" + originalSystemText);
+                instrText.put(AnthropicMessagesBodyPolicy.FIELD_TEXT,
+                        AnthropicClaudeCodeProfile.SYSTEM_INSTRUCTIONS_PREFIX + originalSystemText);
                 instrContent.add(instrText);
                 instrMsg.set(AnthropicMessagesBodyPolicy.FIELD_CONTENT, instrContent);
 
@@ -113,7 +115,8 @@ public class OAuthMimicryService {
                 ArrayNode ackContent = JSON.createArrayNode();
                 ObjectNode ackText = JSON.createObjectNode();
                 ackText.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_TEXT);
-                ackText.put(AnthropicMessagesBodyPolicy.FIELD_TEXT, "Understood. I will follow these instructions.");
+                ackText.put(AnthropicMessagesBodyPolicy.FIELD_TEXT,
+                        AnthropicClaudeCodeProfile.SYSTEM_INSTRUCTIONS_ACKNOWLEDGEMENT);
                 ackContent.add(ackText);
                 ackMsg.set(AnthropicMessagesBodyPolicy.FIELD_CONTENT, ackContent);
 
@@ -199,7 +202,7 @@ public class OAuthMimicryService {
             // 标准化 model ID（短名→全名映射）
             if (rootObj.has(AnthropicMessagesBodyPolicy.FIELD_MODEL)) {
                 String rawModel = rootObj.get(AnthropicMessagesBodyPolicy.FIELD_MODEL).asText();
-                String normalized = ClaudeConstants.normalizeModelId(rawModel);
+                String normalized = AnthropicClaudeCodeProfile.normalizeModelId(rawModel);
                 if (!normalized.equals(rawModel)) {
                     rootObj.put(AnthropicMessagesBodyPolicy.FIELD_MODEL, normalized);
                     modified = true;
@@ -232,13 +235,15 @@ public class OAuthMimicryService {
 
             // 确保 temperature（默认 1）
             if (!rootObj.has(AnthropicMessagesBodyPolicy.FIELD_TEMPERATURE)) {
-                rootObj.put(AnthropicMessagesBodyPolicy.FIELD_TEMPERATURE, ClaudeConstants.DEFAULT_TEMPERATURE);
+                rootObj.put(AnthropicMessagesBodyPolicy.FIELD_TEMPERATURE,
+                        AnthropicClaudeCodeProfile.DEFAULT_TEMPERATURE);
                 modified = true;
             }
 
             // 确保 max_tokens（默认 128000）
             if (!rootObj.has(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS)) {
-                rootObj.put(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS, ClaudeConstants.DEFAULT_MAX_TOKENS);
+                rootObj.put(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS,
+                        AnthropicClaudeCodeProfile.DEFAULT_MAX_TOKENS);
                 modified = true;
             }
 
@@ -346,7 +351,8 @@ public class OAuthMimicryService {
                 return body;
             }
             ObjectNode rootObj = (ObjectNode) root;
-            boolean modified = forceEphemeralCacheControlTTL(rootObj, ClaudeConstants.CACHE_CONTROL_TTL_1H);
+            boolean modified = forceEphemeralCacheControlTTL(rootObj,
+                    AnthropicClaudeCodeProfile.CACHE_CONTROL_TTL_1H);
             return modified ? JSON.writeValueAsString(rootObj) : body;
         } catch (Exception e) {
             log.warn("Failed to apply Anthropic cache_control ttl=1h: {}", e.getMessage());
@@ -417,8 +423,8 @@ public class OAuthMimicryService {
                                             Set<String> droppedBetas) {
         if (builder == null) return;
 
-        // 强制标准 Claude Code CLI 头，顺序和 ClaudeConstants.DEFAULT_MIMICRY_HEADERS 保持一致。
-        ClaudeConstants.DEFAULT_MIMICRY_HEADERS.forEach(builder::setHeader);
+        // 强制标准 Claude Code CLI 头，顺序和 AnthropicClaudeCodeProfile.DEFAULT_MIMICRY_HEADERS 保持一致。
+        AnthropicClaudeCodeProfile.DEFAULT_MIMICRY_HEADERS.forEach(builder::setHeader);
 
         if (isStream) {
             builder.setHeader(AnthropicApiProfile.HEADER_STAINLESS_HELPER_METHOD,
@@ -428,7 +434,7 @@ public class OAuthMimicryService {
         // anthropic-beta 头
         builder.setHeader(AnthropicApiProfile.HEADER_ANTHROPIC_BETA,
                 AnthropicClaudeCodeProfile.mergeBetaHeader(
-                        ClaudeConstants.requiredMimicryBetas(model),
+                        AnthropicClaudeCodeProfile.requiredMimicryBetas(model),
                         GatewayHeaderPolicy.value(requestHeaders, AnthropicApiProfile.HEADER_ANTHROPIC_BETA),
                         droppedBetas));
     }
@@ -449,10 +455,10 @@ public class OAuthMimicryService {
                                          Map<String, String> requestHeaders,
                                          Set<String> droppedBetas) {
         if (builder == null) return;
-        ClaudeConstants.DEFAULT_MIMICRY_HEADERS.forEach(builder::setHeader);
+        AnthropicClaudeCodeProfile.DEFAULT_MIMICRY_HEADERS.forEach(builder::setHeader);
         builder.setHeader(AnthropicApiProfile.HEADER_ANTHROPIC_BETA,
                 AnthropicClaudeCodeProfile.stripBetaTokens(
-                        ClaudeConstants.ensureOAuthBetaHeader(model,
+                        AnthropicClaudeCodeProfile.ensureOAuthBetaHeader(model,
                                 GatewayHeaderPolicy.value(requestHeaders, AnthropicApiProfile.HEADER_ANTHROPIC_BETA)),
                         droppedBetas));
     }
@@ -557,7 +563,7 @@ public class OAuthMimicryService {
         if (existing != null && existing.isObject()) {
             if (existing.path(AnthropicMessagesBodyPolicy.FIELD_TTL).asText("").isBlank()) {
                 ((ObjectNode) existing).put(AnthropicMessagesBodyPolicy.FIELD_TTL,
-                        ClaudeConstants.DEFAULT_CACHE_CONTROL_TTL);
+                        AnthropicClaudeCodeProfile.DEFAULT_CACHE_CONTROL_TTL);
                 return true;
             }
             return false;
@@ -710,7 +716,7 @@ public class OAuthMimicryService {
         if (existing != null && existing.isObject()) {
             if (existing.path(AnthropicMessagesBodyPolicy.FIELD_TTL).asText("").isBlank()) {
                 ((ObjectNode) existing).put(AnthropicMessagesBodyPolicy.FIELD_TTL,
-                        ClaudeConstants.DEFAULT_CACHE_CONTROL_TTL);
+                        AnthropicClaudeCodeProfile.DEFAULT_CACHE_CONTROL_TTL);
                 return true;
             }
             return false;
@@ -726,7 +732,7 @@ public class OAuthMimicryService {
         cacheControl.put(AnthropicMessagesBodyPolicy.FIELD_TYPE,
                 AnthropicMessagesBodyPolicy.CACHE_CONTROL_TYPE_EPHEMERAL);
         cacheControl.put(AnthropicMessagesBodyPolicy.FIELD_TTL,
-                ClaudeConstants.DEFAULT_CACHE_CONTROL_TTL);
+                AnthropicClaudeCodeProfile.DEFAULT_CACHE_CONTROL_TTL);
         return cacheControl;
     }
 
@@ -784,8 +790,8 @@ public class OAuthMimicryService {
     private static String sanitizeSystemText(String text) {
         if (text == null || text.isEmpty()) return text;
         return text.replace(
-                "You are OpenCode, the best coding agent on the planet.",
-                ClaudeConstants.CLAUDE_CODE_SYSTEM_PROMPT.trim());
+                AnthropicClaudeCodeProfile.OPEN_CODE_SYSTEM_PROMPT,
+                AnthropicClaudeCodeProfile.CLAUDE_CODE_SYSTEM_PROMPT.trim());
     }
 
     /**
@@ -793,7 +799,7 @@ public class OAuthMimicryService {
      */
     private static String extractVersion(String ua) {
         if (ua == null) return "";
-        java.util.regex.Matcher m = ClaudeConstants.CLAUDE_CLI_UA_PATTERN.matcher(ua);
+        java.util.regex.Matcher m = AnthropicClaudeCodeProfile.CLAUDE_CLI_UA_PATTERN.matcher(ua);
         if (m.find()) {
             String matched = m.group();
             int slash = matched.indexOf('/');
@@ -809,8 +815,8 @@ public class OAuthMimicryService {
         try {
             if (account.getExtra() != null && !account.getExtra().equals("{}")) {
                 JsonNode extra = JSON.readTree(account.getExtra());
-                if (extra.has("claude_user_id")) {
-                    return extra.get("claude_user_id").asText().trim();
+                if (extra.has(AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_CLAUDE_USER_ID)) {
+                    return extra.get(AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_CLAUDE_USER_ID).asText().trim();
                 }
             }
         } catch (Exception e) {
@@ -826,8 +832,8 @@ public class OAuthMimicryService {
         try {
             if (account.getExtra() != null && !account.getExtra().equals("{}")) {
                 JsonNode extra = JSON.readTree(account.getExtra());
-                if (extra.has("account_uuid")) {
-                    return extra.get("account_uuid").asText().trim();
+                if (extra.has(AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_ACCOUNT_UUID)) {
+                    return extra.get(AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_ACCOUNT_UUID).asText().trim();
                 }
             }
         } catch (Exception e) {

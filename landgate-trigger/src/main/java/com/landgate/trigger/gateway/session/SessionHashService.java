@@ -2,6 +2,8 @@ package com.landgate.trigger.gateway.session;
 
 import com.landgate.types.gateway.CompatPromptCacheKeyPolicy;
 import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
+import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.OpenAiContentSessionSeedPolicy;
 import com.landgate.types.gateway.SessionHashPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -54,6 +56,10 @@ public class SessionHashService {
      * 使 OpenAI Responses 兼容请求能稳定粘到同一上游账号；否则回退到 IP + UA + API Key。
      */
     public String generateHash(HttpServletRequest request, Long apiKeyId, String body) {
+        return generateHash(request, apiKeyId, body, null);
+    }
+
+    public String generateHash(HttpServletRequest request, Long apiKeyId, String body, String requestFormat) {
         String promptCacheKey = CompatPromptCacheKeyPolicy.extractPromptCacheKey(body);
         if (!promptCacheKey.isEmpty()) {
             return hashRaw(SessionHashPolicy.promptCacheKeyMaterial(apiKeyId, promptCacheKey));
@@ -62,10 +68,21 @@ public class SessionHashService {
         if (!anthropicCacheAnchor.isEmpty()) {
             return hashRaw(SessionHashPolicy.anthropicCacheAnchorMaterial(apiKeyId, anthropicCacheAnchor));
         }
+        if (isOpenAiFormat(requestFormat)) {
+            String contentSeed = OpenAiContentSessionSeedPolicy.derive(body);
+            if (!contentSeed.isBlank()) {
+                return hashRaw(SessionHashPolicy.openAiContentSeedMaterial(apiKeyId, contentSeed));
+            }
+        }
 
         String clientIp = request.getRemoteAddr();
         String userAgent = request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT);
         return hashRaw(SessionHashPolicy.requestContextMaterial(clientIp, userAgent, apiKeyId));
+    }
+
+    private static boolean isOpenAiFormat(String requestFormat) {
+        return GatewayProtocolFormat.RESPONSES.is(requestFormat)
+                || GatewayProtocolFormat.CHAT_COMPLETIONS.is(requestFormat);
     }
 
     private static String hashRaw(String raw) {

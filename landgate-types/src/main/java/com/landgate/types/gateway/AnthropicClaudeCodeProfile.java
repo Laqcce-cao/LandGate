@@ -25,6 +25,7 @@ public final class AnthropicClaudeCodeProfile {
     public static final String BETA_EFFORT = "effort-2025-11-24";
     public static final String BETA_CONTEXT_MANAGEMENT = "context-management-2025-06-27";
     public static final String BETA_EXTENDED_CACHE_TTL = "extended-cache-ttl-2025-04-11";
+    public static final String BETA_FAST_MODE = "fast-mode-2026-02-01";
 
     public static final List<String> FULL_MIMICRY_BETAS = List.of(
             BETA_CLAUDE_CODE,
@@ -90,7 +91,20 @@ public final class AnthropicClaudeCodeProfile {
     public static final String CLAUDE_CODE_SYSTEM_PROMPT =
             "You are Claude Code, Anthropic's official CLI for Claude.";
     public static final String BILLING_HEADER_PREFIX = "x-anthropic-billing-header: ";
+    public static final String BILLING_HEADER_NAME = "x-anthropic-billing-header";
+    public static final String BILLING_CC_VERSION_KEY = "cc_version";
+    public static final String BILLING_CC_ENTRYPOINT_CLI = "cc_entrypoint=cli";
+    public static final String BILLING_CCH_KEY = "cch";
+    public static final String BILLING_CCH_PLACEHOLDER = "00000";
     public static final String CLAUDE_CODE_PROMPT_PREFIX = "You are Claude Code";
+    public static final String OPEN_CODE_SYSTEM_PROMPT =
+            "You are OpenCode, the best coding agent on the planet.";
+    public static final String SYSTEM_INSTRUCTIONS_PREFIX = "[System Instructions]\n";
+    public static final String SYSTEM_INSTRUCTIONS_ACKNOWLEDGEMENT =
+            "Understood. I will follow these instructions.";
+
+    public static final String ACCOUNT_EXTRA_ACCOUNT_UUID = "account_uuid";
+    public static final String ACCOUNT_EXTRA_CLAUDE_USER_ID = "claude_user_id";
 
     public static final double SYSTEM_PROMPT_THRESHOLD = 0.5;
     public static final int DEFAULT_MAX_TOKENS = 128000;
@@ -119,6 +133,17 @@ public final class AnthropicClaudeCodeProfile {
 
     public static String fullMimicryBetaHeader() {
         return String.join(",", FULL_MIMICRY_BETAS);
+    }
+
+    public static String billingHeaderText(String cliVersion, String fingerprint) {
+        return BILLING_HEADER_PREFIX
+                + BILLING_CC_VERSION_KEY + "=" + cliVersion + "." + fingerprint + "; "
+                + BILLING_CC_ENTRYPOINT_CLI + "; "
+                + BILLING_CCH_KEY + "=" + BILLING_CCH_PLACEHOLDER + ";";
+    }
+
+    public static boolean isBillingHeaderText(String text) {
+        return text != null && text.startsWith(BILLING_HEADER_NAME);
     }
 
     public static String haikuMimicryBetaHeader() {

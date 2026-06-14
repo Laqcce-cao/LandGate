@@ -14,15 +14,20 @@ import com.landgate.trigger.gateway.route.OpenAiOAuthCodexRouteStrategy;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
+import com.landgate.trigger.gateway.session.OpenAiCompatPromptCacheKeyInjector;
 import com.landgate.trigger.gateway.transformer.AnthropicTransformer;
 import com.landgate.trigger.gateway.transformer.OpenAiTransformer;
 import com.landgate.trigger.gateway.transformer.UpstreamRequestContext;
+import com.landgate.trigger.gateway.transformer.UpstreamAnthropicBetaRequestNormalizer;
+import com.landgate.trigger.gateway.transformer.UpstreamStreamRequestNormalizer;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.AnthropicApiProfile;
+import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.GatewaySensitiveHeaderPolicy;
 import com.landgate.types.gateway.OpenAiAnthropicMessagesCompatPolicy;
 import com.landgate.types.gateway.OpenAiCodexProfile;
+import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -87,6 +92,29 @@ class GatewayRouteMatrixRequestTest {
         assertTrue(upstream.get("input").get(0).get("content").get(0).get("text").asText()
                 .contains(OpenAiAnthropicMessagesCompatPolicy.TODO_GUARD_MARKER));
         assertEquals("user", upstream.get("input").get(1).get("role").asText());
+    }
+
+    @Test
+    @DisplayName("Messages client fast-mode beta is filtered by default OpenAI fast policy")
+    void messagesClientFastModeBetaMapsToOpenAiResponsesServiceTier() throws Exception {
+        AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,
+                "{}", "{}", "[\"responses\"]");
+        String clientBody = """
+                {
+                  "model":"claude-sonnet-4-5",
+                  "max_tokens":128,
+                  "stream":false,
+                  "messages":[{"role":"user","content":"Hello"}]
+                }""";
+
+        PreparedRequest prepared = prepare(account, Platform.ANTHROPIC, "messages", clientBody, false, null,
+                defaultRequestHeaders(Map.of(AnthropicApiProfile.HEADER_ANTHROPIC_BETA,
+                        "foo," + AnthropicClaudeCodeProfile.BETA_FAST_MODE)));
+        JsonNode upstream = JSON.readTree(prepared.body());
+
+        assertEquals("messages", prepared.route().clientFormat());
+        assertEquals("responses", prepared.route().upstreamFormat());
+        assertFalse(upstream.has(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER));
     }
 
     @Test
@@ -297,7 +325,7 @@ class GatewayRouteMatrixRequestTest {
         assertEquals(OpenAiCodexProfile.ORIGINATOR_CODEX_CLI_RS,
                 prepared.header(OpenAiCodexProfile.HEADER_ORIGINATOR));
         assertTrue(upstream.get("stream").asBoolean());
-        assertEquals("priority", upstream.get("service_tier").asText());
+        assertFalse(upstream.has("service_tier"));
         assertEquals("Project rules", upstream.get("instructions").asText());
         assertEquals("user", upstream.get("input").get(0).get("role").asText());
     }
@@ -328,8 +356,68 @@ class GatewayRouteMatrixRequestTest {
         assertEquals(OpenAiCodexProfile.OPENAI_BETA_RESPONSES_EXPERIMENTAL,
                 prepared.header(OpenAiCodexProfile.HEADER_OPENAI_BETA));
         assertTrue(upstream.get("stream").asBoolean());
+        assertTrue(upstream.get("prompt_cache_key").asText().startsWith("compat_cc_"));
+        assertFalse(prepared.header(OpenAiCodexProfile.HEADER_SESSION_ID).isBlank());
         assertEquals("Project rules", upstream.get("instructions").asText());
         assertEquals("user", upstream.get("input").get(0).get("role").asText());
+    }
+
+    @Test
+    @DisplayName("Chat client + OpenAI OAuth account derives stable compat prompt_cache_key from first turn")
+    void chatClientToOpenAiOAuthCodexDerivesStablePromptCacheKey() throws Exception {
+        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH,
+                "{\"chatgpt_account_id\":\"acct_1\"}", "{}", "[\"responses\"]");
+        String firstTurn = """
+                {
+                  "model":"gpt-5.4",
+                  "stream":false,
+                  "tools":[{"type":"function","function":{"name":"get_weather"}}],
+                  "messages":[
+                    {"role":"system","content":"Project rules"},
+                    {"role":"user","content":"Hello"}
+                  ]
+                }""";
+        String laterTurn = """
+                {
+                  "model":"gpt-5.4",
+                  "stream":false,
+                  "tools":[{"type":"function","function":{"name":"get_weather"}}],
+                  "messages":[
+                    {"role":"system","content":"Project rules"},
+                    {"role":"user","content":"Hello"},
+                    {"role":"assistant","content":"Hi"},
+                    {"role":"user","content":"Next"}
+                  ]
+                }""";
+
+        PreparedRequest first = prepare(account, Platform.OPENAI, "chat_completions", firstTurn, false, null);
+        PreparedRequest later = prepare(account, Platform.OPENAI, "chat_completions", laterTurn, false, null);
+        JsonNode firstBody = JSON.readTree(first.body());
+        JsonNode laterBody = JSON.readTree(later.body());
+
+        assertEquals(firstBody.get("prompt_cache_key").asText(), laterBody.get("prompt_cache_key").asText());
+        assertEquals(first.header(OpenAiCodexProfile.HEADER_SESSION_ID),
+                later.header(OpenAiCodexProfile.HEADER_SESSION_ID));
+    }
+
+    @Test
+    @DisplayName("Chat client + OpenAI OAuth account does not auto prompt_cache_key for non-Codex-compatible model")
+    void chatClientToOpenAiOAuthCodexSkipsPromptCacheKeyForNonCompatModel() throws Exception {
+        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH,
+                "{\"chatgpt_account_id\":\"acct_1\"}", "{}", "[\"responses\"]");
+        String clientBody = """
+                {
+                  "model":"gpt-4o",
+                  "stream":false,
+                  "messages":[{"role":"user","content":"Hello"}]
+                }""";
+
+        PreparedRequest prepared = prepare(account, Platform.OPENAI, "chat_completions", clientBody, false, null,
+                "gpt-4o", defaultRequestHeaders(Map.of()));
+        JsonNode upstream = JSON.readTree(prepared.body());
+
+        assertFalse(upstream.has("prompt_cache_key"));
+        assertTrue(prepared.header(OpenAiCodexProfile.HEADER_SESSION_ID).isBlank());
     }
 
     @Test
@@ -351,13 +439,13 @@ class GatewayRouteMatrixRequestTest {
 
         assertEquals("messages", prepared.route().clientFormat());
         assertEquals("responses", prepared.route().upstreamFormat());
-        assertFalse(prepared.upstreamStream());
+        assertTrue(prepared.upstreamStream());
         assertEquals("https://api.openai.com/v1/responses", prepared.request().uri().toString());
         assertEquals("Bearer selected-token", prepared.header(OpenAiCodexProfile.HEADER_AUTHORIZATION));
-        assertEquals(OpenAiCodexProfile.ACCEPT_JSON, prepared.header(OpenAiCodexProfile.HEADER_ACCEPT));
+        assertEquals(OpenAiCodexProfile.ACCEPT_EVENT_STREAM, prepared.header(OpenAiCodexProfile.HEADER_ACCEPT));
         assertTrue(prepared.request().headers().firstValue(OpenAiCodexProfile.HEADER_OPENAI_BETA).isEmpty());
         assertFalse(upstream.has("max_output_tokens"));
-        assertFalse(upstream.get("stream").asBoolean());
+        assertTrue(upstream.get("stream").asBoolean());
         assertEquals("developer", upstream.get("input").get(0).get("role").asText());
         assertEquals("user", upstream.get("input").get(1).get("role").asText());
     }
@@ -384,7 +472,7 @@ class GatewayRouteMatrixRequestTest {
         assertEquals("https://api.openai.com/v1/responses", prepared.request().uri().toString());
         assertEquals("Bearer selected-token", prepared.header(OpenAiCodexProfile.HEADER_AUTHORIZATION));
         assertEquals(OpenAiCodexProfile.ACCEPT_JSON, prepared.header(OpenAiCodexProfile.HEADER_ACCEPT));
-        assertEquals("priority", upstream.get("service_tier").asText());
+        assertFalse(upstream.has("service_tier"));
         assertFalse(upstream.get("stream").asBoolean());
         assertEquals("user", upstream.get("input").get(0).get("role").asText());
     }
@@ -501,7 +589,7 @@ class GatewayRouteMatrixRequestTest {
         assertTrue(prepared.upstreamStream());
         assertEquals("https://api.openai.com/v1/responses", prepared.request().uri().toString());
         assertTrue(upstream.get("stream").asBoolean());
-        assertEquals("priority", upstream.get("service_tier").asText());
+        assertFalse(upstream.has("service_tier"));
         assertEquals("tenant:thread", upstream.get("prompt_cache_key").asText());
         assertFalse(upstream.has("max_output_tokens"));
         assertFalse(upstream.has("prompt_cache_retention"));
@@ -509,6 +597,74 @@ class GatewayRouteMatrixRequestTest {
         assertFalse(upstream.has("metadata"));
         assertFalse(upstream.has("stream_options"));
         assertEquals("Hello from Responses shape", upstream.get("input").get(0).get("content").asText());
+    }
+
+    @Test
+    @DisplayName("Chat client + Responses-shape body preserves input when routed to OpenAI OAuth Codex")
+    void chatClientResponsesShapeBodyToOpenAiOAuthCodex() throws Exception {
+        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH,
+                "{\"chatgpt_account_id\":\"acct_1\"}", "{}", "[\"responses\"]");
+        String clientBody = """
+                {
+                  "model":"gpt-5.4",
+                  "stream":false,
+                  "service_tier":"fast",
+                  "prompt_cache_key":"tenant:thread",
+                  "prompt_cache_retention":"24h",
+                  "safety_identifier":"safe-user",
+                  "metadata":{"trace_id":"req_1"},
+                  "stream_options":{"include_usage":true},
+                  "input":[{"type":"message","role":"user","content":"Hello from Responses shape"}]
+                }""";
+
+        PreparedRequest prepared = prepare(account, Platform.OPENAI, "chat_completions", clientBody, false, null);
+        JsonNode upstream = JSON.readTree(prepared.body());
+
+        assertEquals("chat_completions", prepared.route().clientFormat());
+        assertEquals("responses", prepared.route().upstreamFormat());
+        assertTrue(prepared.upstreamStream());
+        assertEquals("https://chatgpt.com/backend-api/codex/responses", prepared.request().uri().toString());
+        assertEquals(OpenAiCodexProfile.ACCEPT_EVENT_STREAM, prepared.header(OpenAiCodexProfile.HEADER_ACCEPT));
+        assertTrue(upstream.get("stream").asBoolean());
+        assertFalse(upstream.has("service_tier"));
+        assertEquals("tenant:thread", upstream.get("prompt_cache_key").asText());
+        assertFalse(upstream.has("prompt_cache_retention"));
+        assertFalse(upstream.has("safety_identifier"));
+        assertFalse(upstream.has("metadata"));
+        assertFalse(upstream.has("stream_options"));
+        assertEquals("Hello from Responses shape", upstream.get("input").get(0).get("content").asText());
+    }
+
+    @Test
+    @DisplayName("Chat client + Responses-shape OAuth Codex derives Sub2API compat prompt_cache_key from model")
+    void chatClientResponsesShapeOAuthCodexDerivesModelOnlyCompatPromptCacheKey() throws Exception {
+        AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH,
+                "{\"chatgpt_account_id\":\"acct_1\"}", "{}", "[\"responses\"]");
+        String firstBody = """
+                {
+                  "model":"gpt-5.4",
+                  "stream":false,
+                  "input":[{"type":"message","role":"user","content":"First Responses-shaped request"}]
+                }""";
+        String laterBody = """
+                {
+                  "model":"gpt-5.4",
+                  "stream":false,
+                  "input":[{"type":"message","role":"user","content":"Different Responses-shaped request"}]
+                }""";
+
+        PreparedRequest first = prepare(account, Platform.OPENAI, "chat_completions", firstBody, false, null);
+        PreparedRequest later = prepare(account, Platform.OPENAI, "chat_completions", laterBody, false, null);
+        JsonNode firstUpstream = JSON.readTree(first.body());
+        JsonNode laterUpstream = JSON.readTree(later.body());
+
+        assertTrue(firstUpstream.get("prompt_cache_key").asText().startsWith("compat_cc_"));
+        assertEquals(firstUpstream.get("prompt_cache_key").asText(),
+                laterUpstream.get("prompt_cache_key").asText());
+        assertEquals(first.header(OpenAiCodexProfile.HEADER_SESSION_ID),
+                later.header(OpenAiCodexProfile.HEADER_SESSION_ID));
+        assertEquals("First Responses-shaped request", firstUpstream.get("input").get(0).get("content").asText());
+        assertEquals("Different Responses-shaped request", laterUpstream.get("input").get(0).get("content").asText());
     }
 
     @Test
@@ -546,16 +702,55 @@ class GatewayRouteMatrixRequestTest {
                                     String clientBody,
                                     boolean clientStream,
                                     String upstreamPath) throws Exception {
+        return prepare(account, requestPlatform, requestFormat, clientBody, clientStream, upstreamPath,
+                defaultRequestHeaders(Map.of()));
+    }
+
+    private PreparedRequest prepare(AccountEntity account,
+                                    Platform requestPlatform,
+                                    String requestFormat,
+                                    String clientBody,
+                                    boolean clientStream,
+                                    String upstreamPath,
+                                    String requestedModel,
+                                    Map<String, String> requestHeaders) throws Exception {
+        return prepareInternal(account, requestPlatform, requestFormat, clientBody, clientStream, upstreamPath,
+                requestedModel, requestHeaders);
+    }
+
+    private PreparedRequest prepare(AccountEntity account,
+                                    Platform requestPlatform,
+                                    String requestFormat,
+                                    String clientBody,
+                                    boolean clientStream,
+                                    String upstreamPath,
+                                    Map<String, String> requestHeaders) throws Exception {
+        return prepareInternal(account, requestPlatform, requestFormat, clientBody, clientStream, upstreamPath,
+                "gpt-5.5", requestHeaders);
+    }
+
+    private PreparedRequest prepareInternal(AccountEntity account,
+                                            Platform requestPlatform,
+                                            String requestFormat,
+                                            String clientBody,
+                                            boolean clientStream,
+                                            String upstreamPath,
+                                            String requestedModel,
+                                            Map<String, String> requestHeaders) throws Exception {
         UpstreamRoute route = resolver.resolve(UpstreamRouteRequest.builder()
                 .account(account)
                 .requestPlatform(requestPlatform)
                 .requestFormat(requestFormat)
                 .upstreamPath(upstreamPath)
-                .requestedModel("gpt-5.5")
+                .requestedModel(requestedModel)
                 .build());
         boolean upstreamStream = route.forceNonStreamingResponse() ? false : route.forceStreaming() || clientStream;
         GatewayProtocolPlan plan = protocolPlanner.plan(requestPlatform, route);
         String upstreamBody = plan.prepareRequestBody("req_matrix", clientBody, translationService::translateRequest);
+        upstreamBody = UpstreamAnthropicBetaRequestNormalizer.normalize(upstreamBody, route, requestHeaders);
+        upstreamBody = OpenAiCompatPromptCacheKeyInjector.injectChatCompletionsCodexCompat(
+                account, route, clientBody, upstreamBody, requestedModel).body();
+        upstreamBody = UpstreamStreamRequestNormalizer.normalize(upstreamBody, route, upstreamStream);
 
         HttpRequest request = transformerFor(account).buildUpstreamRequest(new UpstreamRequestContext(
                 "req_matrix",
@@ -566,22 +761,28 @@ class GatewayRouteMatrixRequestTest {
                 route,
                 null,
                 upstreamPath,
-                "gpt-5.5",
+                requestedModel,
                 upstreamStream,
                 false,
-                Map.ofEntries(
-                        Map.entry(GatewaySensitiveHeaderPolicy.HEADER_AUTHORIZATION, "Bearer inbound"),
-                        Map.entry(GatewaySensitiveHeaderPolicy.HEADER_X_API_KEY, "inbound-api-key"),
-                        Map.entry("X-Goog-Api-Key", "inbound-goog-key"),
-                        Map.entry(GatewaySensitiveHeaderPolicy.HEADER_COOKIE, "secret=1"),
-                        Map.entry(GatewaySensitiveHeaderPolicy.HEADER_PROXY_AUTHORIZATION, "Basic inbound-proxy"),
-                        Map.entry(AnthropicApiProfile.HEADER_ANTHROPIC_BETA, "interleaved-thinking-2025-05-14"),
-                        Map.entry("User-Agent", "curl/8.0"),
-                        Map.entry("Accept-Language", "zh-CN"),
-                        Map.entry("OpenAI-Beta", "responses=experimental"),
-                        Map.entry("x-codex-turn-state", "turn_state"))));
+                requestHeaders));
 
         return new PreparedRequest(route, upstreamStream, request, readBody(request));
+    }
+
+    private static Map<String, String> defaultRequestHeaders(Map<String, String> overrides) {
+        java.util.LinkedHashMap<String, String> headers = new java.util.LinkedHashMap<>();
+        headers.put(GatewaySensitiveHeaderPolicy.HEADER_AUTHORIZATION, "Bearer inbound");
+        headers.put(GatewaySensitiveHeaderPolicy.HEADER_X_API_KEY, "inbound-api-key");
+        headers.put("X-Goog-Api-Key", "inbound-goog-key");
+        headers.put(GatewaySensitiveHeaderPolicy.HEADER_COOKIE, "secret=1");
+        headers.put(GatewaySensitiveHeaderPolicy.HEADER_PROXY_AUTHORIZATION, "Basic inbound-proxy");
+        headers.put(AnthropicApiProfile.HEADER_ANTHROPIC_BETA, "interleaved-thinking-2025-05-14");
+        headers.put("User-Agent", "curl/8.0");
+        headers.put("Accept-Language", "zh-CN");
+        headers.put("OpenAI-Beta", "responses=experimental");
+        headers.put("x-codex-turn-state", "turn_state");
+        headers.putAll(overrides);
+        return Map.copyOf(headers);
     }
 
     private static com.landgate.trigger.gateway.transformer.IRequestTransformer transformerFor(AccountEntity account) {

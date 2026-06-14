@@ -83,6 +83,8 @@ class OpenAiResponsesBodyPolicyTest {
         assertEquals("priority", OpenAiResponsesBodyPolicy.normalizeServiceTier(" fast "));
         assertEquals("flex", OpenAiResponsesBodyPolicy.normalizeServiceTier("flex"));
         assertEquals("auto", OpenAiResponsesBodyPolicy.normalizeServiceTier("auto"));
+        assertEquals("default", OpenAiResponsesBodyPolicy.normalizeServiceTier("default"));
+        assertEquals("scale", OpenAiResponsesBodyPolicy.normalizeServiceTier("scale"));
         assertEquals("", OpenAiResponsesBodyPolicy.normalizeServiceTier("turbo"));
     }
 

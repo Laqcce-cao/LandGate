@@ -8,8 +8,10 @@ import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.gateway.GatewayResponsesRoutePolicy;
 import com.landgate.types.gateway.OpenAiCompactAccountPolicy;
 import com.landgate.types.gateway.OpenAiCompactRequestBodyPolicy;
+import com.landgate.types.gateway.OpenAiFastPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -23,6 +25,16 @@ import java.util.List;
 public class OpenAiResponsesRequestNormalizer {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private final OpenAiFastPolicyProvider fastPolicyProvider;
+
+    public OpenAiResponsesRequestNormalizer() {
+        this(null);
+    }
+
+    @Autowired
+    OpenAiResponsesRequestNormalizer(OpenAiFastPolicyProvider fastPolicyProvider) {
+        this.fastPolicyProvider = fastPolicyProvider;
+    }
 
     public String normalize(String body) {
         return normalize(body, null);
@@ -41,12 +53,14 @@ public class OpenAiResponsesRequestNormalizer {
                 retainCompactRequestFields(root);
             } else {
                 OpenAiModelMappingRequestNormalizer.apply(root, account, OpenAiResponsesBodyPolicy.FIELD_MODEL);
-                normalizeOpenAIServiceTier(root);
+                normalizeOpenAIServiceTier(root, account);
                 normalizeReasoningEffort(root);
                 root.remove(OpenAiNormalizerProfile.publicResponsesUnsupportedFields());
             }
             sanitizeEmptyBase64InputImages(root);
             return JSON.writeValueAsString(root);
+        } catch (OpenAiFastPolicyBlockedException e) {
+            throw e;
         } catch (Exception e) {
             log.warn("Failed to normalize OpenAI API key Responses request body", e);
             return body;
@@ -83,7 +97,7 @@ public class OpenAiResponsesRequestNormalizer {
         root.remove(toRemove);
     }
 
-    private static void normalizeOpenAIServiceTier(ObjectNode root) {
+    private void normalizeOpenAIServiceTier(ObjectNode root, AccountEntity account) {
         JsonNode value = root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
         if (value == null || !value.isTextual()) {
             return;
@@ -91,9 +105,33 @@ public class OpenAiResponsesRequestNormalizer {
         String normalized = OpenAiNormalizerProfile.normalizeServiceTier(value.asText());
         if (normalized.isBlank()) {
             root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            return;
+        }
+        OpenAiFastPolicy.Decision decision = OpenAiFastPolicy.evaluate(
+                fastPolicySettings(),
+                account == null ? null : account.getType(),
+                model(root),
+                normalized);
+        if (decision.blocks()) {
+            String message = decision.message().isBlank()
+                    ? OpenAiFastPolicy.defaultBlockMessage(normalized, model(root))
+                    : decision.message();
+            throw new OpenAiFastPolicyBlockedException(message, normalized, model(root));
+        }
+        if (decision.filters()) {
+            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
         } else {
             root.put(OpenAiNormalizerProfile.FIELD_SERVICE_TIER, normalized);
         }
+    }
+
+    private OpenAiFastPolicy.Settings fastPolicySettings() {
+        return fastPolicyProvider == null ? OpenAiFastPolicy.defaultSettings() : fastPolicyProvider.current();
+    }
+
+    private static String model(ObjectNode root) {
+        JsonNode model = root.get(OpenAiResponsesBodyPolicy.FIELD_MODEL);
+        return model != null && model.isTextual() ? model.asText() : "";
     }
 
     private static void normalizeReasoningEffort(ObjectNode root) {

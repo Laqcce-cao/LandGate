@@ -30,4 +30,16 @@ class AnthropicMessagesSsePolicyTest {
         assertTrue(AnthropicMessagesSsePolicy.isDoneSentinel(" [DONE] "));
         assertFalse(AnthropicMessagesSsePolicy.isDoneSentinel("{}"));
     }
+
+    @Test
+    @DisplayName("Anthropic 协议终止事件与 done sentinel 分离")
+    void distinguishesProtocolTerminalFromDoneSentinel() {
+        assertTrue(AnthropicMessagesSsePolicy.isMessageStopEventLine("event: message_stop"));
+        assertTrue(AnthropicMessagesSsePolicy.isMessageStopEventLine("event: message_stop   "));
+        assertFalse(AnthropicMessagesSsePolicy.isMessageStopEventLine("event: content_block_stop"));
+        assertFalse(AnthropicMessagesSsePolicy.isMessageStopEventLine("data: [DONE]"));
+
+        assertTrue(AnthropicMessagesSsePolicy.isMessageStopType("message_stop"));
+        assertFalse(AnthropicMessagesSsePolicy.isMessageStopType("[DONE]"));
+    }
 }

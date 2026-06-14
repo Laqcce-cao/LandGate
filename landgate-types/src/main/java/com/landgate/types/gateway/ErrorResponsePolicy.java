@@ -1,5 +1,8 @@
 package com.landgate.types.gateway;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.util.List;
 import java.util.Set;
 
@@ -11,6 +14,8 @@ import java.util.Set;
  * protocol error type mapping.</p>
  */
 public final class ErrorResponsePolicy {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private static final List<RetryRule> RETRY_RULES = List.of(
             new RetryRule(Set.of(400, 404),
@@ -59,6 +64,11 @@ public final class ErrorResponsePolicy {
             return defaultMessage(statusCode);
         }
 
+        String parsed = extractJsonMessage(responseBody);
+        if (!parsed.isBlank()) {
+            return truncateSafeMessage(parsed);
+        }
+
         for (JsonMessagePath path : SAFE_MESSAGE_PATHS) {
             String message = extractJsonStringByLiteralPath(responseBody, path.literal());
             if (!message.isBlank()) {
@@ -67,6 +77,129 @@ public final class ErrorResponsePolicy {
         }
 
         return defaultMessage(statusCode);
+    }
+
+    public static String extractUpstreamErrorMessage(String responseBody) {
+        if (responseBody == null || responseBody.isEmpty()) {
+            return "";
+        }
+        try {
+            return extractUpstreamErrorMessage(JSON.readTree(responseBody));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    public static String extractUpstreamErrorMessage(JsonNode root) {
+        if (root == null) {
+            return "";
+        }
+        String responseError = textAt(root, "response", "error", "message");
+        if (!responseError.isBlank()) {
+            return responseError;
+        }
+        String message = textAt(root, "error", "message");
+        if (!message.isBlank()) {
+            String inner = extractInnerJsonErrorMessage(message);
+            return inner.isBlank() ? message : inner;
+        }
+        String detail = textAt(root, "detail");
+        if (!detail.isBlank()) {
+            return detail;
+        }
+        return textAt(root, "message");
+    }
+
+    public static String extractUpstreamErrorCode(String responseBody) {
+        if (responseBody == null || responseBody.isEmpty()) {
+            return "";
+        }
+        try {
+            return extractUpstreamErrorCode(JSON.readTree(responseBody));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    public static String extractUpstreamErrorCode(JsonNode root) {
+        if (root == null) {
+            return "";
+        }
+        String code = textAt(root, "error", "code");
+        if (!code.isBlank()) {
+            return code;
+        }
+        String message = textAt(root, "error", "message");
+        if (message.isBlank() || !message.trim().startsWith("{")) {
+            return "";
+        }
+        try {
+            return textAt(JSON.readTree(message), "error", "code");
+        } catch (Exception ignored) {
+            int lastBrace = message.lastIndexOf('}');
+            if (lastBrace < 0) {
+                return "";
+            }
+            try {
+                return textAt(JSON.readTree(message.substring(0, lastBrace + 1)), "error", "code");
+            } catch (Exception ignoredAgain) {
+                return "";
+            }
+        }
+    }
+
+    public static String extractTopLevelDetail(String responseBody) {
+        if (responseBody == null || responseBody.isEmpty()) {
+            return "";
+        }
+        try {
+            return textAt(JSON.readTree(responseBody), "detail");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    public static String extractDetailCode(String responseBody) {
+        if (responseBody == null || responseBody.isEmpty()) {
+            return "";
+        }
+        try {
+            return textAt(JSON.readTree(responseBody), "detail", "code");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String extractJsonMessage(String responseBody) {
+        try {
+            return extractUpstreamErrorMessage(JSON.readTree(responseBody));
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String extractInnerJsonErrorMessage(String message) {
+        String trimmed = message == null ? "" : message.trim();
+        if (!trimmed.startsWith("{")) {
+            return "";
+        }
+        try {
+            JsonNode inner = JSON.readTree(trimmed);
+            return textAt(inner, "error", "message");
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static String textAt(JsonNode root, String... path) {
+        JsonNode current = root;
+        for (String part : path) {
+            if (current == null || !current.isObject()) {
+                return "";
+            }
+            current = current.get(part);
+        }
+        return current != null && current.isTextual() ? current.asText().trim() : "";
     }
 
     public static String defaultMessage(int statusCode) {

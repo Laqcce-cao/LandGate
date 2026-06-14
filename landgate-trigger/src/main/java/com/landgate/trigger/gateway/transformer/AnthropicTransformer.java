@@ -291,8 +291,8 @@ public class AnthropicTransformer implements IRequestTransformer {
         try {
             if (account.getExtra() != null && !account.getExtra().equals("{}")) {
                 JsonNode extra = JSON.readTree(account.getExtra());
-                if (extra.has("account_uuid")) {
-                    return extra.get("account_uuid").asText().trim();
+                if (extra.has(AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_ACCOUNT_UUID)) {
+                    return extra.get(AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_ACCOUNT_UUID).asText().trim();
                 }
             }
         } catch (Exception e) {

@@ -33,7 +33,8 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
                 ? UpstreamEndpointProfile.OPENAI_RESPONSES
                 : UpstreamEndpointProfile.OPENAI_CHAT_COMPLETIONS;
         boolean forceStreaming = useResponses
-                && GatewayProtocolFormat.CHAT_COMPLETIONS.is(request.requestFormat());
+                && (GatewayProtocolFormat.CHAT_COMPLETIONS.is(request.requestFormat())
+                || GatewayProtocolFormat.MESSAGES.is(request.requestFormat()));
 
         return new UpstreamRoute(
                 Platform.OPENAI,

@@ -184,4 +184,23 @@ class OpenAiResponsesHttpRequestValidatorTest {
 
         assertTrue(result.accepted());
     }
+
+    @Test
+    @DisplayName("Responses HTTP rejects missing call_id before accepting item_reference coverage")
+    void responsesHttpRejectsMissingCallIdEvenWhenOtherCallIdsAreReferenced() {
+        var result = validator.validate("""
+                {
+                  "model":"gpt-5.5",
+                  "input":[
+                    {"type":"item_reference","id":"call_1"},
+                    {"type":"function_call_output","call_id":"call_1","output":"ok"},
+                    {"type":"function_call_output","output":"missing"}
+                  ]
+                }""", "responses");
+
+        assertFalse(result.accepted());
+        assertEquals(400, result.status());
+        assertEquals("function_call_output requires call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2",
+                result.message());
+    }
 }

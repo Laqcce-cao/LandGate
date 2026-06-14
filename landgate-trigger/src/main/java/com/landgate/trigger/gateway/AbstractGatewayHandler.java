@@ -35,22 +35,30 @@ import com.landgate.trigger.gateway.request.OpenAiChatCompletionsHttpRequestVali
 import com.landgate.trigger.gateway.request.OpenAiResponsesHttpRequestValidator;
 import com.landgate.trigger.gateway.response.GatewayResponseResult;
 import com.landgate.trigger.gateway.response.GatewayResponseService;
+import com.landgate.trigger.gateway.retry.AnthropicThinkingRetryPolicy;
 import com.landgate.trigger.gateway.retry.OpenAiEncryptedReasoningRetryPolicy;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.route.UpstreamRouteRequest;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import com.landgate.trigger.gateway.account.AccountSelector;
+import com.landgate.trigger.gateway.account.OpenAiAccountErrorStateService;
 import com.landgate.trigger.gateway.session.OpenAiCompatSessionService;
+import com.landgate.trigger.gateway.session.OpenAiCompatPromptCacheKeyInjector;
 import com.landgate.trigger.gateway.session.SessionHashService;
 import com.landgate.trigger.gateway.transformer.IRequestTransformer;
 import com.landgate.trigger.gateway.transformer.UpstreamRequestContext;
+import com.landgate.trigger.gateway.transformer.UpstreamAnthropicBetaRequestNormalizer;
+import com.landgate.trigger.gateway.transformer.UpstreamAnthropicOAuthMimicryNormalizer;
+import com.landgate.trigger.gateway.transformer.UpstreamStreamRequestNormalizer;
+import com.landgate.trigger.gateway.transformer.OpenAiFastPolicyBlockedException;
 import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.ErrorResponsePolicy;
-import com.landgate.types.gateway.AnthropicForwardingRuntimePolicy;
+import com.landgate.types.gateway.GatewayAccountHealthPolicy;
 import com.landgate.types.gateway.GatewayHeaderPolicy;
+import com.landgate.types.gateway.GatewayFailoverExhaustionPolicy;
 import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
 import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.GatewayResponseHandlingPolicy;
@@ -58,6 +66,7 @@ import com.landgate.types.gateway.GatewayResponsesRoutePolicy;
 import com.landgate.types.gateway.OpenAiCompactAccountPolicy;
 import com.landgate.types.gateway.OpenAiCompatPreviousResponsePolicy;
 import com.landgate.types.gateway.OpenAiCodexProfile;
+import com.landgate.types.gateway.OpenAiUpstreamErrorPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -117,8 +126,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     protected final GatewayResponseService gatewayResponseService;
     protected final OpenAiCompatSessionService openAiCompatSessionService;
     protected final AnthropicForwardingRuntimePolicyProvider anthropicForwardingRuntimePolicyProvider;
+    protected final UpstreamAnthropicOAuthMimicryNormalizer upstreamAnthropicOAuthMimicryNormalizer;
+    protected final OpenAiAccountErrorStateService openAiAccountErrorStateService;
     protected final OpenAiEncryptedReasoningRetryPolicy openAiEncryptedReasoningRetryPolicy =
             new OpenAiEncryptedReasoningRetryPolicy();
+    protected final AnthropicThinkingRetryPolicy anthropicThinkingRetryPolicy =
+            new AnthropicThinkingRetryPolicy();
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
     private static final int MAX_FAILOVER_SWITCHES = 3;
@@ -149,7 +162,8 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             OpenAiResponsesHttpRequestValidator openAiResponsesHttpRequestValidator,
             GatewayResponseService gatewayResponseService,
             OpenAiCompatSessionService openAiCompatSessionService,
-            AnthropicForwardingRuntimePolicyProvider anthropicForwardingRuntimePolicyProvider) {
+            AnthropicForwardingRuntimePolicyProvider anthropicForwardingRuntimePolicyProvider,
+            OpenAiAccountErrorStateService openAiAccountErrorStateService) {
         this.accountSelector = accountSelector;
         this.getAccessTokenService = getAccessTokenService;
         this.httpUpstreamClient = httpUpstreamClient;
@@ -184,6 +198,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 : new GatewayResponseService(concurrencyService, translationService, converterRegistry);
         this.openAiCompatSessionService = openAiCompatSessionService;
         this.anthropicForwardingRuntimePolicyProvider = anthropicForwardingRuntimePolicyProvider;
+        this.upstreamAnthropicOAuthMimicryNormalizer =
+                new UpstreamAnthropicOAuthMimicryNormalizer(
+                        oAuthMimicryService, fingerprintService, anthropicForwardingRuntimePolicyProvider);
+        this.openAiAccountErrorStateService = openAiAccountErrorStateService != null
+                ? openAiAccountErrorStateService
+                : new OpenAiAccountErrorStateService(accountSelector, null);
     }
 
     // --- 子类需注入的策略钩子 ---
@@ -196,12 +216,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
     /** 根据账户平台获取对应的上游请求转换器 */
     protected IRequestTransformer getTransformerFor(AccountEntity account) {
         return platformRouter.getTransformer(account.getPlatform());
-    }
-
-    protected AnthropicForwardingRuntimePolicy currentAnthropicForwardingPolicy() {
-        return anthropicForwardingRuntimePolicyProvider == null
-                ? AnthropicForwardingRuntimePolicy.defaults()
-                : anthropicForwardingRuntimePolicyProvider.current();
     }
 
     /** 根据上游实际响应格式获取对应的用量解析器 */
@@ -328,7 +342,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 requestId, model, clientStream, requestFormat);
 
         // Step 4: Session 粘滞（IP + UA + API Key）
-        String sessionHash = sessionHashService.generateHash(request, apiKeyId, body);
+        String sessionHash = sessionHashService.generateHash(request, apiKeyId, body, requestFormat);
         Long stickyAccountId = sessionHashService.getBoundAccount(sessionHash);
         Long initialStickyAccountId = stickyAccountId;
         boolean forceCacheBilling = false;
@@ -348,6 +362,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         boolean invalidEncryptedContentRetryTried = false;
         Long invalidEncryptedContentRetryAccountId = null;
         String invalidEncryptedContentRetryBody = null;
+        boolean anthropicThinkingRetryTried = false;
+        Long anthropicThinkingRetryAccountId = null;
+        String anthropicThinkingRetryBody = null;
+        LastFailoverError lastFailoverError = null;
 
         while (failoverCount < MAX_FAILOVER_SWITCHES) {
             log.debug("[{}] Failover 尝试 #{}/{}: sticky_account={}",
@@ -499,33 +517,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 // 对于 Chat Completions/Responses 客户端 → Anthropic 上游的场景，
                 // upstreamBody 此时已翻译为 Anthropic 格式。
                 if (shouldMimicClaudeCode) {
-                    AnthropicForwardingRuntimePolicy forwardingPolicy = currentAnthropicForwardingPolicy();
-                    log.debug("[{}] OAuth 伪装: account_id={}, model={}, type={}",
-                            requestId, account.getId(), model, account.getType());
-                    boolean systemRewritten = false;
-                    if (model != null && !model.toLowerCase().contains("haiku")) {
-                        upstreamBody = oAuthMimicryService.rewriteSystemForNonClaudeCode(
-                                upstreamBody, model);
-                        systemRewritten = true;
-                    }
-                    // 获取或创建指纹，用于 metadata.user_id 构建
-                    com.landgate.trigger.gateway.oauth.FingerprintService.ClientFingerprint fp =
-                            fingerprintService.getOrCreateFingerprint(
-                                    account.getId(),
-                                    clientProfile.headers());
-                    if (!forwardingPolicy.metadataPassthrough()) {
-                        upstreamBody = oAuthMimicryService.buildAndInjectMetadataUserID(
-                                upstreamBody, account, fp, !systemRewritten);
-                    }
-                    upstreamBody = oAuthMimicryService.normalizeClaudeOAuthRequestBody(
-                            upstreamBody, model, false, null, !systemRewritten);
-                    OAuthMimicryService.ClaudeOAuthBodyMimicryResult mimicryResult =
-                            oAuthMimicryService.applyPostNormalizeClaudeOAuthMimicry(upstreamBody);
+                    UpstreamAnthropicOAuthMimicryNormalizer.Result mimicryResult =
+                            upstreamAnthropicOAuthMimicryNormalizer.normalize(
+                                    requestId, account, upstreamBody, model, clientProfile);
                     upstreamBody = mimicryResult.body();
                     ctx.setAnthropicToolNameRewrite(mimicryResult.toolNameRewrite());
                 }
 
                 Map<String, String> upstreamRequestHeaders = clientProfile.headers();
+                upstreamBody = UpstreamAnthropicBetaRequestNormalizer.normalize(
+                        upstreamBody, upstreamRoute, upstreamRequestHeaders);
                 if (openAiCompatSessionService != null && isOpenAiAnthropicMessagesCompat(upstreamRoute)) {
                     OpenAiCompatSessionService.CompatState compatState =
                             openAiCompatSessionService.prepareAnthropicMessagesCompat(
@@ -553,6 +554,14 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         }
                     }
                 }
+                OpenAiCompatPromptCacheKeyInjector.Result chatCompatPromptCache =
+                        OpenAiCompatPromptCacheKeyInjector.injectChatCompletionsCodexCompat(
+                                account, upstreamRoute, body, upstreamBody, model);
+                upstreamBody = chatCompatPromptCache.body();
+                if (chatCompatPromptCache.injected()) {
+                    log.debug("[{}] OpenAI Chat compat prompt_cache_key injected: account_id={}, key_prefix={}",
+                            requestId, account.getId(), chatCompatPromptCache.promptCacheKey().split("_", 2)[0]);
+                }
                 if (invalidEncryptedContentRetryBody != null
                         && invalidEncryptedContentRetryAccountId != null
                         && invalidEncryptedContentRetryAccountId.equals(account.getId())) {
@@ -562,6 +571,16 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     log.debug("[{}] OpenAI invalid_encrypted_content retry body attached: account_id={}",
                             requestId, account.getId());
                 }
+                if (anthropicThinkingRetryBody != null
+                        && anthropicThinkingRetryAccountId != null
+                        && anthropicThinkingRetryAccountId.equals(account.getId())) {
+                    upstreamBody = anthropicThinkingRetryBody;
+                    anthropicThinkingRetryBody = null;
+                    anthropicThinkingRetryAccountId = null;
+                    log.debug("[{}] Anthropic thinking retry body attached: account_id={}",
+                            requestId, account.getId());
+                }
+                upstreamBody = UpstreamStreamRequestNormalizer.normalize(upstreamBody, upstreamRoute, upstreamStream);
 
                 // 根据选中账户的平台构造对应的上游请求
                 IRequestTransformer transformer = getTransformerFor(account);
@@ -580,6 +599,13 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                             upstreamStream,
                             shouldMimicClaudeCode,
                             upstreamRequestHeaders));
+                } catch (OpenAiFastPolicyBlockedException e) {
+                    log.warn("[{}] OpenAI fast policy blocked request: account_id={}, tier={}, model={}",
+                            requestId, account.getId(), e.tier(), e.model());
+                    concurrencyService.release(slot);
+                    getErrorWriter().writeError(response, 403,
+                            fastPolicyBlockedErrorCode(requestFormat), e.getMessage());
+                    return;
                 } catch (Exception e) {
                     log.error("Failed to build upstream request: account_id={}", account.getId(), e);
                     concurrencyService.release(slot);
@@ -635,6 +661,22 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         streamingResult = handleNonStreaming(upstreamResp, response, usageParser);
                         usage = streamingResult.usage();
                     }
+                    if (streamingResult != null && streamingResult.protocolError()) {
+                        log.warn("[{}] 上游流式协议错误: account_id={}, platform={}, endpoint={}, message={}, client_stream={}, upstream_stream={}, handled_as_stream={}",
+                                requestId, account.getId(), accountPlatform.name(), upstreamRoute.endpointKind(),
+                                streamingResult.protocolErrorMessage(), clientStream, upstreamStream, handleAsStreaming);
+                        String noUsageReason = "protocol_error; endpoint=" + upstreamRoute.endpointKind()
+                                + "; parser=" + usageParser.getClass().getSimpleName()
+                                + "; client_stream=" + clientStream
+                                + "; upstream_stream=" + upstreamStream
+                                + "; handled_as_stream=" + handleAsStreaming
+                                + "; message=" + streamingResult.protocolErrorMessage();
+                        billingSettlementService.recordNoUsageLog(model, accountPlatform.name(), userId, apiKeyId,
+                                account, group, clientStream,
+                                streamingResult.clientDisconnected(), durationMs, request, requestId, noUsageReason);
+                        concurrencyService.release(slot);
+                        return;
+                    }
                     bindOpenAiCompatSuccessState(ctx, account, apiKeyId, upstreamResp, streamingResult);
 
                     if (usage != null && usage.hasUsage()) {
@@ -674,6 +716,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         rateLimitSnapshot = rateLimitHeaderParser.parse(
                                 upstreamResp.headers(), account.getPlatform());
                     }
+                    openAiAccountErrorStateService.resetForbiddenCounterAfterSuccess(account);
                     accountSelector.updateLastUsedAndRateLimits(account.getId(), rateLimitSnapshot);
                     concurrencyService.release(slot);
                     log.debug("[{}] 请求完成: total_elapsed={}ms, account={}, model={}",
@@ -684,6 +727,20 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 // --- 401 处理 ---
                 else if (statusCode == 401) {
                     concurrencyService.release(slot);
+                    String unauthorizedBody = readErrorBody(upstreamResp);
+
+                    if (account.getPlatform() == Platform.OPENAI
+                            && OpenAiUpstreamErrorPolicy.isPermanentUnauthorized(statusCode, unauthorizedBody)) {
+                        log.warn("[{}] OpenAI 401 永久认证失败，标记 ERROR: account_id={}",
+                                requestId, account.getId());
+                        openAiAccountErrorStateService.markPermanentUnauthorized(account, unauthorizedBody,
+                                ErrorResponsePolicy.extractUpstreamErrorMessage(unauthorizedBody));
+                        excludeForFailover(excludedAccountIds, account, requestId, "openai_401_permanent");
+                        lastFailoverError = LastFailoverError.capture(account, upstreamRoute, statusCode, unauthorizedBody);
+                        forceCacheBilling = forceCacheBilling || shouldForceCacheBillingAfterFailover(initialStickyAccountId);
+                        failoverCount++;
+                        continue;
+                    }
 
                     // 非 OAUTH 账号 401：API Key 凭证级故障，无法自愈，标记 ERROR
                     if (account.getType() != AccountType.OAUTH) {
@@ -692,6 +749,22 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         accountSelector.markError(account.getId(),
                                 "Upstream returned 401 for " + account.getType() + " account");
                         excludeForFailover(excludedAccountIds, account, requestId, "upstream_401_non_oauth");
+                        lastFailoverError = LastFailoverError.capture(account, upstreamRoute, statusCode, unauthorizedBody);
+                        forceCacheBilling = forceCacheBilling || shouldForceCacheBillingAfterFailover(initialStickyAccountId);
+                        failoverCount++;
+                        continue;
+                    }
+
+                    if (account.getPlatform() == Platform.OPENAI) {
+                        String upstreamMessage = ErrorResponsePolicy.extractUpstreamErrorMessage(unauthorizedBody);
+                        log.warn("[{}] OpenAI OAuth 401，按 Sub2API 标记 token 过期并临时冷却: account_id={}",
+                                requestId, account.getId());
+                        if (oauthTokenRefreshService != null) {
+                            oauthTokenRefreshService.forceExpireAccessToken(account.getId(), java.time.Instant.now());
+                        }
+                        openAiAccountErrorStateService.markOauthUnauthorized(account, upstreamMessage);
+                        excludeForFailover(excludedAccountIds, account, requestId, "openai_oauth_401_temp_unschedulable");
+                        lastFailoverError = LastFailoverError.capture(account, upstreamRoute, statusCode, unauthorizedBody);
                         forceCacheBilling = forceCacheBilling || shouldForceCacheBillingAfterFailover(initialStickyAccountId);
                         failoverCount++;
                         continue;
@@ -704,6 +777,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 "OAuth token refreshed but upstream still returned 401");
                         excludeForFailover(excludedAccountIds, account, requestId, "oauth_401_after_refresh");
                         tokenRefreshed = null;
+                        lastFailoverError = LastFailoverError.capture(account, upstreamRoute, statusCode, unauthorizedBody);
                         forceCacheBilling = forceCacheBilling || shouldForceCacheBillingAfterFailover(initialStickyAccountId);
                         failoverCount++;
                         continue;
@@ -733,6 +807,7 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                                 "OAuth token refresh temporarily failed");
                     }
                     excludeForFailover(excludedAccountIds, account, requestId, "oauth_token_refresh_failed");
+                    lastFailoverError = LastFailoverError.capture(account, upstreamRoute, statusCode, unauthorizedBody);
                     forceCacheBilling = forceCacheBilling || shouldForceCacheBillingAfterFailover(initialStickyAccountId);
                     failoverCount++;
                 }
@@ -741,9 +816,11 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                 else if (statusCode == 429 || statusCode == 529 || statusCode >= 500) {
                     log.warn("[{}] 上游可重试错误: status={}, account_id={}, attempt={}/{}",
                             requestId, statusCode, account.getId(), failoverCount + 1, MAX_FAILOVER_SWITCHES);
-                    markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
+                    String retryableErrorBody = readErrorBody(upstreamResp);
+                    markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount, retryableErrorBody);
                     concurrencyService.release(slot);
                     excludeForFailover(excludedAccountIds, account, requestId, "retryable_upstream_" + statusCode);
+                    lastFailoverError = LastFailoverError.capture(account, upstreamRoute, statusCode, retryableErrorBody);
                     forceCacheBilling = forceCacheBilling || shouldForceCacheBillingAfterFailover(initialStickyAccountId);
                     failoverCount++;
                 }
@@ -773,6 +850,17 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                         stickyAccountId = account.getId();
                         continue;
                     }
+                    AnthropicThinkingRetryPolicy.FilteredBody thinkingRetry =
+                            recoverAnthropicThinkingError(ctx, account, statusCode, errorBody, upstreamBody,
+                                    anthropicThinkingRetryTried);
+                    if (thinkingRetry.changed()) {
+                        anthropicThinkingRetryTried = true;
+                        anthropicThinkingRetryAccountId = account.getId();
+                        anthropicThinkingRetryBody = thinkingRetry.body();
+                        concurrencyService.release(slot);
+                        stickyAccountId = account.getId();
+                        continue;
+                    }
 
                     ErrorPassthroughService.ErrorAction action =
                             errorPassthroughService.decide(statusCode, errorBody, accountPlatform.name());
@@ -780,9 +868,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
                     if (action == ErrorPassthroughService.ErrorAction.RETRY) {
                         log.warn("[{}] 错误透传裁决 RETRY: status={}, account_id={}, attempt={}/{}",
                                 requestId, statusCode, account.getId(), failoverCount + 1, MAX_FAILOVER_SWITCHES);
-                        markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount);
+                        markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount, errorBody);
                         concurrencyService.release(slot);
                         excludeForFailover(excludedAccountIds, account, requestId, "passthrough_retry_" + statusCode);
+                        lastFailoverError = LastFailoverError.capture(account, upstreamRoute, statusCode, errorBody);
                         forceCacheBilling = forceCacheBilling || shouldForceCacheBillingAfterFailover(initialStickyAccountId);
                         failoverCount++;
                         // 回到 failover 循环
@@ -808,6 +897,10 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
         log.warn("[{}] Failover 耗尽: group={}, attempts={}, max={}",
                 requestId, group.getName(), failoverCount, MAX_FAILOVER_SWITCHES);
+        if (lastFailoverError != null) {
+            writeFailoverExhaustedError(response, lastFailoverError);
+            return;
+        }
         getErrorWriter().writeError(response, 503, "overloaded_error",
                 "All accounts in group '" + group.getName()
                 + "' are unavailable after " + failoverCount + " attempts.");
@@ -825,6 +918,12 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
 
     private boolean shouldForceCacheBillingAfterFailover(Long initialStickyAccountId) {
         return initialStickyAccountId != null;
+    }
+
+    private static String fastPolicyBlockedErrorCode(String requestFormat) {
+        return GatewayProtocolFormat.MESSAGES.equals(requestFormat)
+                ? "forbidden_error"
+                : "permission_error";
     }
 
     private static boolean requiresOpenAiCompactAccount(UpstreamRoute route) {
@@ -892,7 +991,6 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
             }
         }
         if (account.getType() == AccountType.API_KEY && result != null
-                && !result.clientDisconnected()
                 && !trim(result.responseId()).isBlank()) {
             openAiCompatSessionService.bindResponseId(account, apiKeyId, promptCacheKey, result.responseId());
         }
@@ -957,6 +1055,34 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         return sanitized;
     }
 
+    private AnthropicThinkingRetryPolicy.FilteredBody recoverAnthropicThinkingError(
+            GatewayRequestContext ctx,
+            AccountEntity account,
+            int statusCode,
+            String errorBody,
+            String upstreamBody,
+            boolean retryAlreadyTried) {
+        if (retryAlreadyTried
+                || ctx == null
+                || account == null
+                || account.getPlatform() != Platform.ANTHROPIC
+                || ctx.getUpstreamRoute() == null
+                || !GatewayProtocolFormat.MESSAGES.is(ctx.getUpstreamRoute().upstreamFormat())
+                || !anthropicThinkingRetryPolicy.shouldRetry(statusCode, errorBody)) {
+            return new AnthropicThinkingRetryPolicy.FilteredBody(upstreamBody, false);
+        }
+        AnthropicThinkingRetryPolicy.FilteredBody filtered =
+                anthropicThinkingRetryPolicy.filterBodyForRetryResult(upstreamBody);
+        if (!filtered.changed()) {
+            log.debug("[{}] Anthropic thinking retry skipped; prepared body unchanged: account_id={}",
+                    ctx.getRequestId(), account.getId());
+            return filtered;
+        }
+        log.info("[{}] Anthropic thinking/signature error detected, retrying once with filtered body: account_id={}",
+                ctx.getRequestId(), account.getId());
+        return filtered;
+    }
+
     private static boolean isOpenAiAnthropicMessagesCompat(UpstreamRoute route) {
         return route != null
                 && route.upstreamPlatform() == Platform.OPENAI
@@ -1011,32 +1137,101 @@ public abstract class AbstractGatewayHandler implements IGatewayHandler {
         getErrorWriter().writeError(response, upstreamStatus, errorCode, safeMessage);
     }
 
+    private void writeFailoverExhaustedError(HttpServletResponse response,
+                                             LastFailoverError lastError) throws IOException {
+        GatewayFailoverExhaustionPolicy.Decision decision =
+                GatewayFailoverExhaustionPolicy.decide(
+                        lastError.clientFormat(),
+                        lastError.upstreamPlatform(),
+                        lastError.statusCode());
+        log.warn("Failover exhausted after upstream errors: upstream_status={}, upstream_platform={}, "
+                        + "client_format={}, body={}",
+                lastError.statusCode(), lastError.upstreamPlatform(), lastError.clientFormat(),
+                lastError.body().substring(0, Math.min(500, lastError.body().length())));
+        getErrorWriter().writeError(response, decision.status(), decision.code(), decision.message());
+    }
+
     /**
      * 根据上游错误响应标记账号健康状态，使其在冷却时间内不被 AccountSelector 选中。
      */
     private void markAccountUnhealthy(AccountEntity account, int statusCode,
                                        HttpResponse<InputStream> upstreamResp, int failoverCount) {
+        markAccountUnhealthy(account, statusCode, upstreamResp, failoverCount, null);
+    }
+
+    private void markAccountUnhealthy(AccountEntity account, int statusCode,
+                                       HttpResponse<InputStream> upstreamResp, int failoverCount,
+                                       String errorBody) {
         var now = java.time.Instant.now();
 
-        if (statusCode == 429) {
-            var retryAfterHeader = upstreamResp.headers().firstValue("Retry-After");
-            long retryAfterSecs = retryAfterHeader
-                    .map(s -> {
-                        try { return Long.parseLong(s); } catch (NumberFormatException e) { return 10L; }
-                    })
-                    .orElse(10L);
-            accountSelector.markRateLimited(account.getId(), now.plusSeconds(retryAfterSecs), retryAfterHeader.isPresent());
-        } else if (statusCode == 529) {
-            accountSelector.markOverloaded(account.getId(), now.plusSeconds(30));
-        } else if (statusCode == 503) {
-            accountSelector.markTempUnschedulable(account.getId(), now.plusSeconds(60),
-                    "Upstream 503 at failover=" + failoverCount);
-        } else if (statusCode >= 500) {
-            // 其他 5xx：连续失败才标记
-            if (failoverCount >= 2) {
-                accountSelector.markTempUnschedulable(account.getId(), now.plusSeconds(120),
-                        "Consecutive 5xx at failover=" + failoverCount);
+        if (account.getPlatform() == Platform.OPENAI
+                && OpenAiUpstreamErrorPolicy.isPaymentRequired(statusCode)) {
+            String body = resolveErrorBody(upstreamResp, errorBody);
+            openAiAccountErrorStateService.markPaymentRequired(account, body,
+                    ErrorResponsePolicy.extractUpstreamErrorMessage(body));
+        } else if (account.getPlatform() == Platform.OPENAI
+                && OpenAiUpstreamErrorPolicy.isForbidden(statusCode)) {
+            openAiAccountErrorStateService.markForbidden(account,
+                    ErrorResponsePolicy.extractUpstreamErrorMessage(resolveErrorBody(upstreamResp, errorBody)));
+        } else {
+            var retryAfterHeader = upstreamResp.headers().firstValue(GatewayHttpHeaderPolicy.HEADER_RETRY_AFTER);
+            GatewayAccountHealthPolicy.Decision decision =
+                    GatewayAccountHealthPolicy.decideRetryableStatus(statusCode, failoverCount, retryAfterHeader);
+            applyAccountHealthDecision(account, now, decision);
+        }
+    }
+
+    private void applyAccountHealthDecision(AccountEntity account,
+                                            java.time.Instant now,
+                                            GatewayAccountHealthPolicy.Decision decision) {
+        if (decision == null || !decision.applies()) {
+            return;
+        }
+        switch (decision.action()) {
+            case RATE_LIMITED -> accountSelector.markRateLimited(
+                    account.getId(), now.plusSeconds(decision.cooldownSeconds()), decision.explicitRetryAfter());
+            case OVERLOADED -> accountSelector.markOverloaded(
+                    account.getId(), now.plusSeconds(decision.cooldownSeconds()));
+            case TEMP_UNSCHEDULABLE -> accountSelector.markTempUnschedulable(
+                    account.getId(), now.plusSeconds(decision.cooldownSeconds()), decision.reason());
+            case NONE -> {
+                // No-op.
             }
+        }
+    }
+
+    private static String resolveErrorBody(HttpResponse<InputStream> upstreamResp, String knownBody) {
+        if (knownBody != null) {
+            return knownBody;
+        }
+        return readErrorBody(upstreamResp);
+    }
+
+    private static String readErrorBody(HttpResponse<InputStream> upstreamResp) {
+        if (upstreamResp == null || upstreamResp.body() == null) {
+            return "";
+        }
+        try {
+            return new String(upstreamResp.body().readAllBytes(), StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private record LastFailoverError(Platform upstreamPlatform,
+                                     String clientFormat,
+                                     int statusCode,
+                                     String body) {
+
+        static LastFailoverError capture(AccountEntity account,
+                                         UpstreamRoute route,
+                                         int statusCode,
+                                         String body) {
+            Platform upstreamPlatform = route != null && route.upstreamPlatform() != null
+                    ? route.upstreamPlatform()
+                    : account != null ? account.getPlatform() : null;
+            String clientFormat = route != null ? route.clientFormat() : "";
+            return new LastFailoverError(upstreamPlatform, clientFormat, statusCode, body == null ? "" : body);
         }
     }
 

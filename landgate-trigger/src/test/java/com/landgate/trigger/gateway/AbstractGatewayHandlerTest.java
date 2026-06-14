@@ -11,14 +11,19 @@ import com.landgate.trigger.gateway.AbstractGatewayHandler;
 import com.landgate.trigger.gateway.GatewayRequestContext;
 import com.landgate.trigger.gateway.converter.ProtocolTranslationService;
 import com.landgate.trigger.gateway.request.GatewayRequestParser;
+import com.landgate.trigger.gateway.response.GatewayResponseResult;
+import com.landgate.trigger.gateway.retry.AnthropicThinkingRetryPolicy;
+import com.landgate.trigger.gateway.session.OpenAiCompatSessionService;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.usage.IUsageParser;
 import com.landgate.trigger.gateway.usage.ResponsesUsageParser;
+import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RMapCache;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.io.ByteArrayInputStream;
@@ -30,8 +35,12 @@ import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import javax.net.ssl.SSLSession;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -178,6 +187,59 @@ class AbstractGatewayHandlerTest {
         assertEquals(20, usage.getInputTokens());
         assertEquals(6, usage.getOutputTokens());
         assertEquals(80, usage.getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("OpenAI API Key Messages compat 上游流式可聚合为客户端非流式 messages 响应")
+    void apiKeyMessagesCompatForcedUpstreamStreamingAggregatesToNonStreamingMessages() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(openAiApiKeyResponsesContext(Platform.ANTHROPIC, "messages"));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UsageTokens usage = handler.captureStreamingAsNonStreaming(textOnlyResponsesSse(), response,
+                new ResponsesUsageParser());
+
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        assertTrue(response.getContentAsString().contains("\"type\":\"message\""));
+        assertTrue(response.getContentAsString().contains("non stream ok"));
+        assertEquals(20, usage.getInputTokens());
+        assertEquals(6, usage.getOutputTokens());
+        assertEquals(80, usage.getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("OpenAI API Key Messages compat 即使客户端断开也绑定 response id")
+    void apiKeyMessagesCompatBindsResponseIdAfterClientDisconnect() throws Exception {
+        OpenAiCompatSessionService sessionService = newOpenAiCompatSessionService();
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry(), sessionService);
+        AccountEntity account = AccountEntity.builder()
+                .id(7L)
+                .name("openai-api-key")
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        GatewayRequestContext ctx = openAiApiKeyResponsesContext(Platform.ANTHROPIC, "messages");
+        ctx.setSelectedAccount(account);
+        ctx.setOpenAiCompatPromptCacheKey("stable-cache-key");
+
+        Method method = AbstractGatewayHandler.class.getDeclaredMethod(
+                "bindOpenAiCompatSuccessState",
+                GatewayRequestContext.class,
+                AccountEntity.class,
+                Long.class,
+                HttpResponse.class,
+                GatewayResponseResult.class);
+        method.setAccessible(true);
+        method.invoke(handler,
+                ctx,
+                account,
+                42L,
+                new InputStreamHttpResponse("", "text/event-stream"),
+                new GatewayResponseResult(UsageTokens.builder().build(), true, "resp_disconnected"));
+
+        assertEquals("resp_disconnected",
+                sessionService.getResponseId(account, 42L, "stable-cache-key"));
     }
 
     @Test
@@ -420,6 +482,48 @@ class AbstractGatewayHandlerTest {
     }
 
     @Test
+    @DisplayName("OpenAI OAuth 上游 response.failed detail 可作为 Sub2API 对齐错误原因")
+    void forcedUpstreamStreamingFailedResponseUsesDetailMessage() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "responses"));
+        String sse = """
+                data: {"type":"response.created","response":{"id":"resp_failed_detail","model":"gpt-5.5"}}
+
+                data: {"type":"response.failed","detail":"internal detail from upstream"}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(502, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        assertTrue(response.getContentAsString().contains("\"type\":\"upstream_error\""));
+        assertTrue(response.getContentAsString().contains("\"message\":\"internal detail from upstream\""));
+    }
+
+    @Test
+    @DisplayName("OpenAI OAuth 上游 response.failed 顶层 error.message 可作为错误原因")
+    void forcedUpstreamStreamingFailedResponseUsesTopLevelErrorMessage() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "responses"));
+        String sse = """
+                data: {"type":"response.created","response":{"id":"resp_failed_top_level","model":"gpt-5.5"}}
+
+                data: {"type":"response.failed","error":{"message":"upstream processing failed"}}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(502, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        assertTrue(response.getContentAsString().contains("\"type\":\"upstream_error\""));
+        assertTrue(response.getContentAsString().contains("\"message\":\"upstream processing failed\""));
+    }
+
+    @Test
     @DisplayName("OpenAI OAuth 上游流式工具调用可聚合为客户端非流式 chat tool_calls")
     void forcedUpstreamStreamingAggregatesToolCallToChat() throws Exception {
         TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
@@ -656,10 +760,83 @@ class AbstractGatewayHandlerTest {
         assertFalse(response.containsHeader("set-cookie"));
     }
 
+    @Test
+    @DisplayName("Anthropic Messages thinking/signature 400 prepares filtered retry body")
+    void anthropicThinkingErrorPreparesFilteredRetryBody() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext ctx = GatewayRequestContext.builder()
+                .requestId("anthropic-thinking-retry")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(AccountEntity.builder().id(1L).platform(Platform.ANTHROPIC).type(AccountType.API_KEY).build())
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "messages",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://api.anthropic.com/v1/messages",
+                        false,
+                        false,
+                        "messages",
+                        "anthropic_messages"))
+                .build();
+        AccountEntity account = AccountEntity.builder()
+                .id(1L)
+                .platform(Platform.ANTHROPIC)
+                .type(AccountType.API_KEY)
+                .build();
+        String body = """
+                {
+                  "model":"claude-sonnet-4-5",
+                  "thinking":{"type":"enabled","budget_tokens":1024},
+                  "context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},
+                  "messages":[{"role":"assistant","content":[
+                    {"type":"thinking","thinking":"private","signature":"bad"},
+                    {"type":"redacted_thinking","data":"secret"},
+                    {"type":"text","text":"visible"}
+                  ]}]
+                }""";
+
+        AnthropicThinkingRetryPolicy.FilteredBody filtered =
+                invokeAnthropicThinkingRecovery(handler, ctx, account, 400,
+                        "{\"error\":{\"message\":\"Invalid `signature` in `thinking` block\"}}",
+                        body,
+                        false);
+
+        assertTrue(filtered.changed());
+        assertFalse(filtered.body().contains("\"thinking\":{\"type\""));
+        assertFalse(filtered.body().contains("clear_thinking_20251015"));
+        assertFalse(filtered.body().contains("redacted_thinking"));
+        assertTrue(filtered.body().contains("\"text\":\"private\""));
+        assertTrue(filtered.body().contains("\"text\":\"visible\""));
+    }
+
     private static ConverterRegistry converterRegistry() {
         ConverterRegistry registry = new ConverterRegistry();
         registry.register(List.of(new ResponsesConverter(), new AnthropicConverter(), new ChatCompletionsConverter()));
         return registry;
+    }
+
+    private static AnthropicThinkingRetryPolicy.FilteredBody invokeAnthropicThinkingRecovery(
+            TestGatewayHandler handler,
+            GatewayRequestContext ctx,
+            AccountEntity account,
+            int statusCode,
+            String errorBody,
+            String upstreamBody,
+            boolean retryAlreadyTried) throws Exception {
+        Method method = AbstractGatewayHandler.class.getDeclaredMethod(
+                "recoverAnthropicThinkingError",
+                GatewayRequestContext.class,
+                AccountEntity.class,
+                int.class,
+                String.class,
+                String.class,
+                boolean.class);
+        method.setAccessible(true);
+        return (AnthropicThinkingRetryPolicy.FilteredBody) method.invoke(
+                handler, ctx, account, statusCode, errorBody, upstreamBody, retryAlreadyTried);
     }
 
     private static GatewayRequestContext oauthCodexContext(Platform requestPlatform, String clientFormat) {
@@ -683,6 +860,27 @@ class AbstractGatewayHandlerTest {
                 .build();
     }
 
+    private static GatewayRequestContext openAiApiKeyResponsesContext(Platform requestPlatform, String clientFormat) {
+        return GatewayRequestContext.builder()
+                .requestId("test-api-key-stream-to-json")
+                .requestPlatform(requestPlatform)
+                .requestFormat(clientFormat)
+                .requestedModel("gpt-5.5")
+                .selectedAccount(AccountEntity.builder().id(1L).name("openai-api-key").platform(Platform.OPENAI).build())
+                .stream(true)
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        clientFormat,
+                        "responses",
+                        EndpointKind.OPENAI_RESPONSES,
+                        "https://api.openai.com/v1/responses",
+                        true,
+                        false,
+                        "responses",
+                        "openai_api_key_responses"))
+                .build();
+    }
+
     private static String textOnlyResponsesSse() {
         return """
                 data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.5"}}
@@ -703,10 +901,14 @@ class AbstractGatewayHandlerTest {
     private static class TestGatewayHandler extends AbstractGatewayHandler {
 
         TestGatewayHandler(ConverterRegistry converterRegistry) {
+            this(converterRegistry, null);
+        }
+
+        TestGatewayHandler(ConverterRegistry converterRegistry, OpenAiCompatSessionService openAiCompatSessionService) {
             super(null, null, null, null, null, null, null, null, null, null,
                     new ProtocolTranslationService(converterRegistry), converterRegistry,
                     new GatewayProtocolPlanner(),
-                    null, null, null, null, null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, openAiCompatSessionService, null, null);
         }
 
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {
@@ -762,6 +964,52 @@ class AbstractGatewayHandlerTest {
         @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
         @Override public URI uri() { return URI.create("https://example.com"); }
         @Override public HttpClient.Version version() { return HttpClient.Version.HTTP_1_1; }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static OpenAiCompatSessionService newOpenAiCompatSessionService() throws Exception {
+        Constructor<OpenAiCompatSessionService> constructor =
+                OpenAiCompatSessionService.class.getDeclaredConstructor(
+                        RMapCache.class, RMapCache.class, RMapCache.class, RMapCache.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(
+                mapCache(new HashMap<String, String>()),
+                mapCache(new HashMap<String, String>()),
+                mapCache(new HashMap<String, Boolean>()),
+                mapCache(new HashMap<String, String>()));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <V> RMapCache<String, V> mapCache(Map<String, V> backing) {
+        return (RMapCache<String, V>) Proxy.newProxyInstance(
+                AbstractGatewayHandlerTest.class.getClassLoader(),
+                new Class<?>[]{RMapCache.class},
+                (proxy, method, args) -> {
+                    return switch (method.getName()) {
+                        case "get" -> backing.get((String) args[0]);
+                        case "put" -> {
+                            backing.put((String) args[0], (V) args[1]);
+                            yield null;
+                        }
+                        case "remove" -> backing.remove((String) args[0]);
+                        case "isEmpty" -> backing.isEmpty();
+                        case "size" -> backing.size();
+                        case "clear" -> {
+                            backing.clear();
+                            yield null;
+                        }
+                        default -> defaultValue(method.getReturnType());
+                    };
+                });
+    }
+
+    private static Object defaultValue(Class<?> type) {
+        if (type == boolean.class) return false;
+        if (type == int.class) return 0;
+        if (type == long.class) return 0L;
+        if (type == double.class) return 0D;
+        if (type == float.class) return 0F;
+        return null;
     }
 
 }

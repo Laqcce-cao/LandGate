@@ -3611,6 +3611,19 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("web_search_call-only 流式响应不把 stop_reason 置为 tool_use")
+        void webSearchCallOnlyStreamStopsAsEndTurn() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.5");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ws_stream\",\"model\":\"gpt-5.5\"}}");
+            t.feed("data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\",\"status\":\"completed\",\"action\":{\"type\":\"search\",\"query\":\"LandGate\"}}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"stop_reason\":\"end_turn\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"stop_reason\":\"tool_use\"")));
+        }
+
+        @Test
         @DisplayName("reasoning 流式翻译")
         void streamingReasoning() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");

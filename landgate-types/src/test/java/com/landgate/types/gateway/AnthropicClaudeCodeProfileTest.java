@@ -29,6 +29,7 @@ class AnthropicClaudeCodeProfileTest {
         assertEquals("2.1.92", AnthropicClaudeCodeProfile.CLI_CURRENT_VERSION);
         assertEquals("claude-cli/2.1.92 (external, cli)",
                 AnthropicClaudeCodeProfile.DEFAULT_CLAUDE_CLI_USER_AGENT);
+        assertEquals("fast-mode-2026-02-01", AnthropicClaudeCodeProfile.BETA_FAST_MODE);
         assertEquals(AnthropicClaudeCodeProfile.DEFAULT_CLAUDE_CLI_USER_AGENT,
                 AnthropicClaudeCodeProfile.DEFAULT_MIMICRY_HEADERS.get(AnthropicApiProfile.HEADER_USER_AGENT));
         assertEquals("cli", AnthropicClaudeCodeProfile.DEFAULT_MIMICRY_HEADERS.get(AnthropicApiProfile.HEADER_X_APP));
@@ -37,6 +38,18 @@ class AnthropicClaudeCodeProfileTest {
         assertEquals("5m", AnthropicClaudeCodeProfile.DEFAULT_CACHE_CONTROL_TTL);
         assertEquals("1h", AnthropicClaudeCodeProfile.CACHE_CONTROL_TTL_1H);
         assertTrue(AnthropicClaudeCodeProfile.CLAUDE_CLI_UA_PATTERN.matcher("claude-cli/2.1.92").matches());
+    }
+
+    @Test
+    @DisplayName("Claude Code billing 与 account extra 字段由 profile 统一承载")
+    void billingAndAccountExtraFactsAreCentralized() {
+        assertEquals("account_uuid", AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_ACCOUNT_UUID);
+        assertEquals("claude_user_id", AnthropicClaudeCodeProfile.ACCOUNT_EXTRA_CLAUDE_USER_ID);
+        assertEquals("x-anthropic-billing-header: cc_version=2.1.92.abc; cc_entrypoint=cli; cch=00000;",
+                AnthropicClaudeCodeProfile.billingHeaderText("2.1.92", "abc"));
+        assertTrue(AnthropicClaudeCodeProfile.isBillingHeaderText(
+                AnthropicClaudeCodeProfile.billingHeaderText("2.1.92", "abc")));
+        assertFalse(AnthropicClaudeCodeProfile.isBillingHeaderText("ordinary system prompt"));
     }
 
     @Test

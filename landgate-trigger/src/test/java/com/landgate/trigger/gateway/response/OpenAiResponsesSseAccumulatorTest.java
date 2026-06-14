@@ -82,6 +82,51 @@ class OpenAiResponsesSseAccumulatorTest {
     }
 
     @Test
+    @DisplayName("Aggregates reasoning_text deltas into Responses reasoning content")
+    void aggregatesReasoningTextDeltas() throws Exception {
+        OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator("gpt-5.5");
+
+        accumulator.process(event("""
+                {"type":"response.reasoning_text.delta","output_index":0,"delta":"Full "}
+                """));
+        accumulator.process(event("""
+                {"type":"response.reasoning_text.delta","output_index":0,"delta":"reasoning"}
+                """));
+        assertTrue(accumulator.process(event("""
+                {"type":"response.done","response":{"status":"completed"}}
+                """)));
+
+        JsonNode output = JSON.readTree(accumulator.buildResponsesJson(usage(1, 1, 0))).path("output");
+
+        assertEquals(1, output.size());
+        assertEquals("reasoning", output.get(0).path("type").asText());
+        assertEquals("reasoning_text", output.get(0).path("content").get(0).path("type").asText());
+        assertEquals("Full reasoning", output.get(0).path("content").get(0).path("text").asText());
+        assertEquals(0, output.get(0).path("summary").size());
+    }
+
+    @Test
+    @DisplayName("Terminal reasoning output preserves content and summary")
+    void terminalReasoningOutputPreservesContentAndSummary() throws Exception {
+        OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator("gpt-5.5");
+
+        assertTrue(accumulator.process(event("""
+                {"type":"response.completed",
+                 "response":{"id":"resp_reasoning","status":"completed",
+                   "output":[{"type":"reasoning","status":"completed",
+                     "content":[{"type":"reasoning_text","text":"Full reasoning text."}],
+                     "summary":[{"type":"summary_text","text":"Short summary."}]}]}}
+                """)));
+
+        JsonNode output = JSON.readTree(accumulator.buildResponsesJson(usage(1, 1, 0))).path("output");
+
+        assertEquals(1, output.size());
+        assertEquals("reasoning", output.get(0).path("type").asText());
+        assertEquals("Full reasoning text.", output.get(0).path("content").get(0).path("text").asText());
+        assertEquals("Short summary.", output.get(0).path("summary").get(0).path("text").asText());
+    }
+
+    @Test
     @DisplayName("Empty terminal output is supplemented from buffered deltas in Sub2API order")
     void emptyTerminalOutputIsSupplementedFromBufferedDeltas() throws Exception {
         OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator("gpt-5.5");

@@ -10,6 +10,7 @@ import com.landgate.trigger.gateway.transformer.UpstreamRequestContext;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.OpenAiAnthropicMessagesCompatPolicy;
+import com.landgate.types.gateway.OpenAiCodexProfile;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -428,7 +429,8 @@ class OpenAiTransformerTest {
         assertTrue(root.get("parallel_tool_calls").asBoolean());
         assertFalse(root.has("max_tool_calls"));
         assertEquals("application/json", request.headers().firstValue("Accept").orElse(""));
-        assertEquals("0.125.0", request.headers().firstValue("Version").orElse(""));
+        assertEquals(OpenAiCodexProfile.CLI_VERSION,
+                request.headers().firstValue(OpenAiCodexProfile.HEADER_VERSION).orElse(""));
     }
 
     @Test
@@ -457,7 +459,7 @@ class OpenAiTransformerTest {
     }
 
     @Test
-    @DisplayName("OAuth Codex 请求按 sub2api 归一化 service_tier")
+    @DisplayName("OAuth Codex 请求按 sub2api 默认 fast policy 过滤 priority service_tier")
     void codexOAuthRequestNormalizesServiceTier() throws Exception {
         OpenAiTransformer transformer = new OpenAiTransformer();
         AccountEntity account = AccountEntity.builder()
@@ -474,7 +476,7 @@ class OpenAiTransformerTest {
         JsonNode unknown = JSON.readTree((String) method.invoke(transformer,
                 "{\"model\":\"gpt-5.5\",\"service_tier\":\"turbo\",\"input\":[]}", account));
 
-        assertEquals("priority", fast.get("service_tier").asText());
+        assertFalse(fast.has("service_tier"));
         assertFalse(unknown.has("service_tier"));
     }
 
@@ -811,10 +813,8 @@ class OpenAiTransformerTest {
         assertEquals("Bearer token-1", request.headers().firstValue("Authorization").orElse(""));
         assertTrue(request.headers().firstValue("Proxy-Authorization").isEmpty());
         assertTrue(request.headers().firstValue("x-api-key").isEmpty());
-        assertFalse(sessionId.isBlank());
-        assertEquals(16, sessionId.length());
-        assertNotEquals("client-session", sessionId);
-        assertNotEquals(sessionId, conversationId);
+        assertEquals("0ff2843cf705e84d", sessionId);
+        assertEquals("d3ddb7d7b6179fe5", conversationId);
         assertEquals("turn-state-1", request.headers().firstValue("x-codex-turn-state").orElse(""));
         assertEquals("text/event-stream", request.headers().firstValue("Accept").orElse(""));
         assertEquals(List.of("text/event-stream"), request.headers().allValues("Accept"));
@@ -906,9 +906,7 @@ class OpenAiTransformerTest {
         String sessionId = request.headers().firstValue("session_id").orElse("");
 
         assertFalse(root.has("prompt_cache_key"));
-        assertFalse(sessionId.isBlank());
-        assertEquals(36, sessionId.length());
-        assertTrue(sessionId.contains("-"));
+        assertEquals("0d16bc85-08dc-40a9-9d34-ea9ff9bc95f2", sessionId);
         assertTrue(request.headers().firstValue("conversation_id").isEmpty());
         assertTrue(request.headers().firstValue("OpenAI-Beta").isEmpty());
         assertTrue(request.headers().firstValue("Originator").isEmpty());
@@ -1062,7 +1060,7 @@ class OpenAiTransformerTest {
 
         JsonNode root = JSON.readTree(readBody(request));
 
-        assertEquals("priority", root.get("service_tier").asText());
+        assertFalse(root.has("service_tier"));
         assertEquals("none", root.get("reasoning").get("effort").asText());
         assertFalse(root.has("max_output_tokens"));
         assertFalse(root.has("max_completion_tokens"));

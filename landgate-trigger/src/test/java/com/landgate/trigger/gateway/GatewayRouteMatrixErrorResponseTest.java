@@ -114,6 +114,40 @@ class GatewayRouteMatrixErrorResponseTest {
                         Platform.ANTHROPIC.name()));
     }
 
+    @Test
+    @DisplayName("OpenAI transient processing 400 按 Sub2API 进入 failover，普通 validation 仍 MASK")
+    void openAiTransientProcessingErrorRetriesOnlyForOpenAi() {
+        String transientBody = """
+                {"error":{"message":"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_123 in your message."}}
+                """;
+
+        assertEquals(ErrorPassthroughService.ErrorAction.RETRY,
+                errorPassthroughService.decide(400, transientBody, Platform.OPENAI.name()));
+        assertEquals(ErrorPassthroughService.ErrorAction.MASK,
+                errorPassthroughService.decide(400, transientBody, Platform.ANTHROPIC.name()));
+        assertEquals(ErrorPassthroughService.ErrorAction.MASK,
+                errorPassthroughService.decide(400,
+                        "{\"error\":{\"message\":\"Missing required parameter: 'instructions'\"}}",
+                        Platform.OPENAI.name()));
+    }
+
+    @Test
+    @DisplayName("OpenAI 402/403 按 Sub2API OpenAI gateway failover，非 OpenAI 不放大")
+    void openAiPaymentAndForbiddenErrorsFailover() {
+        String billingBody = "{\"error\":{\"message\":\"billing issue\"}}";
+        String forbiddenBody = "{\"error\":{\"message\":\"policy denied\"}}";
+
+        assertEquals(ErrorPassthroughService.ErrorAction.RETRY,
+                errorPassthroughService.decide(402, billingBody, Platform.OPENAI.name()));
+        assertEquals(ErrorPassthroughService.ErrorAction.RETRY,
+                errorPassthroughService.decide(403, forbiddenBody, Platform.OPENAI.name()));
+
+        assertEquals(ErrorPassthroughService.ErrorAction.MASK,
+                errorPassthroughService.decide(402, billingBody, Platform.ANTHROPIC.name()));
+        assertEquals(ErrorPassthroughService.ErrorAction.MASK,
+                errorPassthroughService.decide(403, forbiddenBody, Platform.ANTHROPIC.name()));
+    }
+
     private static void assertPassthroughError(MockHttpServletResponse response, String name) throws Exception {
         assertEquals(400, response.getStatus(), name);
         assertEquals("application/vnd.upstream+json;charset=UTF-8", response.getContentType(), name);

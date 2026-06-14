@@ -20,8 +20,10 @@ import com.landgate.types.gateway.GatewayResponseHeaderPolicy;
 import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.GatewayStreamAggregationPolicy;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.AnthropicMessagesSsePolicy;
 import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
 import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
+import com.landgate.types.gateway.ErrorResponsePolicy;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -121,6 +123,7 @@ public class GatewayResponseService {
         int sseDataLines = 0;
         int usageEventLines = 0;
         boolean doneSignalSeen = false;
+        boolean protocolTerminalSeen = false;
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8));
              var writer = response.getWriter()) {
@@ -146,6 +149,9 @@ public class GatewayResponseService {
                 }
                 if (usageParser.isStreamDone(line)) {
                     doneSignalSeen = true;
+                }
+                if (isProtocolTerminalLine(upstreamFormat, needTranslation, line, usageParser)) {
+                    protocolTerminalSeen = true;
                 }
 
                 // 统一从上游原始 SSE 行解析用量，确保透传和协议翻译路径使用同一套计费来源
@@ -215,6 +221,12 @@ public class GatewayResponseService {
                 sseDataLines, usageEventLines, doneSignalSeen, clientDisconnected, totalUsage.hasUsage(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
+        if (requiresProtocolTerminal(upstreamFormat) && !protocolTerminalSeen) {
+            log.warn("[{}] Upstream stream ended without terminal event: client_format={}, upstream_format={}, done_seen={}, client_disconnected={}",
+                    ctx.getRequestId(), clientFormat, upstreamFormat, doneSignalSeen, clientDisconnected);
+            return GatewayResponseResult.protocolError(totalUsage, clientDisconnected, responseId,
+                    GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE);
+        }
         return new GatewayResponseResult(totalUsage, clientDisconnected, responseId);
     }
 
@@ -354,16 +366,7 @@ public class GatewayResponseService {
     }
 
     private static String extractUpstreamErrorMessage(JsonNode event) {
-        if (event == null) {
-            return GatewayStreamAggregationPolicy.FAILED_TERMINAL_FALLBACK_MESSAGE;
-        }
-        String message = firstNonBlank(
-                event.path(OpenAiResponsesJsonPolicy.FIELD_RESPONSE)
-                        .path(OpenAiResponsesJsonPolicy.FIELD_ERROR)
-                        .path(OpenAiResponsesJsonPolicy.FIELD_MESSAGE).asText(""),
-                event.path(OpenAiResponsesJsonPolicy.FIELD_ERROR)
-                        .path(OpenAiResponsesJsonPolicy.FIELD_MESSAGE).asText(""),
-                event.path(OpenAiResponsesJsonPolicy.FIELD_MESSAGE).asText(""));
+        String message = ErrorResponsePolicy.extractUpstreamErrorMessage(event);
         return message.isBlank() ? GatewayStreamAggregationPolicy.FAILED_TERMINAL_FALLBACK_MESSAGE : message;
     }
 
@@ -401,15 +404,20 @@ public class GatewayResponseService {
     }
 
     private String normalizeAnthropicUsageBody(GatewayRequestContext ctx, UpstreamRoute route, String body) {
-        return GatewayProtocolFormat.MESSAGES.is(resolveUpstreamFormat(ctx, route))
+        return shouldNormalizeAnthropicUsageForTranslation(ctx, route)
                 ? anthropicUsageCompatibilityService.normalizeNonStreamingBody(body)
                 : body;
     }
 
     private String normalizeAnthropicUsageSseLine(GatewayRequestContext ctx, UpstreamRoute route, String line) {
-        return GatewayProtocolFormat.MESSAGES.is(resolveUpstreamFormat(ctx, route))
+        return shouldNormalizeAnthropicUsageForTranslation(ctx, route)
                 ? anthropicUsageCompatibilityService.normalizeSseLine(line)
                 : line;
+    }
+
+    private static boolean shouldNormalizeAnthropicUsageForTranslation(GatewayRequestContext ctx, UpstreamRoute route) {
+        return GatewayProtocolFormat.MESSAGES.is(resolveUpstreamFormat(ctx, route))
+                && !GatewayProtocolFormat.MESSAGES.is(resolveClientFormat(ctx, route));
     }
 
     private static void copyUpstreamResponseHeaders(HttpResponse<?> upstreamResp,
@@ -515,6 +523,59 @@ public class GatewayResponseService {
         } catch (Exception ignored) {
             return "";
         }
+    }
+
+    private static boolean isAnthropicTerminalLine(String line) {
+        if (AnthropicMessagesSsePolicy.isMessageStopEventLine(line)) {
+            return true;
+        }
+        String payload = AnthropicMessagesSsePolicy.extractDataPayload(line);
+        if (AnthropicMessagesSsePolicy.isDoneSentinel(payload)) {
+            return true;
+        }
+        if (payload == null) {
+            return false;
+        }
+        try {
+            JsonNode root = JSON_MAPPER.readTree(payload);
+            return AnthropicMessagesSsePolicy.isMessageStopType(
+                    root.path(AnthropicMessagesBodyPolicy.FIELD_TYPE).asText(""));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isResponsesProtocolTerminalLine(String line) {
+        String payload = OpenAiResponsesSsePolicy.extractDataPayload(line);
+        if (payload == null || OpenAiResponsesSsePolicy.isDoneSentinel(payload)) {
+            return false;
+        }
+        try {
+            JsonNode root = JSON_MAPPER.readTree(payload);
+            return OpenAiResponsesSsePolicy.isTerminalEvent(
+                    root.path(OpenAiResponsesJsonPolicy.FIELD_TYPE).asText(""));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean isProtocolTerminalLine(String upstreamFormat,
+                                                  boolean translatedRoute,
+                                                  String line,
+                                                  IUsageParser usageParser) {
+        if (GatewayProtocolFormat.MESSAGES.is(upstreamFormat)) {
+            return isAnthropicTerminalLine(line);
+        }
+        if (GatewayProtocolFormat.RESPONSES.is(upstreamFormat) && translatedRoute) {
+            return isResponsesProtocolTerminalLine(line);
+        }
+        return usageParser != null && usageParser.isStreamDone(line);
+    }
+
+    private static boolean requiresProtocolTerminal(String upstreamFormat) {
+        return GatewayProtocolFormat.MESSAGES.is(upstreamFormat)
+                || GatewayProtocolFormat.RESPONSES.is(upstreamFormat)
+                || GatewayProtocolFormat.CHAT_COMPLETIONS.is(upstreamFormat);
     }
 
     private static String firstNonBlank(String... values) {

@@ -29,7 +29,8 @@ final class OpenAiResponsesSseAccumulator {
     private final Map<Integer, StringBuilder> textByContentKey = new LinkedHashMap<>();
     private final Map<Integer, String> contentTypeByContentKey = new LinkedHashMap<>();
     private final Map<Integer, StringBuilder> argumentsByOutputIndex = new LinkedHashMap<>();
-    private final Map<Integer, StringBuilder> reasoningByOutputIndex = new LinkedHashMap<>();
+    private final Map<Integer, StringBuilder> reasoningSummaryByOutputIndex = new LinkedHashMap<>();
+    private final Map<Integer, StringBuilder> reasoningTextByOutputIndex = new LinkedHashMap<>();
 
     private String responseId = RESPONSE_ID_PREFIX
             + UUID.randomUUID().toString().replace("-", "").substring(0, RESPONSE_ID_RANDOM_LENGTH);
@@ -127,8 +128,30 @@ final class OpenAiResponsesSseAccumulator {
             }
         } else if (OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DELTA.equals(type)) {
             int outputIndex = event.path(FIELD_OUTPUT_INDEX).asInt(0);
-            reasoningByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
+            reasoningSummaryByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
                     .append(event.path(FIELD_DELTA).asText(""));
+        } else if (OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DONE.equals(type)) {
+            int outputIndex = event.path(FIELD_OUTPUT_INDEX).asInt(0);
+            String text = event.path(FIELD_TEXT).asText("");
+            if (!text.isEmpty()) {
+                StringBuilder builder = reasoningSummaryByOutputIndex.computeIfAbsent(outputIndex,
+                        ignored -> new StringBuilder());
+                builder.setLength(0);
+                builder.append(text);
+            }
+        } else if (OpenAiResponsesSsePolicy.EVENT_REASONING_TEXT_DELTA.equals(type)) {
+            int outputIndex = event.path(FIELD_OUTPUT_INDEX).asInt(0);
+            reasoningTextByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
+                    .append(event.path(FIELD_DELTA).asText(""));
+        } else if (OpenAiResponsesSsePolicy.EVENT_REASONING_TEXT_DONE.equals(type)) {
+            int outputIndex = event.path(FIELD_OUTPUT_INDEX).asInt(0);
+            String text = event.path(FIELD_TEXT).asText("");
+            if (!text.isEmpty()) {
+                StringBuilder builder = reasoningTextByOutputIndex.computeIfAbsent(outputIndex,
+                        ignored -> new StringBuilder());
+                builder.setLength(0);
+                builder.append(text);
+            }
         } else if (OpenAiResponsesSsePolicy.EVENT_RESPONSE_COMPLETED.equals(type)
                 || OpenAiResponsesSsePolicy.EVENT_RESPONSE_DONE.equals(type)) {
             terminalSeen = true;
@@ -238,21 +261,17 @@ final class OpenAiResponsesSseAccumulator {
             }
         }
 
-        for (Map.Entry<Integer, StringBuilder> entry : reasoningByOutputIndex.entrySet()) {
-            ObjectNode item = outputItems.computeIfAbsent(entry.getKey(), ignored -> {
-                ObjectNode reasoning = JSON_MAPPER.createObjectNode();
-                reasoning.put(FIELD_TYPE, TYPE_REASONING);
-                reasoning.put(FIELD_STATUS, STATUS_COMPLETED);
-                reasoning.set(FIELD_SUMMARY, JSON_MAPPER.createArrayNode());
-                return reasoning;
-            });
-            if (!TYPE_REASONING.equals(item.path(FIELD_TYPE).asText())) continue;
-            ArrayNode summary = JSON_MAPPER.createArrayNode();
-            ObjectNode text = JSON_MAPPER.createObjectNode();
-            text.put(FIELD_TYPE, TYPE_SUMMARY_TEXT);
-            text.put(FIELD_TEXT, entry.getValue().toString());
-            summary.add(text);
-            item.set(FIELD_SUMMARY, summary);
+        for (Map.Entry<Integer, StringBuilder> entry : reasoningSummaryByOutputIndex.entrySet()) {
+            ObjectNode item = ensureReasoningItem(entry.getKey());
+            if (item == null) continue;
+            item.set(FIELD_SUMMARY, reasoningTextArray(TYPE_SUMMARY_TEXT, entry.getValue().toString()));
+            item.put(FIELD_STATUS, STATUS_COMPLETED);
+        }
+
+        for (Map.Entry<Integer, StringBuilder> entry : reasoningTextByOutputIndex.entrySet()) {
+            ObjectNode item = ensureReasoningItem(entry.getKey());
+            if (item == null) continue;
+            item.set(FIELD_CONTENT, reasoningTextArray(TYPE_REASONING_TEXT, entry.getValue().toString()));
             item.put(FIELD_STATUS, STATUS_COMPLETED);
         }
 
@@ -342,6 +361,7 @@ final class OpenAiResponsesSseAccumulator {
         } else if (TYPE_REASONING.equals(type)) {
             normalized.put(FIELD_STATUS, STATUS_COMPLETED);
             normalized.set(FIELD_SUMMARY, item.has(FIELD_SUMMARY) ? item.get(FIELD_SUMMARY) : JSON_MAPPER.createArrayNode());
+            normalized.set(FIELD_CONTENT, item.has(FIELD_CONTENT) ? item.get(FIELD_CONTENT) : JSON_MAPPER.createArrayNode());
         } else {
             normalized.put(FIELD_TYPE, TYPE_MESSAGE);
             normalized.put(FIELD_ROLE, item.path(FIELD_ROLE).asText(ROLE_ASSISTANT));
@@ -371,17 +391,16 @@ final class OpenAiResponsesSseAccumulator {
         LinkedHashMap<Integer, ObjectNode> supplemented = new LinkedHashMap<>();
         int outputIndex = 0;
 
-        String reasoning = bufferedReasoningText();
-        if (!reasoning.isEmpty()) {
-            ObjectNode item = JSON_MAPPER.createObjectNode();
-            item.put(FIELD_TYPE, TYPE_REASONING);
-            item.put(FIELD_STATUS, STATUS_COMPLETED);
-            ArrayNode summary = JSON_MAPPER.createArrayNode();
-            ObjectNode text = JSON_MAPPER.createObjectNode();
-            text.put(FIELD_TYPE, TYPE_SUMMARY_TEXT);
-            text.put(FIELD_TEXT, reasoning);
-            summary.add(text);
-            item.set(FIELD_SUMMARY, summary);
+        String reasoningSummary = bufferedReasoningSummaryText();
+        String reasoningText = bufferedReasoningText();
+        if (!reasoningSummary.isEmpty() || !reasoningText.isEmpty()) {
+            ObjectNode item = createReasoningItem();
+            if (!reasoningSummary.isEmpty()) {
+                item.set(FIELD_SUMMARY, reasoningTextArray(TYPE_SUMMARY_TEXT, reasoningSummary));
+            }
+            if (!reasoningText.isEmpty()) {
+                item.set(FIELD_CONTENT, reasoningTextArray(TYPE_REASONING_TEXT, reasoningText));
+            }
             supplemented.put(outputIndex++, item);
         }
 
@@ -416,13 +435,22 @@ final class OpenAiResponsesSseAccumulator {
 
     private boolean hasBufferedDeltaContent() {
         return textByContentKey.values().stream().anyMatch(builder -> builder.length() > 0)
-                || reasoningByOutputIndex.values().stream().anyMatch(builder -> builder.length() > 0)
+                || reasoningSummaryByOutputIndex.values().stream().anyMatch(builder -> builder.length() > 0)
+                || reasoningTextByOutputIndex.values().stream().anyMatch(builder -> builder.length() > 0)
                 || outputItems.values().stream().anyMatch(item -> TYPE_FUNCTION_CALL.equals(item.path(FIELD_TYPE).asText("")));
+    }
+
+    private String bufferedReasoningSummaryText() {
+        StringBuilder reasoning = new StringBuilder();
+        reasoningSummaryByOutputIndex.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(entry -> reasoning.append(entry.getValue()));
+        return reasoning.toString();
     }
 
     private String bufferedReasoningText() {
         StringBuilder reasoning = new StringBuilder();
-        reasoningByOutputIndex.entrySet().stream()
+        reasoningTextByOutputIndex.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> reasoning.append(entry.getValue()));
         return reasoning.toString();
@@ -473,15 +501,51 @@ final class OpenAiResponsesSseAccumulator {
                 builder.setLength(0);
                 builder.append(item.path(FIELD_ARGUMENTS).asText(EMPTY_JSON_OBJECT));
             }
-        } else if (TYPE_REASONING.equals(itemType) && item.has(FIELD_SUMMARY) && item.get(FIELD_SUMMARY).isArray()) {
-            StringBuilder builder = reasoningByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder());
-            builder.setLength(0);
-            for (JsonNode summary : item.get(FIELD_SUMMARY)) {
-                if (!TYPE_SUMMARY_TEXT.equals(summary.path(FIELD_TYPE).asText(""))) continue;
-                if (builder.length() > 0) builder.append("\n");
-                builder.append(summary.path(FIELD_TEXT).asText(""));
+        } else if (TYPE_REASONING.equals(itemType)) {
+            if (item.has(FIELD_SUMMARY) && item.get(FIELD_SUMMARY).isArray()) {
+                StringBuilder builder = reasoningSummaryByOutputIndex.computeIfAbsent(outputIndex,
+                        ignored -> new StringBuilder());
+                builder.setLength(0);
+                for (JsonNode summary : item.get(FIELD_SUMMARY)) {
+                    if (!TYPE_SUMMARY_TEXT.equals(summary.path(FIELD_TYPE).asText(""))) continue;
+                    if (builder.length() > 0) builder.append("\n");
+                    builder.append(summary.path(FIELD_TEXT).asText(""));
+                }
+            }
+            if (item.has(FIELD_CONTENT) && item.get(FIELD_CONTENT).isArray()) {
+                StringBuilder builder = reasoningTextByOutputIndex.computeIfAbsent(outputIndex,
+                        ignored -> new StringBuilder());
+                builder.setLength(0);
+                for (JsonNode content : item.get(FIELD_CONTENT)) {
+                    if (!TYPE_REASONING_TEXT.equals(content.path(FIELD_TYPE).asText(""))) continue;
+                    if (builder.length() > 0) builder.append("\n");
+                    builder.append(content.path(FIELD_TEXT).asText(""));
+                }
             }
         }
+    }
+
+    private ObjectNode ensureReasoningItem(int outputIndex) {
+        ObjectNode item = outputItems.computeIfAbsent(outputIndex, ignored -> createReasoningItem());
+        return TYPE_REASONING.equals(item.path(FIELD_TYPE).asText()) ? item : null;
+    }
+
+    private static ObjectNode createReasoningItem() {
+        ObjectNode reasoning = JSON_MAPPER.createObjectNode();
+        reasoning.put(FIELD_TYPE, TYPE_REASONING);
+        reasoning.put(FIELD_STATUS, STATUS_COMPLETED);
+        reasoning.set(FIELD_SUMMARY, JSON_MAPPER.createArrayNode());
+        reasoning.set(FIELD_CONTENT, JSON_MAPPER.createArrayNode());
+        return reasoning;
+    }
+
+    private static ArrayNode reasoningTextArray(String type, String textValue) {
+        ArrayNode values = JSON_MAPPER.createArrayNode();
+        ObjectNode text = JSON_MAPPER.createObjectNode();
+        text.put(FIELD_TYPE, type);
+        text.put(FIELD_TEXT, textValue);
+        values.add(text);
+        return values;
     }
 
     private static int contentKey(int outputIndex, int contentIndex) {

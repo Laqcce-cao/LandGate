@@ -39,7 +39,7 @@ class FingerprintServiceTest {
 
         var fingerprint = service.getOrCreateFingerprint(1L, Map.of());
 
-        assertEquals(ClaudeConstants.DEFAULT_CLAUDE_CLI_USER_AGENT, fingerprint.getUserAgent());
+        assertEquals(AnthropicClaudeCodeProfile.DEFAULT_CLAUDE_CLI_USER_AGENT, fingerprint.getUserAgent());
     }
 
     @Test

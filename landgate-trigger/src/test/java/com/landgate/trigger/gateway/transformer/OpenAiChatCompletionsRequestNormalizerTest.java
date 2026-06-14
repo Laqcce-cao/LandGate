@@ -85,4 +85,49 @@ class OpenAiChatCompletionsRequestNormalizerTest {
 
         assertFalse(root.has(OpenAiNormalizerProfile.FIELD_STREAM_OPTIONS));
     }
+
+    @Test
+    @DisplayName("Raw Chat 默认 fast policy 过滤 priority 并保留 flex")
+    void chatCompletionsDefaultFastPolicyFiltersPriorityOnly() throws Exception {
+        String priority = normalizer.normalize("""
+                {"model":"gpt-5.5","service_tier":"fast","messages":[{"role":"user","content":"Hi"}]}
+                """, apiKeyAccount());
+        JsonNode priorityRoot = JSON.readTree(priority);
+        assertFalse(priorityRoot.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+
+        String flex = normalizer.normalize("""
+                {"model":"gpt-5.5","service_tier":"flex","messages":[{"role":"user","content":"Hi"}]}
+                """, apiKeyAccount());
+        JsonNode flexRoot = JSON.readTree(flex);
+        assertEquals("flex", flexRoot.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER).asText());
+    }
+
+    @Test
+    @DisplayName("Raw Chat 自定义 fast policy block 返回明确异常")
+    void chatCompletionsConfiguredFastPolicyBlocksRequest() {
+        OpenAiChatCompletionsRequestNormalizer configured = new OpenAiChatCompletionsRequestNormalizer(
+                new OpenAiFastPolicyProvider("""
+                        {"rules":[{"service_tier":"priority","action":"block","scope":"apikey",
+                          "error_message":"raw chat fast blocked","model_whitelist":["gpt-5.5"]}]}
+                        """));
+
+        OpenAiFastPolicyBlockedException blocked = assertThrows(
+                OpenAiFastPolicyBlockedException.class,
+                () -> configured.normalize("""
+                        {"model":"gpt-5.5","service_tier":"fast","messages":[{"role":"user","content":"Hi"}]}
+                        """, apiKeyAccount()));
+
+        assertEquals("raw chat fast blocked", blocked.getMessage());
+        assertEquals("priority", blocked.tier());
+        assertEquals("gpt-5.5", blocked.model());
+    }
+
+    private static AccountEntity apiKeyAccount() {
+        return AccountEntity.builder()
+                .id(22L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .credentials("{}")
+                .build();
+    }
 }

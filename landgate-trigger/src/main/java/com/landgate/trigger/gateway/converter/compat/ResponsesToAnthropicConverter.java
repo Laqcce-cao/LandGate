@@ -489,10 +489,7 @@ public class ResponsesToAnthropicConverter {
                                 appendEvent(output, AnthropicMessagesSsePolicy.EVENT_CONTENT_BLOCK_START,
                                         toolUseBlockStartData(contentBlockIndex, callId, currentToolName));
                             }
-                            case OpenAiResponsesJsonPolicy.TYPE_WEB_SEARCH_CALL -> {
-                                // 暂不处理
-                                log.debug("IR→Anthropic stream: web_search_call not yet implemented");
-                            }
+                            case OpenAiResponsesJsonPolicy.TYPE_WEB_SEARCH_CALL -> { /* handled when output_item.done carries the completed item */ }
                         }
                     }
                     case OpenAiResponsesSsePolicy.EVENT_OUTPUT_TEXT_DELTA -> {

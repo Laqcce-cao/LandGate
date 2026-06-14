@@ -9,10 +9,9 @@ import com.landgate.types.gateway.GatewayHeaderPolicy;
 import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.OpenAiCodexProfile;
 import com.landgate.types.gateway.OpenAiHeaderPolicy;
+import com.landgate.types.gateway.OpenAiSessionIdPolicy;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * OpenAI upstream auth/header profile.
@@ -39,7 +38,7 @@ final class OpenAiAuthProfile {
         if (route.normalizeCodexOAuthBody()) {
             appendCodexOAuthHeaders(headers, context, normalizedBody, route);
         } else if (route.endpointKind() == EndpointKind.OPENAI_RESPONSES) {
-            appendOpenAiResponsesHeaders(headers, context);
+            appendOpenAiResponsesHeaders(headers, context, normalizedBody, route);
         } else if (route.endpointKind() == EndpointKind.OPENAI_CHAT_COMPLETIONS) {
             appendOpenAiRawChatHeaders(headers, context);
         }
@@ -61,7 +60,7 @@ final class OpenAiAuthProfile {
                 extractPromptCacheKey(normalizedBody),
                 extractPromptCacheKey(context.body()));
         if (isAnthropicMessagesCompat(route) && !promptCacheKey.isBlank()) {
-            String isolatedSessionId = codexSessionUuid(context.apiKeyId(), promptCacheKey);
+            String isolatedSessionId = OpenAiSessionIdPolicy.compatSessionUuid(context.apiKeyId(), promptCacheKey);
             headers.set(OpenAiCodexProfile.HEADER_SESSION_ID, isolatedSessionId);
             if (!GatewayHeaderPolicy.value(requestHeaders, OpenAiCodexProfile.HEADER_CONVERSATION_ID).isBlank()) {
                 headers.set(OpenAiCodexProfile.HEADER_CONVERSATION_ID, isolatedSessionId);
@@ -76,11 +75,11 @@ final class OpenAiAuthProfile {
                     promptCacheKey);
             if (!clientSessionId.isBlank()) {
                 headers.set(OpenAiCodexProfile.HEADER_SESSION_ID,
-                        isolateCodexSessionId(context.apiKeyId(), clientSessionId));
+                        OpenAiSessionIdPolicy.isolateSessionId(context.apiKeyId(), clientSessionId));
             }
             if (!clientConversationId.isBlank()) {
                 headers.set(OpenAiCodexProfile.HEADER_CONVERSATION_ID,
-                        isolateCodexSessionId(context.apiKeyId(), clientConversationId));
+                        OpenAiSessionIdPolicy.isolateSessionId(context.apiKeyId(), clientConversationId));
             }
         }
         if (route.forceNonStreamingResponse()) {
@@ -107,12 +106,34 @@ final class OpenAiAuthProfile {
         headers.set(OpenAiCodexProfile.HEADER_ACCEPT,
                 context.stream() ? OpenAiCodexProfile.ACCEPT_EVENT_STREAM : OpenAiCodexProfile.ACCEPT_JSON);
         headers.copyAllowed(context.requestHeaders(), OpenAiHeaderPolicy.RAW_CHAT_ALLOWED_HEADERS);
+        applyOpenAiApiKeyUserAgentOverride(headers, context.account());
     }
 
-    private static void appendOpenAiResponsesHeaders(UpstreamHeaders headers, UpstreamRequestContext context) {
+    private static void appendOpenAiResponsesHeaders(UpstreamHeaders headers,
+                                                     UpstreamRequestContext context,
+                                                     String normalizedBody,
+                                                     UpstreamRoute route) {
         headers.copyAllowed(context.requestHeaders(), OpenAiHeaderPolicy.API_KEY_RESPONSES_ALLOWED_HEADERS);
         headers.setIfAbsent(OpenAiCodexProfile.HEADER_ACCEPT,
                 context.stream() ? OpenAiCodexProfile.ACCEPT_EVENT_STREAM : OpenAiCodexProfile.ACCEPT_JSON);
+        String promptCacheKey = firstNonBlank(
+                extractPromptCacheKey(normalizedBody),
+                extractPromptCacheKey(context.body()));
+        if (isAnthropicMessagesCompat(route) && !promptCacheKey.isBlank()) {
+            String isolatedSessionId = OpenAiSessionIdPolicy.compatSessionUuid(context.apiKeyId(), promptCacheKey);
+            headers.set(OpenAiCodexProfile.HEADER_SESSION_ID, isolatedSessionId);
+            if (!GatewayHeaderPolicy.value(context.requestHeaders(), OpenAiCodexProfile.HEADER_CONVERSATION_ID).isBlank()) {
+                headers.set(OpenAiCodexProfile.HEADER_CONVERSATION_ID, isolatedSessionId);
+            }
+        }
+        applyOpenAiApiKeyUserAgentOverride(headers, context.account());
+    }
+
+    private static void applyOpenAiApiKeyUserAgentOverride(UpstreamHeaders headers, AccountEntity account) {
+        String userAgent = credentialText(account, OpenAiCodexProfile.CREDENTIAL_USER_AGENT);
+        if (!userAgent.isBlank()) {
+            headers.set(OpenAiCodexProfile.HEADER_USER_AGENT, userAgent);
+        }
     }
 
     private static String credentialText(AccountEntity account, String field) {
@@ -148,31 +169,7 @@ final class OpenAiAuthProfile {
         return "";
     }
 
-    private static String isolateCodexSessionId(Long apiKeyId, String raw) {
-        String value = raw == null ? "" : raw.trim();
-        if (value.isBlank()) return "";
-        long key = apiKeyId == null ? 0L : apiKeyId;
-        return fnv1a64Hex("k" + key + ":" + value);
-    }
-
-    private static String codexSessionUuid(Long apiKeyId, String raw) {
-        String value = raw == null ? "" : raw.trim();
-        if (value.isBlank()) return "";
-        long key = apiKeyId == null ? 0L : apiKeyId;
-        return UUID.nameUUIDFromBytes(("k" + key + ":" + value).getBytes(StandardCharsets.UTF_8)).toString();
-    }
-
     private static boolean isAnthropicMessagesCompat(UpstreamRoute route) {
         return route != null && GatewayProtocolFormat.MESSAGES.is(route.clientFormat());
-    }
-
-    private static String fnv1a64Hex(String value) {
-        long hash = 0xcbf29ce484222325L;
-        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-        for (byte b : bytes) {
-            hash ^= (b & 0xffL);
-            hash *= 0x100000001b3L;
-        }
-        return String.format("%016x", hash);
     }
 }

@@ -53,4 +53,19 @@ public final class AnthropicMessagesSsePolicy {
     public static boolean isDoneSentinel(String payload) {
         return payload != null && DONE_SENTINEL.equals(payload.trim());
     }
+
+    public static boolean isEventLine(String line, String eventName) {
+        if (line == null || eventName == null || !line.startsWith(EVENT_LINE_PREFIX)) {
+            return false;
+        }
+        return eventName.equals(line.substring(EVENT_LINE_PREFIX.length()).trim());
+    }
+
+    public static boolean isMessageStopEventLine(String line) {
+        return isEventLine(line, EVENT_MESSAGE_STOP);
+    }
+
+    public static boolean isMessageStopType(String type) {
+        return EVENT_MESSAGE_STOP.equals(type);
+    }
 }
