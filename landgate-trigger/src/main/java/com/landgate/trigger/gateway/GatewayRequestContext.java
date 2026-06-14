@@ -65,6 +65,8 @@ public class GatewayRequestContext {
     private String openAiCompatMatchedDigestChain;
     /** API Key Responses 兼容续接时附加的 previous_response_id。OAuth 路径不使用。 */
     private String openAiCompatPreviousResponseId;
+    /** Anthropic OAuth mimicry request-side tool-name rewrite mapping for response restoration. */
+    private com.landgate.trigger.gateway.oauth.AnthropicToolNameRewrite anthropicToolNameRewrite;
 
     private static final ThreadLocal<GatewayRequestContext> HOLDER = new ThreadLocal<>();
 

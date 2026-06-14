@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.landgate.domain.billing.model.valobj.UsageTokens;
+import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
+import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -31,16 +33,17 @@ public class ResponsesUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(responseBody);
-            JsonNode usage = root.path("usage");
+            JsonNode usage = root.path(OpenAiResponsesJsonPolicy.FIELD_USAGE);
             if (usage.isMissingNode() || usage.isNull()) {
                 return new UsageTokens();
             }
             // OpenAI Responses API: input_tokens 包含缓存部分，需减去避免重复计费
-            int rawInputTokens = usage.path("input_tokens").asInt();
-            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt();
+            int rawInputTokens = usage.path(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS).asInt();
+            int cachedTokens = usage.path(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS_DETAILS)
+                    .path(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS).asInt();
             return UsageTokens.builder()
                     .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
-                    .outputTokens(usage.path("output_tokens").asInt())
+                    .outputTokens(usage.path(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS).asInt())
                     .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
@@ -56,23 +59,26 @@ public class ResponsesUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(sseData);
-            String type = root.path("type").asText();
-            if (!isTerminalResponseEvent(type)) {
+            String type = root.path(OpenAiResponsesJsonPolicy.FIELD_TYPE).asText();
+            if (!OpenAiResponsesSsePolicy.isTerminalEvent(type)) {
                 return null;
             }
-            JsonNode usage = root.path("response").path("usage");
-            if ((usage.isMissingNode() || usage.isNull()) && root.has("usage")) {
-                usage = root.path("usage");
+            JsonNode usage = root.path(OpenAiResponsesJsonPolicy.FIELD_RESPONSE)
+                    .path(OpenAiResponsesJsonPolicy.FIELD_USAGE);
+            if ((usage.isMissingNode() || usage.isNull())
+                    && root.has(OpenAiResponsesJsonPolicy.FIELD_USAGE)) {
+                usage = root.path(OpenAiResponsesJsonPolicy.FIELD_USAGE);
             }
             if (usage.isMissingNode() || usage.isNull()) {
                 return null;
             }
             // OpenAI Responses API: input_tokens 包含缓存部分，需减去避免重复计费
-            int rawInputTokens = usage.path("input_tokens").asInt();
-            int cachedTokens = usage.path("input_tokens_details").path("cached_tokens").asInt();
+            int rawInputTokens = usage.path(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS).asInt();
+            int cachedTokens = usage.path(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS_DETAILS)
+                    .path(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS).asInt();
             return UsageTokens.builder()
                     .inputTokens(Math.max(0, rawInputTokens - cachedTokens))
-                    .outputTokens(usage.path("output_tokens").asInt())
+                    .outputTokens(usage.path(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS).asInt())
                     .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
@@ -86,26 +92,20 @@ public class ResponsesUsageParser implements IUsageParser {
         if (sseLine == null || sseLine.isBlank()) {
             return false;
         }
-        if ("data: [DONE]".equals(sseLine)) {
+        String payload = OpenAiResponsesSsePolicy.extractDataPayload(sseLine);
+        if (OpenAiResponsesSsePolicy.isDoneSentinel(payload)) {
             return true;
         }
-        if (!sseLine.startsWith("data: ")) {
+        if (payload == null) {
             return false;
         }
         try {
-            JsonNode root = JSON.readTree(sseLine.substring(6));
-            String type = root.path("type").asText();
-            return isTerminalResponseEvent(type);
+            JsonNode root = JSON.readTree(payload);
+            String type = root.path(OpenAiResponsesJsonPolicy.FIELD_TYPE).asText();
+            return OpenAiResponsesSsePolicy.isTerminalEvent(type);
         } catch (Exception e) {
             log.debug("Failed to parse Responses SSE done line", e);
             return false;
         }
-    }
-
-    private static boolean isTerminalResponseEvent(String type) {
-        return "response.completed".equals(type)
-                || "response.done".equals(type)
-                || "response.failed".equals(type)
-                || "response.incomplete".equals(type);
     }
 }

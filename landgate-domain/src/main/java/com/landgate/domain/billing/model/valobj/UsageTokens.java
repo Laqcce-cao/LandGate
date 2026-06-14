@@ -1,5 +1,6 @@
 package com.landgate.domain.billing.model.valobj;
 
+import com.landgate.types.gateway.GatewayCacheTtlPolicy;
 import lombok.*;
 
 /**
@@ -65,5 +66,58 @@ public class UsageTokens {
         if (other.cacheReadTokens > 0) this.cacheReadTokens = other.cacheReadTokens;
         if (other.cacheCreation5mTokens > 0) this.cacheCreation5mTokens = other.cacheCreation5mTokens;
         if (other.cacheCreation1hTokens > 0) this.cacheCreation1hTokens = other.cacheCreation1hTokens;
+    }
+
+    /**
+     * Aligns cache creation token TTL classification with Sub2API.
+     * <p>
+     * If the upstream response only reports aggregate cache creation tokens,
+     * the aggregate is first treated as the default 5m bucket. Then the 5m/1h
+     * total is moved to the requested target bucket.
+     *
+     * @return true when the 5m/1h bucket split changed after fallback handling
+     */
+    public boolean applyCacheTtlOverride(String target) {
+        if (cacheCreation5mTokens == 0 && cacheCreation1hTokens == 0 && cacheCreationTokens > 0) {
+            cacheCreation5mTokens = cacheCreationTokens;
+        }
+
+        int total = cacheCreation5mTokens + cacheCreation1hTokens;
+        if (total == 0) {
+            return false;
+        }
+
+        String normalizedTarget = GatewayCacheTtlPolicy.normalizeTarget(target);
+        if (GatewayCacheTtlPolicy.TARGET_1H.equals(normalizedTarget)) {
+            if (cacheCreation1hTokens == total) {
+                return false;
+            }
+            cacheCreation1hTokens = total;
+            cacheCreation5mTokens = 0;
+            return true;
+        }
+
+        if (cacheCreation5mTokens == total) {
+            return false;
+        }
+        cacheCreation5mTokens = total;
+        cacheCreation1hTokens = 0;
+        return true;
+    }
+
+    /**
+     * Aligns with Sub2API force-cache-billing semantics used after a sticky
+     * session has to fail over to a different account: already-sent input is
+     * charged as cache-read instead of fresh input.
+     *
+     * @return true when input tokens were reclassified
+     */
+    public boolean applyForceCacheBilling() {
+        if (inputTokens <= 0) {
+            return false;
+        }
+        cacheReadTokens += inputTokens;
+        inputTokens = 0;
+        return true;
     }
 }

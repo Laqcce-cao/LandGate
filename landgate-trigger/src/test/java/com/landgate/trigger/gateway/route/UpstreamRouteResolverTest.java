@@ -25,6 +25,70 @@ class UpstreamRouteResolverTest {
     ));
 
     @Test
+    @DisplayName("三协议入口按账号上游协议形成显式路由矩阵")
+    void coreProtocolRouteMatrixUsesAccountProtocolAsUpstreamSource() {
+        List<RouteMatrixCase> cases = List.of(
+                matrix("messages -> Anthropic messages", Platform.ANTHROPIC, AccountType.API_KEY, "messages",
+                        Platform.ANTHROPIC, "messages", EndpointKind.ANTHROPIC_MESSAGES,
+                        "messages", false, false, true),
+                matrix("responses -> Anthropic messages", Platform.ANTHROPIC, AccountType.API_KEY, "messages",
+                        Platform.OPENAI, "responses", EndpointKind.ANTHROPIC_MESSAGES,
+                        "messages", false, false, false),
+                matrix("chat -> Anthropic messages", Platform.ANTHROPIC, AccountType.API_KEY, "messages",
+                        Platform.OPENAI, "chat_completions", EndpointKind.ANTHROPIC_MESSAGES,
+                        "messages", false, false, false),
+
+                matrix("messages -> OpenAI OAuth Codex responses", Platform.OPENAI, AccountType.OAUTH, "responses",
+                        Platform.ANTHROPIC, "messages", EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "responses", true, true, false),
+                matrix("responses -> OpenAI OAuth Codex responses", Platform.OPENAI, AccountType.OAUTH, "responses",
+                        Platform.OPENAI, "responses", EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "responses", true, true, true),
+                matrix("chat -> OpenAI OAuth Codex responses", Platform.OPENAI, AccountType.OAUTH, "responses",
+                        Platform.OPENAI, "chat_completions", EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "responses", true, true, false),
+
+                matrix("messages -> OpenAI API Key responses", Platform.OPENAI, AccountType.API_KEY, "responses",
+                        Platform.ANTHROPIC, "messages", EndpointKind.OPENAI_RESPONSES,
+                        "responses", false, false, false),
+                matrix("responses -> OpenAI API Key responses", Platform.OPENAI, AccountType.API_KEY, "responses",
+                        Platform.OPENAI, "responses", EndpointKind.OPENAI_RESPONSES,
+                        "responses", false, false, true),
+                matrix("chat -> OpenAI API Key responses", Platform.OPENAI, AccountType.API_KEY, "responses",
+                        Platform.OPENAI, "chat_completions", EndpointKind.OPENAI_RESPONSES,
+                        "responses", true, false, false),
+
+                matrix("messages -> OpenAI API Key chat", Platform.OPENAI, AccountType.API_KEY, "chat_completions",
+                        Platform.ANTHROPIC, "messages", EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "chat_completions", false, false, false),
+                matrix("responses -> OpenAI API Key chat", Platform.OPENAI, AccountType.API_KEY, "chat_completions",
+                        Platform.OPENAI, "responses", EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "chat_completions", false, false, false),
+                matrix("chat -> OpenAI API Key chat", Platform.OPENAI, AccountType.API_KEY, "chat_completions",
+                        Platform.OPENAI, "chat_completions", EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "chat_completions", false, false, true)
+        );
+
+        for (RouteMatrixCase expected : cases) {
+            AccountEntity account = account(expected.accountPlatform(), expected.accountType(),
+                    "{}", "[\"" + expected.accountProtocol() + "\"]");
+            UpstreamRoute route = resolver.resolve(request(account, expected.requestPlatform(), expected.clientFormat()));
+            var plan = protocolPlanner.plan(expected.requestPlatform(), route);
+
+            assertEquals(expected.endpointKind(), route.endpointKind(), expected.name());
+            assertEquals(expected.accountPlatform(), route.upstreamPlatform(), expected.name());
+            assertEquals(expected.clientFormat(), route.clientFormat(), expected.name());
+            assertEquals(expected.upstreamFormat(), route.upstreamFormat(), expected.name());
+            assertEquals(expected.upstreamFormat(), route.usageFormat(), expected.name());
+            assertEquals(expected.forceStreaming(), route.forceStreaming(), expected.name());
+            assertEquals(expected.normalizeCodexOAuthBody(), route.normalizeCodexOAuthBody(), expected.name());
+            assertEquals(expected.passthrough(), plan.passthrough(), expected.name());
+            assertEquals(!expected.passthrough(), plan.translationRequired(), expected.name());
+            assertFalse(route.reason().isBlank(), expected.name());
+        }
+    }
+
+    @Test
     @DisplayName("OpenAI OAuth 账号路由到 Codex Responses 并强制上游流式")
     void openAiOAuthRoutesToCodexResponses() {
         AccountEntity account = account(Platform.OPENAI, AccountType.OAUTH, null, "[\"responses\"]");
@@ -74,6 +138,7 @@ class UpstreamRouteResolverTest {
 
         assertEquals(EndpointKind.OPENAI_RESPONSES, route.endpointKind());
         assertEquals("https://proxy.example.com/v1/responses/compact", route.targetUrl());
+        assertTrue(route.forceNonStreamingResponse());
     }
 
     @Test
@@ -129,6 +194,7 @@ class UpstreamRouteResolverTest {
         assertEquals(EndpointKind.OPENAI_RESPONSES, responses.endpointKind());
         assertEquals("chat_completions", responses.clientFormat());
         assertEquals("responses", responses.upstreamFormat());
+        assertTrue(responses.forceStreaming());
         assertFalse(protocolPlanner.plan(Platform.OPENAI, responses).passthrough());
     }
 
@@ -233,5 +299,36 @@ class UpstreamRouteResolverTest {
                 .extra(extra)
                 .supportedProtocols(supportedProtocols)
                 .build();
+    }
+
+    private static RouteMatrixCase matrix(String name,
+                                          Platform accountPlatform,
+                                          AccountType accountType,
+                                          String accountProtocol,
+                                          Platform requestPlatform,
+                                          String clientFormat,
+                                          EndpointKind endpointKind,
+                                          String upstreamFormat,
+                                          boolean forceStreaming,
+                                          boolean normalizeCodexOAuthBody,
+                                          boolean passthrough) {
+        return new RouteMatrixCase(name, accountPlatform, accountType, accountProtocol,
+                requestPlatform, clientFormat, endpointKind, upstreamFormat,
+                forceStreaming, normalizeCodexOAuthBody, passthrough);
+    }
+
+    private record RouteMatrixCase(
+            String name,
+            Platform accountPlatform,
+            AccountType accountType,
+            String accountProtocol,
+            Platform requestPlatform,
+            String clientFormat,
+            EndpointKind endpointKind,
+            String upstreamFormat,
+            boolean forceStreaming,
+            boolean normalizeCodexOAuthBody,
+            boolean passthrough
+    ) {
     }
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.landgate.trigger.gateway.converter.ConverterRegistry;
 import com.landgate.trigger.gateway.converter.ProtocolConverter;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.GatewayProtocolFormat;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -147,8 +148,8 @@ public class ProtocolTranslationService {
     public static String platformToFormatId(Platform platform) {
         if (platform == null) return null;
         return switch (platform) {
-            case ANTHROPIC -> "messages";
-            case OPENAI -> "chat_completions";
+            case ANTHROPIC -> GatewayProtocolFormat.MESSAGES.id();
+            case OPENAI -> GatewayProtocolFormat.CHAT_COMPLETIONS.id();
             default -> null;
         };
     }

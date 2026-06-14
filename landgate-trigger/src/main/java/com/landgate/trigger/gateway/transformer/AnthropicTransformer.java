@@ -8,17 +8,27 @@ import com.landgate.trigger.gateway.oauth.BillingHeaderService;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.oauth.UserIdRewriter;
+import com.landgate.trigger.gateway.forwarding.AnthropicForwardingRuntimePolicyProvider;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.AnthropicApiProfile;
+import com.landgate.types.gateway.AnthropicCacheControlPolicy;
+import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
+import com.landgate.types.gateway.AnthropicForwardingRuntimePolicy;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.GatewayHeaderPolicy;
+import com.landgate.types.gateway.GatewayRequestBodyPolicy;
+import com.landgate.trigger.gateway.route.UpstreamEndpointDefaults;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Anthropic 协议请求转换器 —— 构建转发至 Anthropic API 的上游请求。
@@ -32,30 +42,43 @@ import java.util.List;
 @Component
 public class AnthropicTransformer implements IRequestTransformer {
 
-    private static final String ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-    private static final String ANTHROPIC_VERSION = "2023-06-01";
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private final FingerprintService fingerprintService;
     private final UserIdRewriter userIdRewriter;
     private final BillingHeaderService billingHeaderService;
     private final OAuthMimicryService oAuthMimicryService;
+    private final AnthropicForwardingRuntimePolicyProvider forwardingRuntimePolicyProvider;
+
+    @Autowired
+    public AnthropicTransformer(
+            FingerprintService fingerprintService,
+            UserIdRewriter userIdRewriter,
+            BillingHeaderService billingHeaderService,
+            OAuthMimicryService oAuthMimicryService,
+            AnthropicForwardingRuntimePolicyProvider forwardingRuntimePolicyProvider) {
+        this.fingerprintService = fingerprintService;
+        this.userIdRewriter = userIdRewriter;
+        this.billingHeaderService = billingHeaderService;
+        this.oAuthMimicryService = oAuthMimicryService;
+        this.forwardingRuntimePolicyProvider = forwardingRuntimePolicyProvider;
+    }
 
     public AnthropicTransformer(
             FingerprintService fingerprintService,
             UserIdRewriter userIdRewriter,
             BillingHeaderService billingHeaderService,
             OAuthMimicryService oAuthMimicryService) {
-        this.fingerprintService = fingerprintService;
-        this.userIdRewriter = userIdRewriter;
-        this.billingHeaderService = billingHeaderService;
-        this.oAuthMimicryService = oAuthMimicryService;
+        this(fingerprintService, userIdRewriter, billingHeaderService, oAuthMimicryService, null);
     }
 
     public HttpRequest buildUpstreamRequest(UpstreamRequestContext context) {
         String body = context.body();
         AccountEntity account = context.account();
         String accessToken = context.accessToken();
+        String syncedClaudeCodeSessionId = "";
+        FingerprintService.ClientFingerprint oauthFingerprint = null;
+        AnthropicForwardingRuntimePolicy forwardingPolicy = currentForwardingPolicy();
         // 如果上下文中存在 metadata.user_id（从原始 Anthropic 客户端请求提取的），
         // 重新注入到上游请求中（因为 Anthropic→Responses IR 转换会丢弃 metadata 字段）
         if (context.metadataUserId() != null) {
@@ -71,62 +94,73 @@ public class AnthropicTransformer implements IRequestTransformer {
             // 1. 指纹管理
             FingerprintService.ClientFingerprint fp =
                     fingerprintService.getOrCreateFingerprint(account.getId(), requestHeaders);
+            oauthFingerprint = forwardingPolicy.fingerprintUnification() ? fp : null;
 
             // 2. 重写 metadata.user_id（替换 device_id → ClientID, session_id → 新 hash）
-            // TODO: 当 enable_metadata_passthrough 开关实现后，添加条件判断
             String accountUUID = extractAccountUUID(account);
-            if (accountUUID != null && !accountUUID.isEmpty() && fp != null) {
+            if (!forwardingPolicy.metadataPassthrough()
+                    && accountUUID != null && !accountUUID.isEmpty() && fp != null) {
                 body = userIdRewriter.rewriteUserIDWithMasking(
                         body, account, accountUUID, fp.getClientId(), fp.getUserAgent());
             }
 
             // 3. 同步 billing header 版本（仅在 fingerprint 存在时执行）
-            if (fp != null) {
+            if (forwardingPolicy.fingerprintUnification() && fp != null) {
                 body = billingHeaderService.syncBillingHeaderVersion(body, fp.getUserAgent());
             }
 
             // 4. 签名 CCH（必须是最后一步 body 修改！xxHash64 对整个 body 计算）
-            // TODO: 当 enable_cch_signing 开关实现后，添加条件判断
-            // body = billingHeaderService.signBillingHeaderCCH(body);
+            if (forwardingPolicy.cchSigning()) {
+                body = billingHeaderService.signBillingHeaderCCH(body);
+            }
 
             // 5. 同步 X-Claude-Code-Session-Id（真实 CC 客户端）
             // RewriteUserIDWithMasking 重写了 body 中 metadata.user_id 的 session_id，
             // 必须同步请求头中的 X-Claude-Code-Session-Id 为新 session_id
             if (!context.shouldMimicClaudeCode()) {
-                String sessionHeader = requestHeaders != null
-                        ? requestHeaders.get("X-Claude-Code-Session-Id") : null;
-                if (sessionHeader != null && !sessionHeader.isEmpty()) {
+                if (GatewayHeaderPolicy.hasValue(requestHeaders, AnthropicApiProfile.HEADER_X_CLAUDE_CODE_SESSION_ID)) {
                     String newSessionId = userIdRewriter.extractCurrentSessionId(body);
                     if (newSessionId != null) {
-                        // session ID 同步通过 Header 数组方式注入（见下方 headers 构建）
+                        syncedClaudeCodeSessionId = newSessionId;
                     }
                 }
             }
+
+            if (oAuthMimicryService != null) {
+                body = oAuthMimicryService.applyAnthropicCacheControlTTL1hIfEnabled(body);
+            }
         }
 
+        body = AnthropicModelMappingBodyNormalizer.apply(account, body);
         body = AnthropicCacheControlPolicy.enforceLimit(body);
 
         String modelName = extractModel(body);
         String targetUrl = resolveTargetUrl(account, context);
 
-        var headers = buildHeaders(account, accessToken, context);
+        Map<String, String> upstreamHeaders = normalizeApiKeyHeaders(account, context.requestHeaders(), forwardingPolicy);
+        var headers = buildHeaders(account, accessToken, upstreamHeaders);
         log.debug("Building upstream request: url={}, model={}, account_id={}", targetUrl, modelName, account.getId());
 
         var requestBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(targetUrl))
                 .timeout(Duration.ofSeconds(120))
-                .header("Content-Type", "application/json")
                 .headers(headers)
+                .setHeader(AnthropicApiProfile.HEADER_CONTENT_TYPE, AnthropicApiProfile.MEDIA_TYPE_JSON)
                 .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        if (!syncedClaudeCodeSessionId.isBlank()) {
+            requestBuilder.setHeader(AnthropicApiProfile.HEADER_X_CLAUDE_CODE_SESSION_ID, syncedClaudeCodeSessionId);
+        }
 
         // 6. 应用伪装头 + 指纹头（Phase B 的 header 级操作）
         if (isAnthropicOAuth(account)) {
             if (context.shouldMimicClaudeCode()) {
                 oAuthMimicryService.applyClaudeCodeMimicHeaders(requestBuilder,
-                        context.stream(), modelName);
+                        context.stream(), modelName, context.requestHeaders(), forwardingPolicy.betaDropTokens());
             } else {
                 // 真实 CC 客户端：仅应用基础 OAuth 头 + 指纹头
-                oAuthMimicryService.applyOAuthHeaderDefaults(requestBuilder);
+                oAuthMimicryService.applyOAuthHeaderDefaults(
+                        requestBuilder, modelName, context.requestHeaders(), forwardingPolicy.betaDropTokens());
+                fingerprintService.applyFingerprint(requestBuilder, oauthFingerprint);
             }
         }
 
@@ -138,50 +172,55 @@ public class AnthropicTransformer implements IRequestTransformer {
         if (context.upstreamRoute() != null && context.upstreamRoute().targetUrl() != null) {
             return context.upstreamRoute().targetUrl();
         }
-        String targetUrl = ANTHROPIC_API_URL;
-        if (account.getExtra() != null && !account.getExtra().equals("{}")) {
-            try {
-                JsonNode extra = JSON.readTree(account.getExtra());
-                if (extra.has("base_url") && !extra.get("base_url").asText().isEmpty()) {
-                    targetUrl = extra.get("base_url").asText() + "/v1/messages";
-                }
-            } catch (Exception e) {
-                log.warn("Failed to parse account extra for base_url: account_id={}", account.getId());
-            }
-        }
-        return targetUrl;
+        return UpstreamEndpointDefaults.anthropicMessagesUrl(account);
     }
 
-    private String[] buildHeaders(AccountEntity account, String accessToken, UpstreamRequestContext context) {
-        var headers = new ArrayList<String>();
-        if (account.getType() == AccountType.OAUTH || account.getType() == AccountType.SETUP_TOKEN) {
-            headers.addAll(List.of("Authorization", "Bearer " + accessToken));
-        } else {
-            headers.addAll(List.of("x-api-key", accessToken));
-        }
-        headers.addAll(List.of("anthropic-version", ANTHROPIC_VERSION));
+    private String[] buildHeaders(AccountEntity account, String accessToken, java.util.Map<String, String> requestHeaders) {
+        return AnthropicAuthProfile.from(account).buildHeaders(accessToken, requestHeaders);
+    }
 
-        // OAuth 账号的 anthropic-beta：伪装模式下由 applyClaudeCodeMimicHeaders 设置，
-        // 非伪装模式（真实 CC 客户端）使用基础 beta
-        if (isAnthropicOAuth(account)) {
-            if (context.shouldMimicClaudeCode()) {
-                // 伪装模式：beta 头在 applyClaudeCodeMimicHeaders 中设置
-                headers.addAll(List.of("anthropic-beta", "oauth-2025-04-20"));
-            } else {
-                // 真实 CC 客户端：仅基础 oauth beta
-                headers.addAll(List.of("anthropic-beta", "oauth-2025-04-20"));
-            }
+    private static Map<String, String> normalizeApiKeyHeaders(AccountEntity account,
+                                                              Map<String, String> requestHeaders,
+                                                              AnthropicForwardingRuntimePolicy forwardingPolicy) {
+        if (isAnthropicOAuth(account) || requestHeaders == null || requestHeaders.isEmpty()) {
+            return requestHeaders == null ? Map.of() : requestHeaders;
+        }
+        AnthropicForwardingRuntimePolicy effective =
+                forwardingPolicy == null ? AnthropicForwardingRuntimePolicy.defaults() : forwardingPolicy;
+        if (effective.betaDropTokens().isEmpty()
+                || !GatewayHeaderPolicy.hasValue(requestHeaders, AnthropicApiProfile.HEADER_ANTHROPIC_BETA)) {
+            return requestHeaders;
         }
 
-        return headers.toArray(new String[0]);
+        Map<String, String> normalized = new LinkedHashMap<>(requestHeaders);
+        String stripped = AnthropicClaudeCodeProfile.stripBetaTokens(
+                GatewayHeaderPolicy.value(requestHeaders, AnthropicApiProfile.HEADER_ANTHROPIC_BETA),
+                effective.betaDropTokens());
+        normalized.entrySet().removeIf(entry ->
+                entry.getKey() != null
+                        && entry.getKey().equalsIgnoreCase(AnthropicApiProfile.HEADER_ANTHROPIC_BETA));
+        if (!stripped.isBlank()) {
+            normalized.put(AnthropicApiProfile.HEADER_ANTHROPIC_BETA, stripped);
+        }
+        return normalized;
+    }
+
+    private AnthropicForwardingRuntimePolicy currentForwardingPolicy() {
+        return forwardingRuntimePolicyProvider == null
+                ? AnthropicForwardingRuntimePolicy.defaults()
+                : forwardingRuntimePolicyProvider.current();
     }
 
     @Override
     public String extractUserId(String body) {
         try {
             JsonNode root = JSON.readTree(body);
-            if (root.has("metadata") && root.get("metadata").has("user_id")) {
-                return root.get("metadata").get("user_id").asText();
+            if (root.has(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                    && root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                    .has(AnthropicMessagesBodyPolicy.FIELD_USER_ID)) {
+                return root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                        .get(AnthropicMessagesBodyPolicy.FIELD_USER_ID)
+                        .asText();
             }
         } catch (Exception e) {
             log.debug("Failed to extract user_id from Anthropic request body");
@@ -192,17 +231,21 @@ public class AnthropicTransformer implements IRequestTransformer {
     public String extractModel(String body) {
         try {
             JsonNode root = JSON.readTree(body);
-            if (root.has("model")) return root.get("model").asText();
+            if (root.has(AnthropicMessagesBodyPolicy.FIELD_MODEL)) {
+                return root.get(AnthropicMessagesBodyPolicy.FIELD_MODEL).asText();
+            }
         } catch (Exception e) {
             log.debug("Failed to extract model from request body");
         }
-        return "unknown";
+        return GatewayRequestBodyPolicy.DEFAULT_MODEL;
     }
 
     public boolean isStreamRequest(String body) {
         try {
             JsonNode root = JSON.readTree(body);
-            if (root.has("stream")) return root.get("stream").asBoolean();
+            if (root.has(AnthropicMessagesBodyPolicy.FIELD_STREAM)) {
+                return root.get(AnthropicMessagesBodyPolicy.FIELD_STREAM).asBoolean();
+            }
         } catch (Exception e) {
             // ignore
         }
@@ -219,12 +262,14 @@ public class AnthropicTransformer implements IRequestTransformer {
             JsonNode root = JSON.readTree(body);
             if (root.isObject()) {
                 var obj = (com.fasterxml.jackson.databind.node.ObjectNode) root;
-                if (obj.has("metadata") && obj.get("metadata").isObject()) {
-                    ((com.fasterxml.jackson.databind.node.ObjectNode) obj.get("metadata")).put("user_id", userId);
+                if (obj.has(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                        && obj.get(AnthropicMessagesBodyPolicy.FIELD_METADATA).isObject()) {
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) obj.get(AnthropicMessagesBodyPolicy.FIELD_METADATA))
+                            .put(AnthropicMessagesBodyPolicy.FIELD_USER_ID, userId);
                 } else {
                     var metadata = JSON.createObjectNode();
-                    metadata.put("user_id", userId);
-                    obj.set("metadata", metadata);
+                    metadata.put(AnthropicMessagesBodyPolicy.FIELD_USER_ID, userId);
+                    obj.set(AnthropicMessagesBodyPolicy.FIELD_METADATA, metadata);
                 }
                 return JSON.writeValueAsString(obj);
             }

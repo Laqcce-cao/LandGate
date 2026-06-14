@@ -1,43 +1,31 @@
-package com.landgate.trigger.gateway.oauth;
+package com.landgate.types.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
 
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * metadata.user_id 解析器 —— 支持两种格式。
- * <p>
- * Legacy 格式：{@code user_{64hex_device_id}_account_{uuid}_session_{36char-uuid}}<br>
- * JSON 格式（Claude Code >= 2.1.78）：{@code {"device_id":"...","account_uuid":"...","session_id":"..."}}
- * <p>
- * 参照：sub2api {@code metadata_userid.go}
+ * metadata.user_id parser with Claude Code legacy and JSON formats.
+ *
+ * <p>Aligned with Sub2API metadata_userid behavior.</p>
  */
-@Slf4j
-public class MetadataUserIdParser {
+public final class MetadataUserIdParser {
 
     private static final ObjectMapper JSON = new ObjectMapper();
-
-    /** Legacy 格式正则 */
     private static final Pattern LEGACY_PATTERN = Pattern.compile(
             "^user_([a-fA-F0-9]{64})_account_([a-fA-F0-9-]*)_session_([a-fA-F0-9-]{36})$");
 
-    /**
-     * 解析 metadata.user_id，先尝试 JSON 格式，失败回退到 legacy 正则。
-     *
-     * @return 解析结果，解析失败返回 null
-     */
+    private MetadataUserIdParser() {
+    }
+
     public static ParsedMetadataUserId parse(String raw) {
         if (raw == null || raw.isEmpty()) return null;
-
-        // JSON 格式（以 { 开头）
         if (raw.startsWith("{")) {
             return parseJson(raw);
         }
-        // Legacy 格式
         return parseLegacy(raw);
     }
 
@@ -47,14 +35,11 @@ public class MetadataUserIdParser {
             String deviceId = root.has("device_id") ? root.get("device_id").asText() : null;
             String accountUuid = root.has("account_uuid") ? root.get("account_uuid").asText() : null;
             String sessionId = root.has("session_id") ? root.get("session_id").asText() : null;
-
-            // device_id 和 session_id 必须非空
             if (deviceId == null || deviceId.isEmpty() || sessionId == null || sessionId.isEmpty()) {
                 return null;
             }
             return new ParsedMetadataUserId(deviceId, accountUuid, sessionId, Format.JSON);
-        } catch (Exception e) {
-            log.debug("Failed to parse JSON metadata.user_id: {}", e.getMessage());
+        } catch (Exception ignored) {
             return null;
         }
     }
@@ -65,14 +50,6 @@ public class MetadataUserIdParser {
         return new ParsedMetadataUserId(m.group(1), m.group(2), m.group(3), Format.LEGACY);
     }
 
-    /**
-     * 格式化 metadata.user_id。根据 UA 版本决定输出格式。
-     *
-     * @param deviceId    设备 ID
-     * @param accountUuid 账号 UUID
-     * @param sessionId   会话 ID
-     * @param cliVersion  CLI 版本号（用于判断输出格式：>= 2.1.78 用 JSON）
-     */
     public static String format(String deviceId, String accountUuid, String sessionId, String cliVersion) {
         if (shouldUseJsonFormat(cliVersion)) {
             return formatJson(deviceId, accountUuid, sessionId);
@@ -80,17 +57,16 @@ public class MetadataUserIdParser {
         return formatLegacy(deviceId, accountUuid, sessionId);
     }
 
-    private static boolean shouldUseJsonFormat(String version) {
-        if (version == null) return true; // 默认使用 JSON
+    public static boolean shouldUseJsonFormat(String version) {
+        if (version == null) return true;
         try {
             String[] parts = version.split("\\.");
             if (parts.length < 3) return true;
             int major = Integer.parseInt(parts[0]);
             int minor = Integer.parseInt(parts[1]);
             int patch = Integer.parseInt(parts[2]);
-            // >= 2.1.78
             return major > 2 || (major == 2 && (minor > 1 || (minor == 1 && patch >= 78)));
-        } catch (Exception e) {
+        } catch (Exception ignored) {
             return true;
         }
     }
@@ -102,7 +78,7 @@ public class MetadataUserIdParser {
             obj.put("account_uuid", accountUuid != null ? accountUuid : "");
             obj.put("session_id", sessionId != null ? sessionId : UUID.randomUUID().toString());
             return JSON.writeValueAsString(obj);
-        } catch (Exception e) {
+        } catch (Exception ignored) {
             return "{}";
         }
     }
@@ -114,22 +90,21 @@ public class MetadataUserIdParser {
                 sessionId != null ? sessionId : UUID.randomUUID().toString());
     }
 
-    /** 从 body 中提取 metadata.user_id */
     public static String extractFromBody(String body) {
         try {
             JsonNode root = JSON.readTree(body);
-            if (root.has("metadata") && root.get("metadata").has("user_id")) {
-                return root.get("metadata").get("user_id").asText();
+            if (root.has(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                    && root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                    .has(AnthropicMessagesBodyPolicy.FIELD_USER_ID)) {
+                return root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                        .get(AnthropicMessagesBodyPolicy.FIELD_USER_ID)
+                        .asText();
             }
-        } catch (Exception e) {
-            // ignore
+        } catch (Exception ignored) {
+            // ignore malformed bodies
         }
         return null;
     }
-
-    // ========================
-    // 数据类
-    // ========================
 
     public enum Format { LEGACY, JSON }
 

@@ -6,6 +6,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.AnthropicMessagesSsePolicy;
+import com.landgate.types.gateway.AnthropicThinkingPolicy;
+import com.landgate.types.gateway.CompatPromptCacheKeyPolicy;
+import com.landgate.types.gateway.GatewayProtocolIrPolicy;
+import com.landgate.types.gateway.GatewayToolCallIdPolicy;
+import com.landgate.types.gateway.GatewayWebSearchToolPolicy;
+import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
+import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
+import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -24,7 +34,6 @@ import java.util.UUID;
 public class AnthropicToResponsesConverter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final int MIN_MAX_OUTPUT_TOKENS = 128;
     // ========================
     // 请求转换：Anthropic → Responses IR
     // ========================
@@ -42,29 +51,34 @@ public class AnthropicToResponsesConverter {
             boolean parallelToolCallsDisabled = false;
 
             // --- 基础字段透传 ---
-            copyTextIfExists(src, dst, "model");
-            copyBooleanIfExists(src, dst, "stream");
+            copyTextIfExists(src, dst, AnthropicMessagesBodyPolicy.FIELD_MODEL);
+            copyBooleanIfExists(src, dst, AnthropicMessagesBodyPolicy.FIELD_STREAM);
 
             // 协议转换层不根据模型名猜能力；采样参数按客户端显式请求保留。
-            copyNumberIfExists(src, dst, "temperature");
-            copyNumberIfExists(src, dst, "top_p");
+            copyNumberIfExists(src, dst, OpenAiResponsesBodyPolicy.FIELD_TEMPERATURE);
+            copyNumberIfExists(src, dst, OpenAiResponsesBodyPolicy.FIELD_TOP_P);
 
             String promptCacheKey = CompatPromptCacheKeyPolicy.deriveAnthropicCompatPromptCacheKey(src);
             if (!promptCacheKey.isEmpty()) {
-                dst.put("prompt_cache_key", promptCacheKey);
+                dst.put(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY, promptCacheKey);
             }
 
             // max_tokens → max_output_tokens. sub2api clamps tiny values because
             // OpenAI Responses/Codex rejects very small output budgets.
-            if (src.has("max_tokens") && isPositiveInt(src.get("max_tokens"))) {
-                dst.put("max_output_tokens", Math.max(src.get("max_tokens").asInt(), MIN_MAX_OUTPUT_TOKENS));
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS)
+                    && isPositiveInt(src.get(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS))) {
+                dst.put(OpenAiResponsesBodyPolicy.FIELD_MAX_OUTPUT_TOKENS,
+                        Math.max(src.get(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS).asInt(),
+                                OpenAiResponsesBodyPolicy.MIN_MAX_OUTPUT_TOKENS));
             }
 
             // stop_sequences → 内部 IR 扩展。Responses 上游不直接消费，跨协议转 Chat/Anthropic 时再还原。
-            if (src.has("stop_sequences") && src.get("stop_sequences").isArray()) {
-                JsonNode stopSequences = normalizeStopSequences(src.get("stop_sequences"));
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_STOP_SEQUENCES)
+                    && src.get(AnthropicMessagesBodyPolicy.FIELD_STOP_SEQUENCES).isArray()) {
+                JsonNode stopSequences = normalizeStopSequences(
+                        src.get(AnthropicMessagesBodyPolicy.FIELD_STOP_SEQUENCES));
                 if (stopSequences != null) {
-                    dst.set("_landgate_stop_sequences", stopSequences);
+                    dst.set(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES, stopSequences);
                 }
             }
 
@@ -72,62 +86,68 @@ public class AnthropicToResponsesConverter {
             ArrayNode input = JSON.createArrayNode();
 
             // system → developer message（input[0]）
-            if (src.has("system")) {
-                List<String> systemTexts = extractSystemTexts(src.get("system"));
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_SYSTEM)) {
+                List<String> systemTexts = extractSystemTexts(src.get(AnthropicMessagesBodyPolicy.FIELD_SYSTEM));
                 if (!systemTexts.isEmpty()) {
                     ObjectNode developerMsg = JSON.createObjectNode();
-                    developerMsg.put("type", "message");
-                    developerMsg.put("role", "developer");
+                    developerMsg.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_MESSAGE);
+                    developerMsg.put(OpenAiResponsesBodyPolicy.FIELD_ROLE, OpenAiResponsesBodyPolicy.ROLE_DEVELOPER);
                     ArrayNode devContent = JSON.createArrayNode();
                     for (String text : systemTexts) {
                         ObjectNode part = JSON.createObjectNode();
-                        part.put("type", "input_text");
-                        part.put("text", text);
+                        part.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_INPUT_TEXT);
+                        part.put(OpenAiResponsesBodyPolicy.FIELD_TEXT, text);
                         devContent.add(part);
                     }
-                    developerMsg.set("content", devContent);
+                    developerMsg.set(OpenAiResponsesBodyPolicy.FIELD_CONTENT, devContent);
                     input.add(developerMsg);
                 }
             }
 
             // messages[] → input[]
-            if (src.has("messages") && src.get("messages").isArray()) {
-                for (JsonNode msg : src.get("messages")) {
-                    String role = msg.has("role") ? msg.get("role").asText() : "user";
-                    JsonNode contentNode = msg.get("content");
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_MESSAGES)
+                    && src.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGES).isArray()) {
+                for (JsonNode msg : src.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGES)) {
+                    String role = msg.has(AnthropicMessagesBodyPolicy.FIELD_ROLE)
+                            ? msg.get(AnthropicMessagesBodyPolicy.FIELD_ROLE).asText()
+                            : AnthropicMessagesBodyPolicy.ROLE_USER;
+                    JsonNode contentNode = msg.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT);
 
                     switch (role) {
-                        case "user" -> convertUserMessage(contentNode, input);
-                        case "assistant" -> convertAssistantMessage(contentNode, input);
+                        case AnthropicMessagesBodyPolicy.ROLE_USER -> convertUserMessage(contentNode, input);
+                        case AnthropicMessagesBodyPolicy.ROLE_ASSISTANT -> convertAssistantMessage(contentNode, input);
                         default -> convertUserMessage(contentNode, input); // 未知 role fallback 到 user
                     }
                 }
             }
-            dst.set("input", input);
+            dst.set(OpenAiResponsesBodyPolicy.FIELD_INPUT, input);
 
             // --- tools ---
-            if (src.has("tools") && src.get("tools").isArray()) {
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_TOOLS)
+                    && src.get(AnthropicMessagesBodyPolicy.FIELD_TOOLS).isArray()) {
                 ArrayNode responsesTools = JSON.createArrayNode();
-                for (JsonNode tool : src.get("tools")) {
+                for (JsonNode tool : src.get(AnthropicMessagesBodyPolicy.FIELD_TOOLS)) {
                     JsonNode convertedTool = convertAnthropicToolToResponses(tool);
                     if (convertedTool != null) {
                         responsesTools.add(convertedTool);
                     }
                 }
                 if (responsesTools.size() > 0) {
-                    dst.set("tools", responsesTools);
+                    dst.set(OpenAiResponsesBodyPolicy.FIELD_TOOLS, responsesTools);
                 }
             }
 
             // --- tool_choice ---
-            if (src.has("tool_choice")) {
-                JsonNode disableParallel = src.get("tool_choice").path("disable_parallel_tool_use");
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_TOOL_CHOICE)) {
+                JsonNode disableParallel = src.get(AnthropicMessagesBodyPolicy.FIELD_TOOL_CHOICE)
+                        .path(AnthropicMessagesBodyPolicy.FIELD_DISABLE_PARALLEL_TOOL_USE);
                 if (disableParallel.isBoolean() && disableParallel.asBoolean()) {
                     parallelToolCallsDisabled = true;
                 }
-                JsonNode toolChoice = convertAnthropicToolChoiceToResponses(src.get("tool_choice"));
+                JsonNode toolChoice = convertAnthropicToolChoiceToResponses(
+                        src.get(AnthropicMessagesBodyPolicy.FIELD_TOOL_CHOICE));
                 if (toolChoice != null) {
-                    dst.set("tool_choice", toolChoice);
+                    dst.set(OpenAiResponsesBodyPolicy.FIELD_TOOL_CHOICE, toolChoice);
                 }
             }
 
@@ -135,30 +155,31 @@ public class AnthropicToResponsesConverter {
             // 对齐 sub2api/Codex bridge：普通 Messages 请求也默认带 medium reasoning shape。
             String reasoningEffort = "medium";
             if (src.has("output_config") && src.get("output_config").isObject()
-                    && src.get("output_config").has("effort")) {
-                reasoningEffort = mapAnthropicEffortToResponses(src.get("output_config").get("effort"));
+                    && src.get("output_config").has(OpenAiResponsesBodyPolicy.FIELD_EFFORT)) {
+                reasoningEffort = mapAnthropicEffortToResponses(
+                        src.get("output_config").get(OpenAiResponsesBodyPolicy.FIELD_EFFORT));
             }
             if (reasoningEffort == null) {
                 reasoningEffort = "medium";
             }
 
             // --- Codex/Responses 默认形状，对齐 sub2api anthropic bridge ---
-            dst.put("store", false);
+            dst.put(OpenAiResponsesBodyPolicy.FIELD_STORE, false);
             ObjectNode text = JSON.createObjectNode();
-            text.put("verbosity", "medium");
-            dst.set("text", text);
+            text.put("verbosity", OpenAiResponsesBodyPolicy.TEXT_VERBOSITY_MEDIUM);
+            dst.set(OpenAiResponsesBodyPolicy.FIELD_TEXT, text);
             ObjectNode reasoning = JSON.createObjectNode();
-            reasoning.put("effort", reasoningEffort);
-            reasoning.put("summary", "auto");
-            dst.set("reasoning", reasoning);
+            reasoning.put(OpenAiResponsesBodyPolicy.FIELD_EFFORT, reasoningEffort);
+            reasoning.put(OpenAiResponsesBodyPolicy.FIELD_SUMMARY, OpenAiResponsesBodyPolicy.REASONING_SUMMARY_AUTO);
+            dst.set(OpenAiResponsesBodyPolicy.FIELD_REASONING, reasoning);
             ArrayNode include = JSON.createArrayNode();
-            include.add("reasoning.encrypted_content");
-            dst.set("include", include);
+            include.add(OpenAiResponsesBodyPolicy.INCLUDE_REASONING_ENCRYPTED_CONTENT);
+            dst.set(OpenAiResponsesBodyPolicy.FIELD_INCLUDE, include);
             if (!parallelToolCallsDisabled) {
-                dst.put("parallel_tool_calls", true);
+                dst.put(OpenAiResponsesBodyPolicy.FIELD_PARALLEL_TOOL_CALLS, true);
             }
             if (parallelToolCallsDisabled) {
-                dst.put("parallel_tool_calls", false);
+                dst.put(OpenAiResponsesBodyPolicy.FIELD_PARALLEL_TOOL_CALLS, false);
             }
 
             return dst;
@@ -180,49 +201,61 @@ public class AnthropicToResponsesConverter {
             JsonNode src = JSON.readTree(body);
             ObjectNode dst = JSON.createObjectNode();
 
-            dst.put("id", textOrDefault(src.get("id"),
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_ID, textOrDefault(src.get(AnthropicMessagesBodyPolicy.FIELD_ID),
                     "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24)));
-            dst.put("object", "response");
-            dst.put("model", textOrDefault(src.get("model"), "unknown"));
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_OBJECT, OpenAiResponsesJsonPolicy.OBJECT_RESPONSE);
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_MODEL, textOrDefault(
+                    src.get(AnthropicMessagesBodyPolicy.FIELD_MODEL), OpenAiResponsesJsonPolicy.DEFAULT_MODEL));
 
             // content[] → output[]
             ArrayNode output = JSON.createArrayNode();
             List<JsonNode> textBlocks = new ArrayList<>();
 
-            if (src.has("content") && src.get("content").isArray()) {
-                for (JsonNode block : src.get("content")) {
-                    String blockType = textOrDefault(block.get("type"), "text");
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_CONTENT)
+                    && src.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT).isArray()) {
+                for (JsonNode block : src.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT)) {
+                    String blockType = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE),
+                            AnthropicMessagesBodyPolicy.TYPE_TEXT);
                     switch (blockType) {
-                        case "text" -> textBlocks.add(block);
-                        case "thinking" -> {
+                        case AnthropicMessagesBodyPolicy.TYPE_TEXT -> textBlocks.add(block);
+                        case AnthropicThinkingPolicy.TYPE_THINKING -> {
                             flushTextBlocks(output, textBlocks);
                             ObjectNode reasoning = convertAnthropicThinkingToResponsesReasoning(block);
                             if (hasReasoningPayload(reasoning)) {
                                 output.add(reasoning);
                             }
                         }
-                        case "redacted_thinking" -> {
+                        case AnthropicThinkingPolicy.TYPE_REDACTED_THINKING -> {
                             flushTextBlocks(output, textBlocks);
                             ObjectNode reasoning = convertAnthropicRedactedThinkingToResponsesReasoning(block);
                             if (hasReasoningPayload(reasoning)) {
                                 output.add(reasoning);
                             }
                         }
-                        case "tool_use" -> {
-                            if (isBlankText(block.get("id")) || isBlankText(block.get("name"))) {
+                        case AnthropicMessagesBodyPolicy.TYPE_TOOL_USE -> {
+                            if (isBlankText(block.get(AnthropicMessagesBodyPolicy.FIELD_ID))
+                                    || isBlankText(block.get(AnthropicMessagesBodyPolicy.FIELD_NAME))) {
                                 log.debug("Anthropic→Responses: tool_use missing id or name, ignored");
                             } else {
                                 flushTextBlocks(output, textBlocks);
                                 ObjectNode funcCall = JSON.createObjectNode();
-                                funcCall.put("type", "function_call");
-                                funcCall.put("call_id", block.get("id").asText());
-                                funcCall.put("name", block.get("name").asText());
-                                funcCall.put("arguments", block.has("input") ? block.get("input").toString() : "{}");
-                                funcCall.put("status", "completed");
+                                funcCall.put(OpenAiResponsesJsonPolicy.FIELD_TYPE,
+                                        OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL);
+                                funcCall.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID,
+                                        GatewayToolCallIdPolicy.toResponsesCallIdFromAnthropic(
+                                                block.get(AnthropicMessagesBodyPolicy.FIELD_ID).asText()));
+                                funcCall.put(OpenAiResponsesJsonPolicy.FIELD_NAME,
+                                        block.get(AnthropicMessagesBodyPolicy.FIELD_NAME).asText());
+                                funcCall.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS,
+                                        block.has(AnthropicMessagesBodyPolicy.FIELD_INPUT)
+                                                ? block.get(AnthropicMessagesBodyPolicy.FIELD_INPUT).toString()
+                                                : OpenAiResponsesJsonPolicy.EMPTY_JSON_OBJECT);
+                                funcCall.put(OpenAiResponsesJsonPolicy.FIELD_STATUS,
+                                        OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
                                 output.add(funcCall);
                             }
                         }
-                        case "server_tool_use" ->
+                        case AnthropicMessagesBodyPolicy.TYPE_SERVER_TOOL_USE ->
                             log.debug("Anthropic→Responses: server_tool_use block ignored in non-streaming");
                         default ->
                             log.debug("Anthropic→Responses: unknown block type '{}' ignored", blockType);
@@ -233,47 +266,50 @@ public class AnthropicToResponsesConverter {
             flushTextBlocks(output, textBlocks);
             if (output.size() == 0) {
                 ObjectNode msgItem = JSON.createObjectNode();
-                msgItem.put("type", "message");
-                msgItem.put("role", "assistant");
-                msgItem.put("status", "completed");
+                msgItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_MESSAGE);
+                msgItem.put(OpenAiResponsesJsonPolicy.FIELD_ROLE, OpenAiResponsesJsonPolicy.ROLE_ASSISTANT);
+                msgItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
                 ArrayNode msgContent = JSON.createArrayNode();
                 ObjectNode part = JSON.createObjectNode();
-                part.put("type", "output_text");
-                part.put("text", "");
+                part.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_OUTPUT_TEXT);
+                part.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, "");
                 msgContent.add(part);
-                msgItem.set("content", msgContent);
+                msgItem.set(OpenAiResponsesJsonPolicy.FIELD_CONTENT, msgContent);
                 output.add(msgItem);
             }
 
-            dst.set("output", output);
+            dst.set(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, output);
 
             // stop_reason → status
-            String stopReason = textOrDefault(src.get("stop_reason"), "end_turn");
+            String stopReason = textOrDefault(src.get(AnthropicMessagesBodyPolicy.FIELD_STOP_REASON),
+                    AnthropicMessagesBodyPolicy.STOP_REASON_END_TURN);
             String status = mapAnthropicStopReasonToResponsesStatus(stopReason);
-            dst.put("status", status);
-            if ("max_tokens".equals(stopReason)) {
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, status);
+            if (AnthropicMessagesBodyPolicy.STOP_REASON_MAX_TOKENS.equals(stopReason)) {
                 ObjectNode incompleteDetails = JSON.createObjectNode();
-                incompleteDetails.put("reason", "max_output_tokens");
-                dst.set("incomplete_details", incompleteDetails);
+                incompleteDetails.put(OpenAiResponsesJsonPolicy.FIELD_REASON,
+                        OpenAiResponsesJsonPolicy.DEFAULT_INCOMPLETE_REASON);
+                dst.set(OpenAiResponsesJsonPolicy.FIELD_INCOMPLETE_DETAILS, incompleteDetails);
             }
 
             // usage
-            if (src.has("usage")) {
-                JsonNode usage = src.get("usage");
+            if (src.has(AnthropicMessagesBodyPolicy.FIELD_USAGE)) {
+                JsonNode usage = src.get(AnthropicMessagesBodyPolicy.FIELD_USAGE);
                 ObjectNode respUsage = JSON.createObjectNode();
-                int inputTokens = nonNegativeIntOrZero(usage.get("input_tokens"));
-                int outputTokens = nonNegativeIntOrZero(usage.get("output_tokens"));
-                int cachedTokens = nonNegativeIntOrZero(usage.get("cache_read_input_tokens"));
+                int inputTokens = nonNegativeIntOrZero(usage.get(AnthropicMessagesBodyPolicy.FIELD_INPUT_TOKENS));
+                int outputTokens = nonNegativeIntOrZero(usage.get(AnthropicMessagesBodyPolicy.FIELD_OUTPUT_TOKENS));
+                int cachedTokens = nonNegativeIntOrZero(
+                        usage.get(AnthropicMessagesBodyPolicy.FIELD_CACHE_READ_INPUT_TOKENS));
                 int responseInputTokens = inputTokens;
-                respUsage.put("input_tokens", responseInputTokens);
-                respUsage.put("output_tokens", outputTokens);
-                respUsage.put("total_tokens", responseInputTokens + outputTokens);
+                respUsage.put(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS, responseInputTokens);
+                respUsage.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS, outputTokens);
+                respUsage.put(OpenAiResponsesJsonPolicy.FIELD_TOTAL_TOKENS, responseInputTokens + outputTokens);
                 if (cachedTokens > 0) {
                     ObjectNode details = JSON.createObjectNode();
-                    details.put("cached_tokens", cachedTokens);
-                    respUsage.set("input_tokens_details", details);
+                    details.put(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS, cachedTokens);
+                    respUsage.set(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS_DETAILS, details);
                 }
-                dst.set("usage", respUsage);
+                dst.set(OpenAiResponsesJsonPolicy.FIELD_USAGE, respUsage);
             }
 
             return dst;
@@ -299,21 +335,23 @@ public class AnthropicToResponsesConverter {
 
         ArrayNode msgContent = JSON.createArrayNode();
         for (JsonNode tb : textBlocks) {
-            String text = tb.has("text") ? tb.get("text").asText() : "";
+            String text = tb.has(AnthropicMessagesBodyPolicy.FIELD_TEXT)
+                    ? tb.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).asText()
+                    : "";
             if (text.isEmpty()) {
                 continue;
             }
             ObjectNode part = JSON.createObjectNode();
-            part.put("type", "output_text");
-            part.put("text", text);
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_OUTPUT_TEXT);
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, text);
             msgContent.add(part);
         }
         if (msgContent.size() > 0) {
             ObjectNode msgItem = JSON.createObjectNode();
-            msgItem.put("type", "message");
-            msgItem.put("role", "assistant");
-            msgItem.put("status", "completed");
-            msgItem.set("content", msgContent);
+            msgItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_MESSAGE);
+            msgItem.put(OpenAiResponsesJsonPolicy.FIELD_ROLE, OpenAiResponsesJsonPolicy.ROLE_ASSISTANT);
+            msgItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+            msgItem.set(OpenAiResponsesJsonPolicy.FIELD_CONTENT, msgContent);
             output.add(msgItem);
         }
         textBlocks.clear();
@@ -363,34 +401,48 @@ public class AnthropicToResponsesConverter {
         public List<String> feed(String line) {
             List<String> output = new ArrayList<>();
             if (done || line == null || line.isBlank()) return output;
-            if (!line.startsWith("data: ")) return output;
+            String json = AnthropicMessagesSsePolicy.extractDataPayload(line);
+            if (json == null) return output;
 
-            String json = line.substring(6);
             try {
                 JsonNode root = JSON.readTree(json);
-                String type = textOrDefault(root.get("type"), null);
+                String type = textOrDefault(root.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), null);
                 if (type == null) return output;
 
                 switch (type) {
-                    case "message_start" -> {
-                        if (root.has("message")) {
-                            JsonNode msg = root.get("message");
-                            if (!isBlankText(msg.get("model"))) model = msg.get("model").asText();
-                            if (msg.has("usage") && isNonNegativeInt(msg.get("usage").get("input_tokens"))) {
-                                inputTokens = msg.get("usage").get("input_tokens").asInt();
+                    case AnthropicMessagesSsePolicy.EVENT_MESSAGE_START -> {
+                        if (root.has(AnthropicMessagesBodyPolicy.FIELD_MESSAGE)) {
+                            JsonNode msg = root.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGE);
+                            if (!isBlankText(msg.get(AnthropicMessagesBodyPolicy.FIELD_MODEL))) {
+                                model = msg.get(AnthropicMessagesBodyPolicy.FIELD_MODEL).asText();
+                            }
+                            if (msg.has(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                    && isNonNegativeInt(msg.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                    .get(AnthropicMessagesBodyPolicy.FIELD_INPUT_TOKENS))) {
+                                inputTokens = msg.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                        .get(AnthropicMessagesBodyPolicy.FIELD_INPUT_TOKENS).asInt();
+                            }
+                            if (msg.has(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                    && isNonNegativeInt(msg.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                    .get(AnthropicMessagesBodyPolicy.FIELD_CACHE_READ_INPUT_TOKENS))) {
+                                cacheReadInputTokens = msg.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                        .get(AnthropicMessagesBodyPolicy.FIELD_CACHE_READ_INPUT_TOKENS).asInt();
                             }
                         }
                         ensureCreatedSent(output);
                     }
-                    case "content_block_start" -> {
-                        JsonNode block = root.has("content_block") ? root.get("content_block") : root;
-                        String blockType = textOrDefault(block.get("type"), "text");
+                    case AnthropicMessagesSsePolicy.EVENT_CONTENT_BLOCK_START -> {
+                        JsonNode block = root.has(AnthropicMessagesBodyPolicy.FIELD_CONTENT_BLOCK)
+                                ? root.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT_BLOCK)
+                                : root;
+                        String blockType = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE),
+                                AnthropicMessagesBodyPolicy.TYPE_TEXT);
 
                         // 关闭上一个 item
                         closeCurrentItem(output);
 
                         switch (blockType) {
-                            case "text" -> {
+                            case AnthropicMessagesBodyPolicy.TYPE_TEXT -> {
                                 if (!messageItemOpen) {
                                     outputIndex++;
                                     currentItemId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
@@ -398,25 +450,22 @@ public class AnthropicToResponsesConverter {
                                     contentIndex = 0;
 
                                     ensureCreatedSent(output);
-                                    appendEvent(output, "response.output_item.added",
-                                            fmt("{\"type\":\"response.output_item.added\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}",
-                                                    sequenceNumber++, responseId, outputIndex, currentItemId));
+                                    appendMessageItemAdded(output);
                                     messageItemOpen = true;
                                 }
                                 // 多个 text block 复用同一个 message item
                             }
-                            case "thinking" -> {
+                            case AnthropicThinkingPolicy.TYPE_THINKING -> {
                                 outputIndex++;
                                 currentItemId = "rsn_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
                                 currentItemType = ItemType.REASONING;
 
                                 ensureCreatedSent(output);
-                                appendEvent(output, "response.output_item.added",
-                                        fmt("{\"type\":\"response.output_item.added\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"summary\":[]}}",
-                                                sequenceNumber++, responseId, outputIndex, currentItemId));
+                                appendReasoningItemAdded(output);
                             }
-                            case "tool_use" -> {
-                                if (isBlankText(block.get("id")) || isBlankText(block.get("name"))) {
+                            case AnthropicMessagesBodyPolicy.TYPE_TOOL_USE -> {
+                                if (isBlankText(block.get(AnthropicMessagesBodyPolicy.FIELD_ID))
+                                        || isBlankText(block.get(AnthropicMessagesBodyPolicy.FIELD_NAME))) {
                                     log.debug("Anthropic→IR stream: tool_use missing id or name, ignored");
                                     currentItemType = ItemType.NONE;
                                     currentItemId = null;
@@ -428,129 +477,105 @@ public class AnthropicToResponsesConverter {
                                 outputIndex++;
                                 currentItemId = "item_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
                                 currentItemType = ItemType.FUNCTION_CALL;
-                                currentCallId = block.get("id").asText();
-                                currentName = block.get("name").asText();
+                                currentCallId = block.get(AnthropicMessagesBodyPolicy.FIELD_ID).asText();
+                                currentName = block.get(AnthropicMessagesBodyPolicy.FIELD_NAME).asText();
                                 currentArguments.setLength(0);
-                                if (block.has("input") && !block.get("input").isNull()
-                                        && !(block.get("input").isObject() && block.get("input").size() == 0)) {
-                                    currentArguments.append(block.get("input").toString());
+                                if (block.has(AnthropicMessagesBodyPolicy.FIELD_INPUT)
+                                        && !block.get(AnthropicMessagesBodyPolicy.FIELD_INPUT).isNull()
+                                        && !(block.get(AnthropicMessagesBodyPolicy.FIELD_INPUT).isObject()
+                                        && block.get(AnthropicMessagesBodyPolicy.FIELD_INPUT).size() == 0)) {
+                                    currentArguments.append(block.get(AnthropicMessagesBodyPolicy.FIELD_INPUT).toString());
                                 }
 
                                 ensureCreatedSent(output);
-                                appendEvent(output, "response.output_item.added",
-                                        fmt("{\"type\":\"response.output_item.added\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"status\":\"in_progress\"}}",
-                                                sequenceNumber++, responseId, outputIndex, currentItemId,
-                                                escapeJsonValue(currentCallId), escapeJsonValue(currentName)));
+                                appendFunctionCallItemAdded(output);
                             }
-                            case "server_tool_use" ->
+                            case AnthropicMessagesBodyPolicy.TYPE_SERVER_TOOL_USE ->
                                 log.debug("Anthropic→IR stream: server_tool_use block ignored");
                             default ->
                                 log.debug("Anthropic→IR stream: unknown content_block_start type '{}'", blockType);
                         }
                     }
-                    case "content_block_delta" -> {
-                        JsonNode delta = root.has("delta") ? root.get("delta") : root;
-                        String deltaType = textOrDefault(delta.get("type"), "");
+                    case AnthropicMessagesSsePolicy.EVENT_CONTENT_BLOCK_DELTA -> {
+                        JsonNode delta = root.has(AnthropicMessagesBodyPolicy.FIELD_DELTA)
+                                ? root.get(AnthropicMessagesBodyPolicy.FIELD_DELTA)
+                                : root;
+                        String deltaType = textOrDefault(delta.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), "");
 
                         switch (deltaType) {
-                            case "text_delta" -> {
-                                String text = textOrDefault(delta.get("text"), "");
+                            case AnthropicMessagesBodyPolicy.TYPE_TEXT_DELTA -> {
+                                String text = textOrDefault(delta.get(AnthropicMessagesBodyPolicy.FIELD_TEXT), "");
                                 if (!text.isEmpty()) {
-                                    appendEvent(output, "response.output_text.delta",
-                                            fmt("{\"type\":\"response.output_text.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"content_index\":%d,\"delta\":\"%s\"}",
-                                                    sequenceNumber++, responseId, currentItemId, outputIndex, contentIndex,
-                                                    escapeJsonValue(text)));
+                                    appendContentDelta(output, OpenAiResponsesSsePolicy.EVENT_OUTPUT_TEXT_DELTA, text);
                                 }
                             }
-                            case "thinking_delta" -> {
-                                String thinking = textOrDefault(delta.get("thinking"), "");
+                            case AnthropicThinkingPolicy.TYPE_THINKING_DELTA -> {
+                                String thinking = textOrDefault(delta.get(AnthropicThinkingPolicy.FIELD_THINKING), "");
                                 if (!thinking.isEmpty()) {
-                                    appendEvent(output, "response.reasoning_summary_text.delta",
-                                            fmt("{\"type\":\"response.reasoning_summary_text.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"summary_index\":0,\"delta\":\"%s\"}",
-                                                    sequenceNumber++, responseId, currentItemId, outputIndex,
-                                                    escapeJsonValue(thinking)));
+                                    appendReasoningDelta(output, thinking);
                                 }
                             }
-                            case "input_json_delta" -> {
-                                String partialJson = textOrDefault(delta.get("partial_json"), "");
+                            case AnthropicMessagesBodyPolicy.TYPE_INPUT_JSON_DELTA -> {
+                                String partialJson = textOrDefault(
+                                        delta.get(AnthropicMessagesBodyPolicy.FIELD_PARTIAL_JSON), "");
                                 if (!partialJson.isEmpty() && currentItemType == ItemType.FUNCTION_CALL) {
                                     currentArguments.append(partialJson);
-                                    appendEvent(output, "response.function_call_arguments.delta",
-                                            fmt("{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"delta\":\"%s\"}",
-                                                    sequenceNumber++, responseId, currentItemId, outputIndex,
-                                                    escapeJsonValue(partialJson)));
+                                    appendFunctionArgumentsDelta(output, partialJson);
                                 }
                             }
-                            case "signature_delta" -> {
+                            case AnthropicMessagesBodyPolicy.TYPE_SIGNATURE_DELTA -> {
                                 // Anthropic signatures have no Responses stream equivalent in sub2api.
                             }
                             default -> log.debug("Anthropic→IR stream: unknown delta type '{}'", deltaType);
                         }
                     }
-                    case "content_block_stop" -> {
+                    case AnthropicMessagesSsePolicy.EVENT_CONTENT_BLOCK_STOP -> {
                         if (currentItemType == ItemType.REASONING) {
-                            appendEvent(output, "response.reasoning_summary_text.done",
-                                    fmt("{\"type\":\"response.reasoning_summary_text.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"summary_index\":0}",
-                                            sequenceNumber++, responseId, currentItemId, outputIndex));
-                            appendEvent(output, "response.output_item.done",
-                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"completed\"}}",
-                                            sequenceNumber++, responseId, outputIndex, currentItemId));
+                            appendReasoningDone(output);
+                            appendSimpleItemDone(output, OpenAiResponsesJsonPolicy.TYPE_REASONING);
                             currentItemType = ItemType.NONE;
                         } else if (currentItemType == ItemType.FUNCTION_CALL) {
-                            String arguments = currentArguments.length() > 0 ? currentArguments.toString() : "{}";
-                            appendEvent(output, "response.function_call_arguments.done",
-                                    fmt("{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d}",
-                                            sequenceNumber++, responseId, currentItemId, outputIndex));
-                            appendEvent(output, "response.output_item.done",
-                                    fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"arguments\":\"%s\",\"status\":\"completed\"}}",
-                                            sequenceNumber++, responseId, outputIndex, currentItemId,
-                                            escapeJsonValue(currentCallId), escapeJsonValue(currentName),
-                                            escapeJsonValue(arguments)));
+                            String arguments = currentArguments.length() > 0
+                                    ? currentArguments.toString()
+                                    : OpenAiResponsesJsonPolicy.EMPTY_JSON_OBJECT;
+                            appendFunctionArgumentsDone(output);
+                            appendFunctionCallItemDone(output, arguments);
                             currentItemType = ItemType.NONE;
                             currentArguments.setLength(0);
                         } else if (currentItemType == ItemType.MESSAGE) {
                             // text block stop: 只发送 text.done，不关闭 message item
-                            appendEvent(output, "response.output_text.done",
-                                    fmt("{\"type\":\"response.output_text.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"content_index\":%d}",
-                                            sequenceNumber++, responseId, currentItemId, outputIndex, contentIndex));
+                            appendTextDone(output);
                         }
                     }
-                    case "message_delta" -> {
-                        if (root.has("usage") && isNonNegativeInt(root.get("usage").get("output_tokens"))) {
-                            outputTokens = root.get("usage").get("output_tokens").asInt();
+                    case AnthropicMessagesSsePolicy.EVENT_MESSAGE_DELTA -> {
+                        if (root.has(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                && isNonNegativeInt(root.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                .get(AnthropicMessagesBodyPolicy.FIELD_OUTPUT_TOKENS))) {
+                            outputTokens = root.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                    .get(AnthropicMessagesBodyPolicy.FIELD_OUTPUT_TOKENS).asInt();
                         }
-                        if (root.has("usage") && isNonNegativeInt(root.get("usage").get("cache_read_input_tokens"))) {
-                            cacheReadInputTokens = root.get("usage").get("cache_read_input_tokens").asInt();
+                        if (root.has(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                && isNonNegativeInt(root.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                .get(AnthropicMessagesBodyPolicy.FIELD_CACHE_READ_INPUT_TOKENS))) {
+                            cacheReadInputTokens = root.get(AnthropicMessagesBodyPolicy.FIELD_USAGE)
+                                    .get(AnthropicMessagesBodyPolicy.FIELD_CACHE_READ_INPUT_TOKENS).asInt();
                         }
                     }
-                    case "message_stop" -> {
+                    case AnthropicMessagesSsePolicy.EVENT_MESSAGE_STOP -> {
                         closeCurrentItem(output);
-                        String status = "completed";
-                        String cacheDetails = cacheReadInputTokens > 0
-                                ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
-                                : "";
-                        int responseInputTokens = inputTokens;
-                        appendEvent(output, "response.completed",
-                                fmt("{\"type\":\"%s\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"%s\"%s,\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
-                                        "response.completed", sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
-                                        status, "",
-                                        responseInputTokens, outputTokens, responseInputTokens + outputTokens, cacheDetails));
+                        appendTerminalResponse(output, OpenAiResponsesSsePolicy.EVENT_RESPONSE_COMPLETED,
+                                OpenAiResponsesJsonPolicy.STATUS_COMPLETED, null, null);
                         done = true;
                     }
-                    case "error" -> {
-                        JsonNode error = root.path("error");
-                        String errorType = textOrDefault(error.get("type"), "api_error");
-                        String message = textOrDefault(error.get("message"), "Anthropic stream error");
+                    case AnthropicMessagesSsePolicy.EVENT_ERROR -> {
+                        JsonNode error = root.path(OpenAiResponsesJsonPolicy.FIELD_ERROR);
+                        String errorType = textOrDefault(error.get(OpenAiResponsesJsonPolicy.FIELD_TYPE),
+                                AnthropicMessagesSsePolicy.DEFAULT_ERROR_TYPE);
+                        String message = textOrDefault(error.get(OpenAiResponsesJsonPolicy.FIELD_MESSAGE),
+                                AnthropicMessagesSsePolicy.DEFAULT_ERROR_MESSAGE);
                         ensureCreatedSent(output);
-                        String cacheDetails = cacheReadInputTokens > 0
-                                ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cacheReadInputTokens)
-                                : "";
-                        int responseInputTokens = inputTokens;
-                        appendEvent(output, "response.failed",
-                                fmt("{\"type\":\"response.failed\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"failed\",\"error\":{\"code\":\"%s\",\"message\":\"%s\"},\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s}}}",
-                                        sequenceNumber++, responseId, escapeJsonValue(model), createdAt,
-                                        escapeJsonValue(errorType), escapeJsonValue(message),
-                                        responseInputTokens, outputTokens, responseInputTokens + outputTokens, cacheDetails));
+                        appendTerminalResponse(output, OpenAiResponsesSsePolicy.EVENT_RESPONSE_FAILED,
+                                OpenAiResponsesJsonPolicy.STATUS_FAILED, errorType, message);
                         done = true;
                     }
                 }
@@ -562,21 +587,185 @@ public class AnthropicToResponsesConverter {
 
         private void ensureCreatedSent(List<String> output) {
             if (!createdSent) {
-                appendEvent(output, "response.created",
-                        fmt("{\"type\":\"response.created\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"in_progress\",\"output\":[],\"usage\":null}}",
-                                sequenceNumber++, responseId, escapeJsonValue(model), createdAt));
+                ObjectNode event = baseResponsesEvent(OpenAiResponsesSsePolicy.EVENT_RESPONSE_CREATED);
+                ObjectNode response = responseBase(OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+                response.set(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, JSON.createArrayNode());
+                response.putNull(OpenAiResponsesJsonPolicy.FIELD_USAGE);
+                event.set(OpenAiResponsesJsonPolicy.FIELD_RESPONSE, response);
+                appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_RESPONSE_CREATED, event);
                 createdSent = true;
             }
         }
 
         private void closeCurrentItem(List<String> output) {
             if (currentItemType == ItemType.MESSAGE && messageItemOpen) {
-                appendEvent(output, "response.output_item.done",
-                        fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\"}}",
-                                sequenceNumber++, responseId, outputIndex, currentItemId));
+                ObjectNode item = responseItem(currentItemId, OpenAiResponsesJsonPolicy.TYPE_MESSAGE,
+                        OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+                item.put(OpenAiResponsesJsonPolicy.FIELD_ROLE, OpenAiResponsesJsonPolicy.ROLE_ASSISTANT);
+                appendOutputItemDone(output, outputIndex, item);
                 messageItemOpen = false;
             }
             // function_call 和 reasoning 在 content_block_stop 中已关闭
+        }
+
+        private void appendMessageItemAdded(List<String> output) {
+            ObjectNode item = responseItem(currentItemId, OpenAiResponsesJsonPolicy.TYPE_MESSAGE,
+                    OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_ROLE, OpenAiResponsesJsonPolicy.ROLE_ASSISTANT);
+            item.set(OpenAiResponsesJsonPolicy.FIELD_CONTENT, JSON.createArrayNode());
+            appendOutputItemAdded(output, item);
+        }
+
+        private void appendReasoningItemAdded(List<String> output) {
+            ObjectNode item = responseItem(currentItemId, OpenAiResponsesJsonPolicy.TYPE_REASONING,
+                    OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+            item.set(OpenAiResponsesJsonPolicy.FIELD_SUMMARY, JSON.createArrayNode());
+            appendOutputItemAdded(output, item);
+        }
+
+        private void appendFunctionCallItemAdded(List<String> output) {
+            ObjectNode item = responseItem(currentItemId, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL,
+                    OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, currentCallId);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_NAME, currentName);
+            appendOutputItemAdded(output, item);
+        }
+
+        private void appendOutputItemAdded(List<String> output, ObjectNode item) {
+            ObjectNode event = baseResponseIdEvent(OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_ADDED);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_INDEX, outputIndex);
+            event.set(OpenAiResponsesJsonPolicy.FIELD_ITEM, item);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_ADDED, event);
+        }
+
+        private void appendOutputItemDone(List<String> output, int itemOutputIndex, ObjectNode item) {
+            ObjectNode event = baseResponseIdEvent(OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_DONE);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_INDEX, itemOutputIndex);
+            event.set(OpenAiResponsesJsonPolicy.FIELD_ITEM, item);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_DONE, event);
+        }
+
+        private void appendContentDelta(List<String> output, String eventType, String delta) {
+            ObjectNode event = baseItemEvent(eventType);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_CONTENT_INDEX, contentIndex);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_DELTA, delta);
+            appendJsonEvent(output, eventType, event);
+        }
+
+        private void appendReasoningDelta(List<String> output, String delta) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DELTA);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_SUMMARY_INDEX, 0);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_DELTA, delta);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DELTA, event);
+        }
+
+        private void appendReasoningDone(List<String> output) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DONE);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_SUMMARY_INDEX, 0);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DONE, event);
+        }
+
+        private void appendTextDone(List<String> output) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_OUTPUT_TEXT_DONE);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_CONTENT_INDEX, contentIndex);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_OUTPUT_TEXT_DONE, event);
+        }
+
+        private void appendFunctionArgumentsDelta(List<String> output, String delta) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DELTA);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_DELTA, delta);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DELTA, event);
+        }
+
+        private void appendFunctionArgumentsDone(List<String> output) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DONE);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DONE, event);
+        }
+
+        private void appendFunctionCallItemDone(List<String> output, String arguments) {
+            ObjectNode item = responseItem(currentItemId, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL,
+                    OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, currentCallId);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_NAME, currentName);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS, arguments);
+            appendOutputItemDone(output, outputIndex, item);
+        }
+
+        private void appendSimpleItemDone(List<String> output, String itemType) {
+            ObjectNode item = responseItem(currentItemId, itemType, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+            appendOutputItemDone(output, outputIndex, item);
+        }
+
+        private void appendTerminalResponse(List<String> output, String eventType, String status,
+                                            String errorCode, String errorMessage) {
+            ObjectNode event = baseResponsesEvent(eventType);
+            ObjectNode response = responseBase(status);
+            response.set(OpenAiResponsesJsonPolicy.FIELD_USAGE, responseUsage());
+            if (errorCode != null || errorMessage != null) {
+                ObjectNode error = JSON.createObjectNode();
+                error.put(OpenAiResponsesJsonPolicy.FIELD_CODE,
+                        errorCode != null ? errorCode : AnthropicMessagesSsePolicy.DEFAULT_ERROR_TYPE);
+                error.put(OpenAiResponsesJsonPolicy.FIELD_MESSAGE,
+                        errorMessage != null ? errorMessage : AnthropicMessagesSsePolicy.DEFAULT_ERROR_MESSAGE);
+                response.set(OpenAiResponsesJsonPolicy.FIELD_ERROR, error);
+            }
+            event.set(OpenAiResponsesJsonPolicy.FIELD_RESPONSE, response);
+            appendJsonEvent(output, eventType, event);
+        }
+
+        private ObjectNode baseResponsesEvent(String eventType) {
+            ObjectNode event = JSON.createObjectNode();
+            event.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, eventType);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_SEQUENCE_NUMBER, sequenceNumber++);
+            return event;
+        }
+
+        private ObjectNode baseResponseIdEvent(String eventType) {
+            ObjectNode event = baseResponsesEvent(eventType);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_RESPONSE_ID, responseId);
+            return event;
+        }
+
+        private ObjectNode baseItemEvent(String eventType) {
+            ObjectNode event = baseResponseIdEvent(eventType);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_ITEM_ID, currentItemId);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_INDEX, outputIndex);
+            return event;
+        }
+
+        private ObjectNode responseBase(String status) {
+            ObjectNode response = JSON.createObjectNode();
+            response.put(OpenAiResponsesJsonPolicy.FIELD_ID, responseId);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_OBJECT, OpenAiResponsesJsonPolicy.OBJECT_RESPONSE);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_MODEL, model);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_CREATED_AT, createdAt);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, status);
+            return response;
+        }
+
+        private ObjectNode responseUsage() {
+            ObjectNode usage = JSON.createObjectNode();
+            usage.put(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS, inputTokens);
+            usage.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS, outputTokens);
+            usage.put(OpenAiResponsesJsonPolicy.FIELD_TOTAL_TOKENS, inputTokens + outputTokens);
+            if (cacheReadInputTokens > 0) {
+                ObjectNode details = JSON.createObjectNode();
+                details.put(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS, cacheReadInputTokens);
+                usage.set(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS_DETAILS, details);
+            }
+            return usage;
+        }
+
+        private ObjectNode responseItem(String itemId, String type, String status) {
+            ObjectNode item = JSON.createObjectNode();
+            item.put(OpenAiResponsesJsonPolicy.FIELD_ID, itemId);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, type);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, status);
+            return item;
+        }
+
+        private void appendJsonEvent(List<String> output, String eventType, ObjectNode event) {
+            appendEvent(output, eventType, event.toString());
         }
 
         @Override public boolean isDone() { return done; }
@@ -598,7 +787,7 @@ public class AnthropicToResponsesConverter {
 
         if (system.isTextual()) {
             String text = system.asText();
-            if (!text.isEmpty() && !text.startsWith("x-anthropic-billing-header: ")) {
+            if (!text.isEmpty() && !text.startsWith(AnthropicMessagesBodyPolicy.BILLING_HEADER_PREFIX)) {
                 texts.add(text);
             }
             return texts;
@@ -606,10 +795,11 @@ public class AnthropicToResponsesConverter {
 
         if (system.isArray()) {
             for (JsonNode block : system) {
-                String blockType = textOrDefault(block.get("type"), "");
-                if ("text".equals(blockType) && block.has("text")) {
-                    String text = textOrDefault(block.get("text"), "");
-                    if (!text.isEmpty() && !text.startsWith("x-anthropic-billing-header: ")) {
+                String blockType = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), "");
+                if (AnthropicMessagesBodyPolicy.TYPE_TEXT.equals(blockType)
+                        && block.has(AnthropicMessagesBodyPolicy.FIELD_TEXT)) {
+                    String text = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TEXT), "");
+                    if (!text.isEmpty() && !text.startsWith(AnthropicMessagesBodyPolicy.BILLING_HEADER_PREFIX)) {
                         texts.add(text);
                     }
                 }
@@ -630,14 +820,14 @@ public class AnthropicToResponsesConverter {
         // 纯字符串
         if (contentNode.isTextual()) {
             ObjectNode item = JSON.createObjectNode();
-            item.put("type", "message");
-            item.put("role", "user");
+            item.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_MESSAGE);
+            item.put(OpenAiResponsesBodyPolicy.FIELD_ROLE, OpenAiResponsesBodyPolicy.ROLE_USER);
             ArrayNode parts = JSON.createArrayNode();
             ObjectNode part = JSON.createObjectNode();
-            part.put("type", "input_text");
-            part.put("text", contentNode.asText());
+            part.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_INPUT_TEXT);
+            part.put(OpenAiResponsesBodyPolicy.FIELD_TEXT, contentNode.asText());
             parts.add(part);
-            item.set("content", parts);
+            item.set(OpenAiResponsesBodyPolicy.FIELD_CONTENT, parts);
             input.add(item);
             return;
         }
@@ -650,12 +840,13 @@ public class AnthropicToResponsesConverter {
         List<JsonNode> documentBlocks = new ArrayList<>();
 
         for (JsonNode block : contentNode) {
-            String blockType = textOrDefault(block.get("type"), "text");
+            String blockType = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE),
+                    AnthropicMessagesBodyPolicy.TYPE_TEXT);
             switch (blockType) {
-                case "tool_result" -> toolResults.add(block);
-                case "text" -> textBlocks.add(block);
-                case "image" -> imageBlocks.add(block);
-                case "document" -> documentBlocks.add(block);
+                case AnthropicMessagesBodyPolicy.TYPE_TOOL_RESULT -> toolResults.add(block);
+                case AnthropicMessagesBodyPolicy.TYPE_TEXT -> textBlocks.add(block);
+                case AnthropicMessagesBodyPolicy.TYPE_IMAGE -> imageBlocks.add(block);
+                case AnthropicMessagesBodyPolicy.TYPE_DOCUMENT -> documentBlocks.add(block);
                 default -> log.debug("Anthropic→Responses: unknown user block type '{}'", blockType);
             }
         }
@@ -664,39 +855,45 @@ public class AnthropicToResponsesConverter {
         List<JsonNode> deferredImages = new ArrayList<>();
         List<JsonNode> deferredDocuments = new ArrayList<>();
         for (JsonNode tr : toolResults) {
-            if (isBlankText(tr.get("tool_use_id"))) {
+            if (isBlankText(tr.get(AnthropicMessagesBodyPolicy.FIELD_TOOL_USE_ID))) {
                 log.debug("Anthropic→Responses: tool_result missing tool_use_id, ignored");
                 continue;
             }
             ObjectNode fco = JSON.createObjectNode();
-            fco.put("type", "function_call_output");
-            fco.put("call_id", tr.get("tool_use_id").asText());
+            fco.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL_OUTPUT);
+            fco.put(OpenAiResponsesBodyPolicy.FIELD_CALL_ID,
+                    GatewayToolCallIdPolicy.toResponsesCallIdFromAnthropic(
+                            tr.get(AnthropicMessagesBodyPolicy.FIELD_TOOL_USE_ID).asText()));
 
             // 提取文本，图片和文档作为后续 user content 保留。
-            JsonNode trContent = tr.get("content");
+            JsonNode trContent = tr.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT);
             if (trContent != null && trContent.isArray()) {
                 StringBuilder textOutput = new StringBuilder();
                 for (JsonNode c : trContent) {
-                    String cType = textOrDefault(c.get("type"), "text");
-                    String text = textOrDefault(c.get("text"), "");
-                    if ("text".equals(cType) && !text.isEmpty()) {
+                    String cType = textOrDefault(c.get(AnthropicMessagesBodyPolicy.FIELD_TYPE),
+                            AnthropicMessagesBodyPolicy.TYPE_TEXT);
+                    String text = textOrDefault(c.get(AnthropicMessagesBodyPolicy.FIELD_TEXT), "");
+                    if (AnthropicMessagesBodyPolicy.TYPE_TEXT.equals(cType) && !text.isEmpty()) {
                         if (textOutput.length() > 0) textOutput.append("\n");
                         textOutput.append(text);
-                    } else if ("image".equals(cType)) {
+                    } else if (AnthropicMessagesBodyPolicy.TYPE_IMAGE.equals(cType)) {
                         deferredImages.add(c);
-                    } else if ("document".equals(cType)) {
+                    } else if (AnthropicMessagesBodyPolicy.TYPE_DOCUMENT.equals(cType)) {
                         deferredDocuments.add(c);
                     }
                 }
-                fco.put("output", textOutput.toString());
+                fco.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, textOutput.toString());
             } else if (trContent != null && trContent.isTextual()) {
                 String output = trContent.asText();
-                fco.put("output", output.isEmpty() ? "(empty)" : output);
+                fco.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT,
+                        output.isEmpty() ? OpenAiResponsesBodyPolicy.DEFAULT_EMPTY_TOOL_OUTPUT : output);
             } else {
-                fco.put("output", "(empty)");
+                fco.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT,
+                        OpenAiResponsesBodyPolicy.DEFAULT_EMPTY_TOOL_OUTPUT);
             }
-            if (fco.path("output").asText("").isEmpty()) {
-                fco.put("output", "(empty)");
+            if (fco.path(OpenAiResponsesJsonPolicy.FIELD_OUTPUT).asText("").isEmpty()) {
+                fco.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT,
+                        OpenAiResponsesBodyPolicy.DEFAULT_EMPTY_TOOL_OUTPUT);
             }
             input.add(fco);
         }
@@ -711,29 +908,30 @@ public class AnthropicToResponsesConverter {
 
         if (!allParts.isEmpty()) {
             ObjectNode item = JSON.createObjectNode();
-            item.put("type", "message");
-            item.put("role", "user");
+            item.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_MESSAGE);
+            item.put(OpenAiResponsesBodyPolicy.FIELD_ROLE, OpenAiResponsesBodyPolicy.ROLE_USER);
             ArrayNode parts = JSON.createArrayNode();
             for (JsonNode p : allParts) {
-                String pType = textOrDefault(p.get("type"), "text");
-                if ("text".equals(pType)) {
-                    String text = textOrDefault(p.get("text"), "");
+                String pType = textOrDefault(p.get(AnthropicMessagesBodyPolicy.FIELD_TYPE),
+                        AnthropicMessagesBodyPolicy.TYPE_TEXT);
+                if (AnthropicMessagesBodyPolicy.TYPE_TEXT.equals(pType)) {
+                    String text = textOrDefault(p.get(AnthropicMessagesBodyPolicy.FIELD_TEXT), "");
                     if (text.isEmpty()) {
                         continue;
                     }
                     ObjectNode part = JSON.createObjectNode();
-                    part.put("type", "input_text");
-                    part.put("text", text);
+                    part.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_INPUT_TEXT);
+                    part.put(OpenAiResponsesBodyPolicy.FIELD_TEXT, text);
                     parts.add(part);
-                } else if ("image".equals(pType)) {
+                } else if (AnthropicMessagesBodyPolicy.TYPE_IMAGE.equals(pType)) {
                     String dataUri = anthropicImageToDataURI(p);
                     if (dataUri != null && !dataUri.isEmpty()) {
                         ObjectNode part = JSON.createObjectNode();
-                        part.put("type", "input_image");
-                        part.put("image_url", dataUri);
+                        part.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_INPUT_IMAGE);
+                        part.put(OpenAiResponsesBodyPolicy.FIELD_IMAGE_URL, dataUri);
                         parts.add(part);
                     }
-                } else if ("document".equals(pType)) {
+                } else if (AnthropicMessagesBodyPolicy.TYPE_DOCUMENT.equals(pType)) {
                     ObjectNode part = anthropicDocumentToResponsesInputFile(p);
                     if (part != null) {
                         parts.add(part);
@@ -741,7 +939,7 @@ public class AnthropicToResponsesConverter {
                 }
             }
             if (parts.size() > 0) {
-                item.set("content", parts);
+                item.set(OpenAiResponsesBodyPolicy.FIELD_CONTENT, parts);
                 input.add(item);
             }
         }
@@ -752,33 +950,41 @@ public class AnthropicToResponsesConverter {
      * Only source forms with an OpenAI Responses input_file equivalent are converted.
      */
     private static ObjectNode anthropicDocumentToResponsesInputFile(JsonNode block) {
-        if (block == null || !block.has("source") || !block.get("source").isObject()) return null;
-        JsonNode source = block.get("source");
-        String sourceType = textOrDefault(source.get("type"), "");
+        if (block == null
+                || !block.has(AnthropicMessagesBodyPolicy.FIELD_SOURCE)
+                || !block.get(AnthropicMessagesBodyPolicy.FIELD_SOURCE).isObject()) return null;
+        JsonNode source = block.get(AnthropicMessagesBodyPolicy.FIELD_SOURCE);
+        String sourceType = textOrDefault(source.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), "");
         ObjectNode part = JSON.createObjectNode();
-        part.put("type", "input_file");
+        part.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_INPUT_FILE);
 
-        if (!isBlankText(block.get("title"))) {
-            part.put("filename", block.get("title").asText());
-        } else if (!isBlankText(source.get("filename"))) {
-            part.put("filename", source.get("filename").asText());
+        if (!isBlankText(block.get(AnthropicMessagesBodyPolicy.FIELD_TITLE))) {
+            part.put(OpenAiResponsesJsonPolicy.FIELD_FILENAME,
+                    block.get(AnthropicMessagesBodyPolicy.FIELD_TITLE).asText());
+        } else if (!isBlankText(source.get(AnthropicMessagesBodyPolicy.FIELD_FILENAME))) {
+            part.put(OpenAiResponsesJsonPolicy.FIELD_FILENAME,
+                    source.get(AnthropicMessagesBodyPolicy.FIELD_FILENAME).asText());
         }
 
         switch (sourceType) {
-            case "url" -> {
-                if (isBlankText(source.get("url"))) return null;
-                part.put("file_url", source.get("url").asText());
+            case AnthropicMessagesBodyPolicy.TYPE_URL -> {
+                if (isBlankText(source.get(AnthropicMessagesBodyPolicy.FIELD_URL))) return null;
+                part.put(OpenAiResponsesJsonPolicy.FIELD_FILE_URL,
+                        source.get(AnthropicMessagesBodyPolicy.FIELD_URL).asText());
             }
-            case "base64" -> {
-                if (isBlankText(source.get("data"))) return null;
-                String mediaType = !isBlankText(source.get("media_type"))
-                        ? source.get("media_type").asText()
-                        : "application/pdf";
-                part.put("file_data", "data:" + mediaType + ";base64," + source.get("data").asText());
+            case AnthropicMessagesBodyPolicy.TYPE_BASE64 -> {
+                if (isBlankText(source.get(AnthropicMessagesBodyPolicy.FIELD_DATA))) return null;
+                String mediaType = !isBlankText(source.get(AnthropicMessagesBodyPolicy.FIELD_MEDIA_TYPE))
+                        ? source.get(AnthropicMessagesBodyPolicy.FIELD_MEDIA_TYPE).asText()
+                        : OpenAiResponsesBodyPolicy.DEFAULT_DOCUMENT_MEDIA_TYPE;
+                part.put(OpenAiResponsesJsonPolicy.FIELD_FILE_DATA,
+                        OpenAiResponsesBodyPolicy.base64DataUri(mediaType,
+                                source.get(AnthropicMessagesBodyPolicy.FIELD_DATA).asText()));
             }
-            case "file" -> {
-                if (isBlankText(source.get("file_id"))) return null;
-                part.put("file_id", source.get("file_id").asText());
+            case AnthropicMessagesBodyPolicy.TYPE_FILE -> {
+                if (isBlankText(source.get(AnthropicMessagesBodyPolicy.FIELD_FILE_ID))) return null;
+                part.put(OpenAiResponsesJsonPolicy.FIELD_FILE_ID,
+                        source.get(AnthropicMessagesBodyPolicy.FIELD_FILE_ID).asText());
             }
             default -> {
                 log.debug("Anthropic→Responses: unsupported document source type '{}'", sourceType);
@@ -800,14 +1006,14 @@ public class AnthropicToResponsesConverter {
 
         if (contentNode.isTextual()) {
             ObjectNode item = JSON.createObjectNode();
-            item.put("type", "message");
-            item.put("role", "assistant");
+            item.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_MESSAGE);
+            item.put(OpenAiResponsesBodyPolicy.FIELD_ROLE, OpenAiResponsesBodyPolicy.ROLE_ASSISTANT);
             ArrayNode parts = JSON.createArrayNode();
             ObjectNode part = JSON.createObjectNode();
-            part.put("type", "output_text");
-            part.put("text", contentNode.asText());
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_OUTPUT_TEXT);
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, contentNode.asText());
             parts.add(part);
-            item.set("content", parts);
+            item.set(OpenAiResponsesBodyPolicy.FIELD_CONTENT, parts);
             input.add(item);
             return;
         }
@@ -819,17 +1025,18 @@ public class AnthropicToResponsesConverter {
         List<JsonNode> toolUses = new ArrayList<>();
 
         for (JsonNode block : contentNode) {
-            String blockType = textOrDefault(block.get("type"), "text");
+            String blockType = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE),
+                    AnthropicMessagesBodyPolicy.TYPE_TEXT);
             switch (blockType) {
-                case "text" -> {
-                    String text = textOrDefault(block.get("text"), "");
+                case AnthropicMessagesBodyPolicy.TYPE_TEXT -> {
+                    String text = textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TEXT), "");
                     if (!text.isEmpty()) {
                         if (textBuilder.length() > 0) textBuilder.append("\n\n");
                         textBuilder.append(text);
                     }
                 }
-                case "tool_use" -> toolUses.add(block);
-                case "thinking", "redacted_thinking" ->
+                case AnthropicMessagesBodyPolicy.TYPE_TOOL_USE -> toolUses.add(block);
+                case AnthropicThinkingPolicy.TYPE_THINKING, AnthropicThinkingPolicy.TYPE_REDACTED_THINKING ->
                         log.debug("Anthropic→Responses request: assistant {} block ignored", blockType);
                 default -> log.debug("Anthropic→Responses: unknown assistant block type '{}'", blockType);
             }
@@ -839,28 +1046,34 @@ public class AnthropicToResponsesConverter {
         String text = textBuilder.toString();
         if (!text.isEmpty()) {
             ObjectNode item = JSON.createObjectNode();
-            item.put("type", "message");
-            item.put("role", "assistant");
+            item.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_MESSAGE);
+            item.put(OpenAiResponsesBodyPolicy.FIELD_ROLE, OpenAiResponsesBodyPolicy.ROLE_ASSISTANT);
             ArrayNode parts = JSON.createArrayNode();
             ObjectNode part = JSON.createObjectNode();
-            part.put("type", "output_text");
-            part.put("text", text);
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_OUTPUT_TEXT);
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, text);
             parts.add(part);
-            item.set("content", parts);
+            item.set(OpenAiResponsesBodyPolicy.FIELD_CONTENT, parts);
             input.add(item);
         }
 
         // tool_use → function_call items
         for (JsonNode tu : toolUses) {
-            if (isBlankText(tu.get("id")) || isBlankText(tu.get("name"))) {
+            if (isBlankText(tu.get(AnthropicMessagesBodyPolicy.FIELD_ID))
+                    || isBlankText(tu.get(AnthropicMessagesBodyPolicy.FIELD_NAME))) {
                 log.debug("Anthropic→Responses: assistant tool_use missing id or name, ignored");
                 continue;
             }
             ObjectNode fco = JSON.createObjectNode();
-            fco.put("type", "function_call");
-            fco.put("call_id", tu.get("id").asText());
-            fco.put("name", tu.get("name").asText());
-            fco.put("arguments", tu.has("input") ? tu.get("input").toString() : "{}");
+            fco.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL);
+            fco.put(OpenAiResponsesBodyPolicy.FIELD_CALL_ID,
+                    GatewayToolCallIdPolicy.toResponsesCallIdFromAnthropic(
+                            tu.get(AnthropicMessagesBodyPolicy.FIELD_ID).asText()));
+            fco.put(OpenAiResponsesJsonPolicy.FIELD_NAME, tu.get(AnthropicMessagesBodyPolicy.FIELD_NAME).asText());
+            fco.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS,
+                    tu.has(AnthropicMessagesBodyPolicy.FIELD_INPUT)
+                            ? tu.get(AnthropicMessagesBodyPolicy.FIELD_INPUT).toString()
+                            : OpenAiResponsesJsonPolicy.EMPTY_JSON_OBJECT);
             input.add(fco);
         }
     }
@@ -869,29 +1082,32 @@ public class AnthropicToResponsesConverter {
      * 转换 Anthropic tool 到 Responses tool。
      */
     private static JsonNode convertAnthropicToolToResponses(JsonNode tool) {
-        String toolType = textOrDefault(tool.get("type"), "");
+        String toolType = textOrDefault(tool.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), "");
         // web_search_ 前缀 → web_search
-        if (toolType.startsWith("web_search")) {
+        if (GatewayWebSearchToolPolicy.isAnthropicServerWebSearchToolType(toolType)) {
             ObjectNode ws = JSON.createObjectNode();
-            ws.put("type", "web_search");
-            ObjectNode userLocation = normalizeWebSearchUserLocation(tool.get("user_location"));
+            ws.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, GatewayWebSearchToolPolicy.TYPE_WEB_SEARCH);
+            ObjectNode userLocation = normalizeWebSearchUserLocation(
+                    tool.get(OpenAiResponsesBodyPolicy.FIELD_USER_LOCATION));
             if (userLocation != null) {
-                ws.set("user_location", userLocation);
+                ws.set(OpenAiResponsesBodyPolicy.FIELD_USER_LOCATION, userLocation);
             }
             return ws;
         }
-        if (isBlankText(tool.get("name"))) {
+        if (isBlankText(tool.get(AnthropicMessagesBodyPolicy.FIELD_NAME))) {
             return null;
         }
         // 普通 function tool
         ObjectNode func = JSON.createObjectNode();
-        func.put("type", "function");
-        func.put("name", tool.get("name").asText());
-        copyTextIfExists(tool, func, "description");
+        func.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TOOL_CHOICE_FUNCTION);
+        func.put(OpenAiResponsesJsonPolicy.FIELD_NAME, tool.get(AnthropicMessagesBodyPolicy.FIELD_NAME).asText());
+        copyTextIfExists(tool, func, AnthropicMessagesBodyPolicy.FIELD_DESCRIPTION);
         // input_schema → parameters（规范化）
-        JsonNode schema = tool.has("input_schema") ? tool.get("input_schema") : null;
-        func.set("parameters", normalizeToolParameters(schema));
-        func.put("strict", false);
+        JsonNode schema = tool.has(AnthropicMessagesBodyPolicy.FIELD_INPUT_SCHEMA)
+                ? tool.get(AnthropicMessagesBodyPolicy.FIELD_INPUT_SCHEMA)
+                : null;
+        func.set(OpenAiResponsesBodyPolicy.FIELD_PARAMETERS, normalizeToolParameters(schema));
+        func.put(OpenAiResponsesBodyPolicy.FIELD_STRICT, false);
         return func;
     }
 
@@ -904,18 +1120,20 @@ public class AnthropicToResponsesConverter {
         }
         if (schema.isObject()) {
             ObjectNode obj = schema.deepCopy();
-            if (!obj.has("properties")) {
-                obj.set("properties", JSON.createObjectNode());
+            if (OpenAiResponsesJsonPolicy.TYPE_OBJECT.equals(
+                    textOrDefault(obj.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), ""))
+                    && !obj.has(OpenAiResponsesJsonPolicy.FIELD_PROPERTIES)) {
+                obj.set(OpenAiResponsesJsonPolicy.FIELD_PROPERTIES, JSON.createObjectNode());
             }
             return obj;
         }
-        return createEmptySchema();
+        return schema.deepCopy();
     }
 
     private static ObjectNode createEmptySchema() {
         ObjectNode schema = JSON.createObjectNode();
-        schema.put("type", "object");
-        schema.set("properties", JSON.createObjectNode());
+        schema.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_OBJECT);
+        schema.set(OpenAiResponsesJsonPolicy.FIELD_PROPERTIES, JSON.createObjectNode());
         return schema;
     }
 
@@ -948,30 +1166,39 @@ public class AnthropicToResponsesConverter {
     private static JsonNode convertAnthropicToolChoiceToResponses(JsonNode toolChoice) {
         if (toolChoice.isTextual()) {
             return switch (toolChoice.asText()) {
-                case "auto" -> JSON.getNodeFactory().textNode("auto");
-                case "any" -> JSON.getNodeFactory().textNode("required");
-                case "none" -> JSON.getNodeFactory().textNode("none");
-                default -> null;
+                case AnthropicMessagesBodyPolicy.TYPE_AUTO ->
+                        JSON.getNodeFactory().textNode(OpenAiResponsesBodyPolicy.TOOL_CHOICE_AUTO);
+                case AnthropicMessagesBodyPolicy.TYPE_ANY ->
+                        JSON.getNodeFactory().textNode(OpenAiResponsesBodyPolicy.TOOL_CHOICE_REQUIRED);
+                case OpenAiResponsesBodyPolicy.TOOL_CHOICE_NONE ->
+                        JSON.getNodeFactory().textNode(OpenAiResponsesBodyPolicy.TOOL_CHOICE_NONE);
+                default -> toolChoice.deepCopy();
             };
         }
 
-        if (toolChoice.isObject() && toolChoice.has("type")) {
-            String tcType = textOrDefault(toolChoice.get("type"), "");
+        if (toolChoice.isObject() && toolChoice.has(AnthropicMessagesBodyPolicy.FIELD_TYPE)) {
+            String tcType = textOrDefault(toolChoice.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), "");
             return switch (tcType) {
-                case "auto" -> JSON.getNodeFactory().textNode("auto");
-                case "any" -> JSON.getNodeFactory().textNode("required");
-                case "none" -> JSON.getNodeFactory().textNode("none");
-                case "tool" -> {
-                    if (isBlankText(toolChoice.get("name"))) yield null;
+                case AnthropicMessagesBodyPolicy.TYPE_AUTO ->
+                        JSON.getNodeFactory().textNode(OpenAiResponsesBodyPolicy.TOOL_CHOICE_AUTO);
+                case AnthropicMessagesBodyPolicy.TYPE_ANY ->
+                        JSON.getNodeFactory().textNode(OpenAiResponsesBodyPolicy.TOOL_CHOICE_REQUIRED);
+                case OpenAiResponsesBodyPolicy.TOOL_CHOICE_NONE ->
+                        JSON.getNodeFactory().textNode(OpenAiResponsesBodyPolicy.TOOL_CHOICE_NONE);
+                case AnthropicMessagesBodyPolicy.TYPE_TOOL_CHOICE_TOOL -> {
+                    if (isBlankText(toolChoice.get(AnthropicMessagesBodyPolicy.FIELD_NAME))) {
+                        yield toolChoice.deepCopy();
+                    }
                     ObjectNode obj = JSON.createObjectNode();
-                    obj.put("type", "function");
-                    obj.put("name", toolChoice.get("name").asText());
+                    obj.put(OpenAiResponsesBodyPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TOOL_CHOICE_FUNCTION);
+                    obj.put(OpenAiResponsesJsonPolicy.FIELD_NAME,
+                            toolChoice.get(AnthropicMessagesBodyPolicy.FIELD_NAME).asText());
                     yield obj;
                 }
-                default -> null;
+                default -> toolChoice.deepCopy();
             };
         }
-        return null;
+        return toolChoice.isNull() ? null : toolChoice.deepCopy();
     }
 
     private static boolean isBlankText(JsonNode node) {
@@ -984,31 +1211,31 @@ public class AnthropicToResponsesConverter {
 
     private static ObjectNode convertAnthropicThinkingToResponsesReasoning(JsonNode block) {
         ObjectNode reasoningItem = JSON.createObjectNode();
-        reasoningItem.put("type", "reasoning");
-        reasoningItem.put("status", "completed");
-        String thinking = textOrDefault(block.get("thinking"), "");
+        reasoningItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_REASONING);
+        reasoningItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+        String thinking = textOrDefault(block.get(AnthropicThinkingPolicy.FIELD_THINKING), "");
 
         if (!thinking.isEmpty()) {
             ArrayNode summary = JSON.createArrayNode();
             ObjectNode summaryText = JSON.createObjectNode();
-            summaryText.put("type", "summary_text");
-            summaryText.put("text", thinking);
+            summaryText.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_SUMMARY_TEXT);
+            summaryText.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, thinking);
             summary.add(summaryText);
-            reasoningItem.set("summary", summary);
+            reasoningItem.set(OpenAiResponsesJsonPolicy.FIELD_SUMMARY, summary);
         }
         return reasoningItem;
     }
 
     private static ObjectNode convertAnthropicRedactedThinkingToResponsesReasoning(JsonNode block) {
         ObjectNode reasoningItem = JSON.createObjectNode();
-        reasoningItem.put("type", "reasoning");
-        reasoningItem.put("status", "completed");
+        reasoningItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_REASONING);
+        reasoningItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
         return reasoningItem;
     }
 
     private static boolean hasReasoningPayload(JsonNode reasoningItem) {
-        return reasoningItem.has("content")
-                || reasoningItem.has("summary")
+        return reasoningItem.has(OpenAiResponsesJsonPolicy.FIELD_CONTENT)
+                || reasoningItem.has(OpenAiResponsesJsonPolicy.FIELD_SUMMARY)
                 || reasoningItem.has("encrypted_content");
     }
 
@@ -1030,11 +1257,11 @@ public class AnthropicToResponsesConverter {
     private static ObjectNode normalizeWebSearchUserLocation(JsonNode userLocation) {
         if (userLocation == null || !userLocation.isObject()) return null;
         ObjectNode normalized = JSON.createObjectNode();
-        copyTextIfExists(userLocation, normalized, "type");
-        copyTextIfExists(userLocation, normalized, "country");
-        copyTextIfExists(userLocation, normalized, "region");
-        copyTextIfExists(userLocation, normalized, "city");
-        copyTextIfExists(userLocation, normalized, "timezone");
+        copyTextIfExists(userLocation, normalized, OpenAiResponsesBodyPolicy.FIELD_TYPE);
+        copyTextIfExists(userLocation, normalized, OpenAiResponsesBodyPolicy.FIELD_COUNTRY);
+        copyTextIfExists(userLocation, normalized, OpenAiResponsesBodyPolicy.FIELD_REGION);
+        copyTextIfExists(userLocation, normalized, OpenAiResponsesBodyPolicy.FIELD_CITY);
+        copyTextIfExists(userLocation, normalized, OpenAiResponsesBodyPolicy.FIELD_TIMEZONE);
         return normalized.isEmpty() ? null : normalized;
     }
 
@@ -1045,8 +1272,10 @@ public class AnthropicToResponsesConverter {
      */
     private static String mapAnthropicStopReasonToResponsesStatus(String stopReason) {
         return switch (stopReason) {
-            case "max_tokens", "model_context_window_exceeded" -> "incomplete";
-            default -> "completed";
+            case AnthropicMessagesBodyPolicy.STOP_REASON_MAX_TOKENS,
+                    AnthropicMessagesBodyPolicy.STOP_REASON_MODEL_CONTEXT_WINDOW_EXCEEDED ->
+                    OpenAiResponsesJsonPolicy.STATUS_INCOMPLETE;
+            default -> OpenAiResponsesJsonPolicy.STATUS_COMPLETED;
         };
     }
 
@@ -1054,16 +1283,17 @@ public class AnthropicToResponsesConverter {
      * Anthropic image source → data URI 字符串。
      */
     private static String anthropicImageToDataURI(JsonNode imageBlock) {
-        if (imageBlock == null || !imageBlock.has("source")) return null;
-        JsonNode source = imageBlock.get("source");
-        String sourceType = textOrDefault(source.get("type"), "");
-        if ("url".equals(sourceType)) {
-            return textOrDefault(source.get("url"), null);
+        if (imageBlock == null || !imageBlock.has(AnthropicMessagesBodyPolicy.FIELD_SOURCE)) return null;
+        JsonNode source = imageBlock.get(AnthropicMessagesBodyPolicy.FIELD_SOURCE);
+        String sourceType = textOrDefault(source.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), "");
+        if (AnthropicMessagesBodyPolicy.TYPE_URL.equals(sourceType)) {
+            return textOrDefault(source.get(AnthropicMessagesBodyPolicy.FIELD_URL), null);
         }
-        String mediaType = textOrDefault(source.get("media_type"), "image/png");
-        String data = textOrDefault(source.get("data"), "");
+        String mediaType = textOrDefault(source.get(AnthropicMessagesBodyPolicy.FIELD_MEDIA_TYPE),
+                OpenAiResponsesBodyPolicy.DEFAULT_IMAGE_MEDIA_TYPE);
+        String data = textOrDefault(source.get(AnthropicMessagesBodyPolicy.FIELD_DATA), "");
         if (data.isEmpty()) return null;
-        return "data:" + mediaType + ";base64," + data;
+        return OpenAiResponsesBodyPolicy.base64DataUri(mediaType, data);
     }
 
     // ========================
@@ -1085,29 +1315,8 @@ public class AnthropicToResponsesConverter {
     }
 
     private static void appendEvent(List<String> output, String event, String data) {
-        output.add("event: " + event);
-        output.add("data: " + data);
-        output.add("");
-    }
-
-    private static String escapeJsonValue(String s) {
-        if (s == null) return "";
-        StringBuilder sb = new StringBuilder(s.length() + 16);
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"'  -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default   -> sb.append(c);
-            }
-        }
-        return sb.toString();
-    }
-
-    private static String fmt(String format, Object... args) {
-        return String.format(format, args);
+        output.add(OpenAiResponsesSsePolicy.EVENT_LINE_PREFIX + event);
+        output.add(OpenAiResponsesSsePolicy.DATA_LINE_PREFIX + data);
+        output.add(OpenAiResponsesSsePolicy.FRAME_SEPARATOR_LINE);
     }
 }

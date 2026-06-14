@@ -1,6 +1,6 @@
 package com.landgate.trigger.gateway.error;
 
-import com.landgate.trigger.gateway.error.IErrorWriter;
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.stereotype.Component;
 
@@ -18,7 +18,7 @@ public class OpenAiErrorWriter implements IErrorWriter {
     @Override
     public void writeError(HttpServletResponse response, int status, String code, String message) throws IOException {
         response.setStatus(status);
-        response.setContentType("application/json;charset=UTF-8");
+        response.setContentType(GatewayHttpHeaderPolicy.MEDIA_TYPE_JSON_UTF8);
         String json = String.format(
                 "{\"error\":{\"message\":\"%s\",\"type\":\"%s\",\"param\":null,\"code\":null}}",
                 escapeJson(message), escapeJson(code));

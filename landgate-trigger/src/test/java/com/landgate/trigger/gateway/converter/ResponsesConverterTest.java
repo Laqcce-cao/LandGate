@@ -2,6 +2,8 @@ package com.landgate.trigger.gateway.converter;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.types.gateway.GatewayProtocolIrPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -48,9 +50,9 @@ class ResponsesConverterTest {
                       {"type":"image_generation"},
                       {"type":"code_interpreter","container":{"type":"auto"}},
                       {"type":"local_shell"}
-                    ],
-                    "_landgate_stop_sequences": ["STOP"]
+                    ]
                 }""");
+        ((ObjectNode) ir).putArray(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES).add("STOP");
 
         JsonNode out = JSON.readTree(new ResponsesConverter().requestFromIR(ir));
 
@@ -72,7 +74,7 @@ class ResponsesConverterTest {
         assertEquals("image_generation", out.get("tools").get(3).get("type").asText());
         assertEquals("code_interpreter", out.get("tools").get(4).get("type").asText());
         assertEquals("local_shell", out.get("tools").get(5).get("type").asText());
-        assertTrue(!out.has("_landgate_stop_sequences"));
+        assertFalse(out.has(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES));
     }
 
     @Test
@@ -86,6 +88,19 @@ class ResponsesConverterTest {
         assertTrue(translator.isDone());
         assertEquals(20, translator.getInputTokens());
         assertEquals(7, translator.getOutputTokens());
+    }
+
+    @Test
+    @DisplayName("流式 response.done 兼容 data: 后无空格的 SSE 行")
+    void responseDoneAcceptsDataLineWithoutSpace() {
+        StreamTranslator translator = new ResponsesConverter().createStreamToIR("gpt-5.4");
+
+        List<String> out = translator.feed("data:{\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":3}}}");
+
+        assertEquals(1, out.size());
+        assertTrue(translator.isDone());
+        assertEquals(9, translator.getInputTokens());
+        assertEquals(3, translator.getOutputTokens());
     }
 
     @Test

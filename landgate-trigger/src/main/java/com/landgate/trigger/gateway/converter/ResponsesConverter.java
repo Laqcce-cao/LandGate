@@ -3,6 +3,11 @@ package com.landgate.trigger.gateway.converter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.types.gateway.GatewayProtocolIrPolicy;
+import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
+import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
+import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -25,7 +30,7 @@ public class ResponsesConverter implements ProtocolConverter {
 
     @Override
     public String getFormatId() {
-        return "responses";
+        return GatewayProtocolFormat.RESPONSES.id();
     }
 
     // ========================
@@ -53,7 +58,7 @@ public class ResponsesConverter implements ProtocolConverter {
         try {
             if (ir != null && ir.isObject()) {
                 ObjectNode sanitized = ((ObjectNode) ir).deepCopy();
-                sanitized.remove("_landgate_stop_sequences");
+                sanitized.remove(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES);
                 normalizeOpenAIServiceTier(sanitized);
                 sanitizeEmptyBase64InputImages(sanitized);
                 return JSON.writeValueAsString(sanitized);
@@ -66,33 +71,20 @@ public class ResponsesConverter implements ProtocolConverter {
     }
 
     private static void normalizeOpenAIServiceTier(ObjectNode root) {
-        JsonNode value = root.get("service_tier");
+        JsonNode value = root.get(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
         if (value == null || !value.isTextual()) {
             return;
         }
-        String normalized = normalizedOpenAIServiceTierValue(value.asText());
+        String normalized = OpenAiResponsesBodyPolicy.normalizeServiceTier(value.asText());
         if (normalized.isBlank()) {
-            root.remove("service_tier");
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
         } else {
-            root.put("service_tier", normalized);
+            root.put(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER, normalized);
         }
-    }
-
-    private static String normalizedOpenAIServiceTierValue(String raw) {
-        if (raw == null) return "";
-        String value = raw.trim().toLowerCase();
-        if (value.isBlank()) return "";
-        if ("fast".equals(value)) {
-            value = "priority";
-        }
-        return switch (value) {
-            case "priority", "flex", "auto", "default", "scale" -> value;
-            default -> "";
-        };
     }
 
     private static void sanitizeEmptyBase64InputImages(ObjectNode root) {
-        JsonNode input = root.get("input");
+        JsonNode input = root.get(OpenAiResponsesBodyPolicy.FIELD_INPUT);
         if (input == null || !input.isArray()) {
             return;
         }
@@ -107,7 +99,7 @@ public class ResponsesConverter implements ProtocolConverter {
                 changed = true;
                 continue;
             }
-            JsonNode content = itemObject.get("content");
+            JsonNode content = itemObject.get(OpenAiResponsesBodyPolicy.FIELD_CONTENT);
             if (content == null || !content.isArray()) {
                 normalizedItems.add(item);
                 continue;
@@ -127,33 +119,24 @@ public class ResponsesConverter implements ProtocolConverter {
                     continue;
                 }
                 ObjectNode copied = itemObject.deepCopy();
-                copied.set("content", normalizedParts);
+                copied.set(OpenAiResponsesBodyPolicy.FIELD_CONTENT, normalizedParts);
                 normalizedItems.add(copied);
             } else {
                 normalizedItems.add(item);
             }
         }
         if (changed) {
-            root.set("input", normalizedItems);
+            root.set(OpenAiResponsesBodyPolicy.FIELD_INPUT, normalizedItems);
         }
     }
 
     private static boolean shouldDropEmptyBase64InputImagePart(ObjectNode part) {
-        JsonNode type = part.get("type");
-        JsonNode imageUrl = part.get("image_url");
-        return type != null && type.isTextual() && "input_image".equals(type.asText().trim())
+        JsonNode type = part.get(OpenAiResponsesBodyPolicy.FIELD_TYPE);
+        JsonNode imageUrl = part.get(OpenAiResponsesBodyPolicy.FIELD_IMAGE_URL);
+        return type != null && type.isTextual()
+                && OpenAiResponsesBodyPolicy.TYPE_INPUT_IMAGE.equals(type.asText().trim())
                 && imageUrl != null && imageUrl.isTextual()
-                && isEmptyBase64DataURI(imageUrl.asText().trim());
-    }
-
-    private static boolean isEmptyBase64DataURI(String raw) {
-        if (raw == null || !raw.startsWith("data:")) return false;
-        String rest = raw.substring("data:".length());
-        int semicolon = rest.indexOf(';');
-        if (semicolon < 0) return false;
-        rest = rest.substring(semicolon + 1);
-        if (!rest.startsWith("base64,")) return false;
-        return rest.substring("base64,".length()).trim().isEmpty();
+                && OpenAiResponsesBodyPolicy.isEmptyBase64DataUri(imageUrl.asText().trim());
     }
 
     // ========================
@@ -229,20 +212,26 @@ public class ResponsesConverter implements ProtocolConverter {
             output.add(line);
 
             // 从 Responses 终止事件中提取 usage token 数
-            if (line.startsWith("data: ")) {
-                String json = line.substring(6);
+            String json = OpenAiResponsesSsePolicy.extractDataPayload(line);
+            if (json != null && !OpenAiResponsesSsePolicy.isDoneSentinel(json)) {
                 try {
                     JsonNode root = JSON.readTree(json);
-                    String type = textOrDefault(root.get("type"), null);
-                    if (isTerminalResponseEvent(type)) {
-                        JsonNode usage = root.path("response").path("usage");
-                        if ((usage.isMissingNode() || usage.isNull()) && root.has("usage")) {
-                            usage = root.path("usage");
+                    String type = textOrDefault(root.get(OpenAiResponsesJsonPolicy.FIELD_TYPE), null);
+                    if (OpenAiResponsesSsePolicy.isTerminalEvent(type)) {
+                        JsonNode usage = root.path(OpenAiResponsesJsonPolicy.FIELD_RESPONSE)
+                                .path(OpenAiResponsesJsonPolicy.FIELD_USAGE);
+                        if ((usage.isMissingNode() || usage.isNull())
+                                && root.has(OpenAiResponsesJsonPolicy.FIELD_USAGE)) {
+                            usage = root.path(OpenAiResponsesJsonPolicy.FIELD_USAGE);
                         }
                         if (!usage.isMissingNode() && !usage.isNull()) {
-                            int cachedTokens = nonNegativeIntOrZero(usage.path("input_tokens_details").get("cached_tokens"));
-                            inputTokens = Math.max(0, nonNegativeIntOrZero(usage.get("input_tokens")) - cachedTokens);
-                            outputTokens = nonNegativeIntOrZero(usage.get("output_tokens"));
+                            int cachedTokens = nonNegativeIntOrZero(usage
+                                    .path(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS_DETAILS)
+                                    .get(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS));
+                            inputTokens = Math.max(0, nonNegativeIntOrZero(
+                                    usage.get(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS)) - cachedTokens);
+                            outputTokens = nonNegativeIntOrZero(
+                                    usage.get(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS));
                         }
                         done = true;
                     }
@@ -266,13 +255,6 @@ public class ResponsesConverter implements ProtocolConverter {
         @Override
         public int getOutputTokens() {
             return outputTokens;
-        }
-
-        private static boolean isTerminalResponseEvent(String type) {
-            return "response.completed".equals(type)
-                    || "response.done".equals(type)
-                    || "response.failed".equals(type)
-                    || "response.incomplete".equals(type);
         }
 
         private static int nonNegativeIntOrZero(JsonNode node) {

@@ -1,28 +1,28 @@
-package com.landgate.trigger.gateway.transformer;
+package com.landgate.types.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Anthropic prompt caching 兼容策略。
- * <p>
- * 对齐 sub2api 的 cache_control 上限保护：最多保留 4 个缓存断点，超限时优先移除
- * tools，其次 messages，最后 system；thinking 块上的 cache_control 直接移除。
+ * Anthropic prompt caching compatibility policy.
+ *
+ * <p>Aligned with Sub2API cache_control limit behavior: keep at most four
+ * cache breakpoints. When over the limit, remove tools first, then messages,
+ * then system. cache_control on thinking blocks is always stripped.</p>
  */
-@Slf4j
-final class AnthropicCacheControlPolicy {
+public final class AnthropicCacheControlPolicy {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int MAX_CACHE_CONTROL_BLOCKS = 4;
 
-    private AnthropicCacheControlPolicy() {}
+    private AnthropicCacheControlPolicy() {
+    }
 
-    static String enforceLimit(String body) {
+    public static String enforceLimit(String body) {
         if (body == null || body.isBlank()) return body;
         try {
             JsonNode root = JSON.readTree(body);
@@ -44,8 +44,7 @@ final class AnthropicCacheControlPolicy {
             removeCacheControlReverse(system, remaining);
 
             return JSON.writeValueAsString(root);
-        } catch (Exception e) {
-            log.debug("Failed to enforce Anthropic cache_control limit: {}", e.getMessage());
+        } catch (Exception ignored) {
             return body;
         }
     }
@@ -56,24 +55,24 @@ final class AnthropicCacheControlPolicy {
                                                   List<ObjectNode> tools) {
         boolean modified = false;
 
-        JsonNode systemNode = root.get("system");
+        JsonNode systemNode = root.get(AnthropicMessagesBodyPolicy.FIELD_SYSTEM);
         if (systemNode != null && systemNode.isArray()) {
             for (JsonNode item : systemNode) {
-                if (hasCacheControl(item)) system.add((ObjectNode) item);
+                if (AnthropicMessagesBodyPolicy.hasCacheControl(item)) system.add((ObjectNode) item);
             }
         }
 
-        JsonNode messagesNode = root.get("messages");
+        JsonNode messagesNode = root.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGES);
         if (messagesNode != null && messagesNode.isArray()) {
             for (JsonNode message : messagesNode) {
-                JsonNode content = message.get("content");
+                JsonNode content = message.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT);
                 if (content == null || !content.isArray()) continue;
                 for (JsonNode block : content) {
-                    if (!block.isObject() || !block.has("cache_control")) continue;
-                    String type = block.path("type").asText("");
+                    if (!block.isObject() || !AnthropicMessagesBodyPolicy.hasCacheControl(block)) continue;
+                    String type = block.path(AnthropicMessagesBodyPolicy.FIELD_TYPE).asText("");
                     ObjectNode blockObj = (ObjectNode) block;
-                    if ("thinking".equals(type) || "redacted_thinking".equals(type)) {
-                        blockObj.remove("cache_control");
+                    if (AnthropicThinkingPolicy.isThinkingBlockType(type)) {
+                        blockObj.remove(AnthropicMessagesBodyPolicy.FIELD_CACHE_CONTROL);
                         modified = true;
                     } else {
                         messages.add(blockObj);
@@ -82,24 +81,20 @@ final class AnthropicCacheControlPolicy {
             }
         }
 
-        JsonNode toolsNode = root.get("tools");
+        JsonNode toolsNode = root.get(AnthropicMessagesBodyPolicy.FIELD_TOOLS);
         if (toolsNode != null && toolsNode.isArray()) {
             for (JsonNode tool : toolsNode) {
-                if (hasCacheControl(tool)) tools.add((ObjectNode) tool);
+                if (AnthropicMessagesBodyPolicy.hasCacheControl(tool)) tools.add((ObjectNode) tool);
             }
         }
 
         return modified;
     }
 
-    private static boolean hasCacheControl(JsonNode node) {
-        return node != null && node.isObject() && node.has("cache_control");
-    }
-
     private static int removeCacheControlReverse(List<ObjectNode> nodes, int remaining) {
         for (int i = nodes.size() - 1; i >= 0 && remaining > 0; i--) {
-            if (nodes.get(i).has("cache_control")) {
-                nodes.get(i).remove("cache_control");
+            if (AnthropicMessagesBodyPolicy.hasCacheControl(nodes.get(i))) {
+                nodes.get(i).remove(AnthropicMessagesBodyPolicy.FIELD_CACHE_CONTROL);
                 remaining--;
             }
         }
@@ -109,8 +104,8 @@ final class AnthropicCacheControlPolicy {
     private static int removeCacheControlForward(List<ObjectNode> nodes, int remaining) {
         for (ObjectNode node : nodes) {
             if (remaining <= 0) break;
-            if (node.has("cache_control")) {
-                node.remove("cache_control");
+            if (AnthropicMessagesBodyPolicy.hasCacheControl(node)) {
+                node.remove(AnthropicMessagesBodyPolicy.FIELD_CACHE_CONTROL);
                 remaining--;
             }
         }

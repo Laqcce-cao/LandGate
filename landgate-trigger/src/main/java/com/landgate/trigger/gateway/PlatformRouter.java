@@ -12,6 +12,7 @@ import com.landgate.trigger.gateway.usage.OpenAiUsageParser;
 import com.landgate.trigger.gateway.usage.ResponsesUsageParser;
 import com.landgate.trigger.gateway.usage.AnthropicUsageParser;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.GatewayProtocolFormat;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -94,7 +95,7 @@ public class PlatformRouter {
      * @return 对应的 UsageParser；找不到时抛出 IllegalArgumentException
      */
     public IUsageParser getUsageParser(Platform platform, String formatId) {
-        if (platform == Platform.OPENAI && "responses".equals(formatId)) {
+        if (platform == Platform.OPENAI && GatewayProtocolFormat.RESPONSES.is(formatId)) {
             return responsesUsageParser;
         }
         return getUsageParser(platform);

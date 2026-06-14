@@ -2,7 +2,7 @@
   <br>
   <h1 align="center">LandGate</h1>
   <p align="center">
-    <strong>AI API Gateway for Anthropic, OpenAI, Gemini and Antigravity</strong>
+    <strong>AI API Gateway for Anthropic Messages, OpenAI Responses and OpenAI Chat Completions</strong>
   </p>
   <p align="center">
     将上游 AI 账号、订阅与 API Key 统一接入，提供认证、分组、计费、余额、并发控制与负载均衡能力。
@@ -42,7 +42,7 @@ LandGate 是一个面向 AI API 运营场景的网关服务。它可以把多平
 
 | 网关协议 | 账号调度 | 计费结算 |
 | --- | --- | --- |
-| Anthropic Messages<br>OpenAI Chat / Responses / Images<br>Gemini GenerateContent<br>Antigravity 路由 | 多账号池<br>优先级调度<br>粘性会话<br>失败切换<br>并发槽位控制 | 模型价格<br>Token 用量<br>Redis 原子预扣<br>MySQL 回写<br>用量统计 |
+| Anthropic Messages<br>OpenAI Chat Completions<br>OpenAI Responses / Codex Responses<br>跨协议转换 | 多账号池<br>优先级调度<br>粘性会话<br>失败切换<br>并发槽位控制 | 模型价格<br>Token 用量<br>Redis 原子预扣<br>MySQL 回写<br>用量统计 |
 
 | 用户体系 | 运营管理 | 工程能力 |
 | --- | --- | --- |
@@ -151,17 +151,25 @@ mvn test
 
 ## 接口入口
 
+LandGate 的核心网关模型是：URL 只决定客户端入口协议/格式，真实上游协议由选中的 account 和 route strategy 决定。当前核心三协议路线以 OpenAI Responses 作为中间协议，支持 Anthropic Messages、OpenAI Responses / Codex Responses、OpenAI Chat Completions 之间的路由矩阵转换。
+
 | 场景 | 路径 |
 | --- | --- |
 | Anthropic Messages | `POST /v1/messages` |
-| OpenAI Chat Completions | `POST /v1/chat/completions` |
+| OpenAI Chat Completions | `POST /v1/chat/completions`、`POST /chat/completions` |
 | OpenAI Responses | `POST /v1/responses`、`POST /responses`、`POST /backend-api/codex/responses` |
-| OpenAI Images | `POST /images/generations`、`POST /images/edits` |
-| Gemini | `POST /v1beta/models/{model}:generateContent` |
-| Antigravity | `POST /antigravity/v1/messages`、`POST /antigravity/v1/chat/completions` |
 | 用量查询 | `GET /v1/usage` |
 | 用户 API | `/api/v1/auth/**`、`/api/v1/user/**`、`/api/v1/payment/**` |
 | 管理 API | `/api/v1/admin/**` |
+| Anthropic Count Tokens | `POST /v1/messages/count_tokens`，Anthropic 上游透传；非 Anthropic 选中账号返回 404 以便客户端 fallback |
+
+当前未纳入核心三协议实现范围：
+
+| 场景 | 当前状态 |
+| --- | --- |
+| OpenAI Images | 当前不作为三协议路由矩阵的一部分 |
+| Gemini GenerateContent | 当前返回 unsupported |
+| Antigravity 路由 | 当前返回 unsupported |
 
 ### 调用示例
 

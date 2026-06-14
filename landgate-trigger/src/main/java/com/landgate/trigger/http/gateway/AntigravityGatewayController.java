@@ -1,5 +1,7 @@
 package com.landgate.trigger.http.gateway;
 
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
+import com.landgate.types.gateway.GatewayUnsupportedFeaturePolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -37,8 +39,9 @@ public class AntigravityGatewayController {
     }
 
     private static void writeUnsupported(HttpServletResponse response) throws IOException {
-        response.setStatus(404);
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write("{\"error\":{\"message\":\"Antigravity gateway is not supported in this build\",\"type\":\"unsupported_error\"}}");
+        response.setStatus(GatewayUnsupportedFeaturePolicy.STATUS_NOT_FOUND);
+        response.setContentType(GatewayHttpHeaderPolicy.MEDIA_TYPE_JSON_UTF8);
+        response.getWriter().write(GatewayUnsupportedFeaturePolicy.openAiUnsupportedBody(
+                GatewayUnsupportedFeaturePolicy.ANTIGRAVITY_UNSUPPORTED_MESSAGE));
     }
 }

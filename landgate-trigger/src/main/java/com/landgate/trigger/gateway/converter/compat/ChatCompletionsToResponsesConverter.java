@@ -5,6 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
+import com.landgate.types.gateway.GatewayProtocolIrPolicy;
+import com.landgate.types.gateway.OpenAiChatCompletionsBodyPolicy;
+import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
+import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
+import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -12,6 +17,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+
+import static com.landgate.types.gateway.OpenAiChatCompletionsBodyPolicy.*;
 
 /**
  * OpenAI Chat Completions API → OpenAI Responses API（IR）转换器。
@@ -25,7 +32,6 @@ import java.util.UUID;
 public class ChatCompletionsToResponsesConverter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
-    private static final int MIN_MAX_OUTPUT_TOKENS = 128;
     // ========================
     // 请求转换：Chat Completions → Responses IR
     // ========================
@@ -36,125 +42,160 @@ public class ChatCompletionsToResponsesConverter {
     public JsonNode requestToIR(String body) {
         try {
             JsonNode src = JSON.readTree(body);
+            if (isResponsesShapeChatBody(src)) {
+                return responsesShapeChatBodyToIR((ObjectNode) src);
+            }
             ObjectNode dst = JSON.createObjectNode();
 
             // --- 基础字段 ---
-            copyTextIfExists(src, dst, "model");
-            copyTextIfExists(src, dst, "instructions");
+            copyTextIfExists(src, dst, FIELD_MODEL);
+            copyTextIfExists(src, dst, OpenAiChatCompletionsBodyPolicy.FIELD_INSTRUCTIONS);
             copyNormalizedServiceTierIfExists(src, dst);
 
             // 协议转换层不根据模型名猜能力；采样参数按客户端显式请求保留。
-            copyNumberIfExists(src, dst, "temperature");
-            copyNumberIfExists(src, dst, "top_p");
+            copyNumberIfExists(src, dst, OpenAiResponsesBodyPolicy.FIELD_TEMPERATURE);
+            copyNumberIfExists(src, dst, OpenAiResponsesBodyPolicy.FIELD_TOP_P);
 
             // max_tokens / max_completion_tokens → max_output_tokens（后者优先）
             JsonNode maxTokensNode = null;
-            if (src.has("max_completion_tokens")) {
-                maxTokensNode = src.get("max_completion_tokens");
-            } else if (src.has("max_tokens")) {
-                maxTokensNode = src.get("max_tokens");
+            if (src.has(OpenAiResponsesBodyPolicy.FIELD_MAX_COMPLETION_TOKENS)) {
+                maxTokensNode = src.get(OpenAiResponsesBodyPolicy.FIELD_MAX_COMPLETION_TOKENS);
+            } else if (src.has(FIELD_MAX_TOKENS)) {
+                maxTokensNode = src.get(FIELD_MAX_TOKENS);
             }
             if (isPositiveInt(maxTokensNode)) {
-                dst.put("max_output_tokens", Math.max(maxTokensNode.asInt(), MIN_MAX_OUTPUT_TOKENS));
+                dst.put(OpenAiResponsesBodyPolicy.FIELD_MAX_OUTPUT_TOKENS,
+                        Math.max(maxTokensNode.asInt(), OpenAiResponsesBodyPolicy.MIN_MAX_OUTPUT_TOKENS));
             }
 
             // 对齐 sub2api：Responses/Codex 上游固定使用流式，客户端非流式由网关聚合。
-            dst.put("stream", true);
+            dst.put(FIELD_STREAM, true);
 
             // stop → 内部 IR 扩展。Responses 上游不直接消费，跨协议转 Anthropic/Chat 时再还原。
-            if (src.has("stop") && !src.get("stop").isNull()) {
-                JsonNode stop = normalizeStopSequences(src.get("stop"));
-                if (stop != null) dst.set("_landgate_stop_sequences", stop);
+            if (src.has(FIELD_STOP) && !src.get(FIELD_STOP).isNull()) {
+                JsonNode stop = normalizeStopSequences(src.get(FIELD_STOP));
+                if (stop != null) dst.set(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES, stop);
             }
 
-            // reasoning_effort → reasoning
-            String reasoningEffort = normalizeChatReasoningEffort(src.get("reasoning_effort"));
+            // reasoning.effort / reasoning_effort → reasoning
+            String reasoningEffort = extractChatReasoningEffort(src);
             if (reasoningEffort != null) {
                 ObjectNode reasoning = JSON.createObjectNode();
-                reasoning.put("effort", reasoningEffort);
-                reasoning.put("summary", "auto");
-                dst.set("reasoning", reasoning);
+                reasoning.put(OpenAiResponsesBodyPolicy.FIELD_EFFORT, reasoningEffort);
+                reasoning.put(OpenAiResponsesBodyPolicy.FIELD_SUMMARY, OpenAiResponsesBodyPolicy.REASONING_SUMMARY_AUTO);
+                dst.set(OpenAiResponsesBodyPolicy.FIELD_REASONING, reasoning);
             }
 
             // --- messages → input ---
             ArrayNode input = JSON.createArrayNode();
-            if (src.has("messages") && src.get("messages").isArray()) {
-                for (JsonNode msg : src.get("messages")) {
-                    String role = msg.has("role") ? msg.get("role").asText() : "user";
-                    JsonNode contentNode = msg.get("content");
+            if (src.has(FIELD_MESSAGES) && src.get(FIELD_MESSAGES).isArray()) {
+                for (JsonNode msg : src.get(FIELD_MESSAGES)) {
+                    String role = msg.has(FIELD_ROLE) ? msg.get(FIELD_ROLE).asText() : ROLE_USER;
+                    JsonNode contentNode = msg.get(FIELD_CONTENT);
 
                     switch (role) {
-                        case "system" -> convertChatInstructionMessage("system", contentNode, input);
-                        case "user" -> convertChatUserMessage(contentNode, input);
-                        case "assistant" -> convertChatAssistantMessage(msg, input);
-                        case "tool" -> convertChatToolMessage(msg, input);
-                        case "function" -> convertChatFunctionMessage(msg, input);
+                        case ROLE_SYSTEM -> convertChatInstructionMessage(ROLE_SYSTEM, contentNode, input);
+                        case ROLE_USER -> convertChatUserMessage(contentNode, input);
+                        case ROLE_ASSISTANT -> convertChatAssistantMessage(msg, input);
+                        case ROLE_TOOL -> convertChatToolMessage(msg, input);
+                        case ROLE_FUNCTION -> convertChatFunctionMessage(msg, input);
                         default -> convertChatUserMessage(contentNode, input);
                     }
                 }
             }
-            dst.set("input", input);
+            dst.set(OpenAiResponsesBodyPolicy.FIELD_INPUT, input);
 
             // --- tools ---
             ArrayNode responsesTools = JSON.createArrayNode();
-            if (src.has("tools") && src.get("tools").isArray()) {
-                for (JsonNode tool : src.get("tools")) {
-                    String type = tool.has("type") ? tool.get("type").asText() : "";
-                    if ("function".equals(type) && tool.has("function")) {
-                        JsonNode func = tool.get("function");
-                        if (isBlankText(func.get("name"))) {
+            if (src.has(FIELD_TOOLS) && src.get(FIELD_TOOLS).isArray()) {
+                for (JsonNode tool : src.get(FIELD_TOOLS)) {
+                    String type = tool.has(FIELD_TYPE) ? tool.get(FIELD_TYPE).asText() : "";
+                    if (TYPE_FUNCTION.equals(type) && tool.has(FIELD_FUNCTION)) {
+                        JsonNode func = tool.get(FIELD_FUNCTION);
+                        if (isBlankText(func.get(FIELD_NAME))) {
                             continue;
                         }
                         ObjectNode rt = JSON.createObjectNode();
-                        rt.put("type", "function");
-                        rt.put("name", func.get("name").asText());
-                        copyTextIfExists(func, rt, "description");
-                        if (func.has("parameters")) rt.set("parameters", normalizeToolParameters(func.get("parameters")));
-                        copyBooleanIfExists(func, rt, "strict");
+                        rt.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, TYPE_FUNCTION);
+                        rt.put(OpenAiResponsesJsonPolicy.FIELD_NAME, func.get(FIELD_NAME).asText());
+                        copyTextIfExists(func, rt, FIELD_DESCRIPTION);
+                        if (func.has(FIELD_PARAMETERS)) {
+                            rt.set(FIELD_PARAMETERS, normalizeToolParameters(func.get(FIELD_PARAMETERS)));
+                        }
+                        copyBooleanIfExists(func, rt, FIELD_STRICT);
                         responsesTools.add(rt);
                     }
                 }
             }
             // 旧式 functions[] → tools
-            if (src.has("functions") && src.get("functions").isArray()) {
-                for (JsonNode func : src.get("functions")) {
-                    if (isBlankText(func.get("name"))) {
+            if (src.has(FIELD_FUNCTIONS) && src.get(FIELD_FUNCTIONS).isArray()) {
+                for (JsonNode func : src.get(FIELD_FUNCTIONS)) {
+                    if (isBlankText(func.get(FIELD_NAME))) {
                         continue;
                     }
                     ObjectNode rt = JSON.createObjectNode();
-                    rt.put("type", "function");
-                    rt.put("name", func.get("name").asText());
-                    copyTextIfExists(func, rt, "description");
-                    if (func.has("parameters")) rt.set("parameters", normalizeToolParameters(func.get("parameters")));
-                    copyBooleanIfExists(func, rt, "strict");
+                    rt.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, TYPE_FUNCTION);
+                    rt.put(OpenAiResponsesJsonPolicy.FIELD_NAME, func.get(FIELD_NAME).asText());
+                    copyTextIfExists(func, rt, FIELD_DESCRIPTION);
+                    if (func.has(FIELD_PARAMETERS)) {
+                        rt.set(FIELD_PARAMETERS, normalizeToolParameters(func.get(FIELD_PARAMETERS)));
+                    }
+                    copyBooleanIfExists(func, rt, FIELD_STRICT);
                     responsesTools.add(rt);
                 }
             }
             if (responsesTools.size() > 0) {
-                dst.set("tools", responsesTools);
+                dst.set(FIELD_TOOLS, responsesTools);
             }
 
             // --- tool_choice ---
-            if (src.has("tool_choice") && !src.get("tool_choice").isNull()) {
-                dst.set("tool_choice", src.get("tool_choice"));
-            } else if (src.has("function_call") && !src.get("function_call").isNull()) {
+            if (src.has(FIELD_TOOL_CHOICE) && !src.get(FIELD_TOOL_CHOICE).isNull()) {
+                dst.set(FIELD_TOOL_CHOICE, src.get(FIELD_TOOL_CHOICE));
+            } else if (src.has(FIELD_FUNCTION_CALL) && !src.get(FIELD_FUNCTION_CALL).isNull()) {
                 // 旧式 function_call → tool_choice
-                JsonNode toolChoice = convertLegacyFunctionCall(src.get("function_call"));
+                JsonNode toolChoice = convertLegacyFunctionCall(src.get(FIELD_FUNCTION_CALL));
                 if (toolChoice != null) {
-                    dst.set("tool_choice", toolChoice);
+                    dst.set(FIELD_TOOL_CHOICE, toolChoice);
                 }
             }
 
             // --- 固定字段 ---
-            dst.put("store", false);
+            dst.put(OpenAiResponsesBodyPolicy.FIELD_STORE, false);
             ArrayNode include = JSON.createArrayNode();
-            include.add("reasoning.encrypted_content");
-            dst.set("include", include);
+            include.add(OpenAiResponsesBodyPolicy.INCLUDE_REASONING_ENCRYPTED_CONTENT);
+            dst.set(OpenAiResponsesBodyPolicy.FIELD_INCLUDE, include);
 
             return dst;
         } catch (Exception e) {
             log.warn("ChatCompletions→Responses requestToIR error: {}", e.getMessage());
             return JSON.createObjectNode();
+        }
+    }
+
+    private static boolean isResponsesShapeChatBody(JsonNode src) {
+        return src instanceof ObjectNode
+                && !src.has(FIELD_MESSAGES)
+                && src.has(OpenAiResponsesBodyPolicy.FIELD_INPUT);
+    }
+
+    private static ObjectNode responsesShapeChatBodyToIR(ObjectNode src) {
+        ObjectNode dst = src.deepCopy();
+        dst.remove(OpenAiResponsesBodyPolicy.chatEndpointResponsesShapeUnsupportedFields());
+        normalizeResponsesShapeServiceTier(dst);
+        dst.put(OpenAiResponsesBodyPolicy.FIELD_STREAM, true);
+        return dst;
+    }
+
+    private static void normalizeResponsesShapeServiceTier(ObjectNode dst) {
+        JsonNode value = dst.get(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
+        if (value == null || !value.isTextual()) {
+            return;
+        }
+        String normalized = OpenAiResponsesBodyPolicy.normalizeServiceTier(value.asText());
+        if (normalized.isBlank()) {
+            dst.remove(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
+        } else {
+            dst.put(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER, normalized);
         }
     }
 
@@ -170,79 +211,81 @@ public class ChatCompletionsToResponsesConverter {
             JsonNode src = JSON.readTree(body);
             ObjectNode dst = JSON.createObjectNode();
 
-            dst.put("id", textOrDefault(src.get("id"),
-                    "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24)));
-            dst.put("object", "response");
-            dst.put("model", isBlankText(src.get("model")) ? "unknown" : src.get("model").asText());
-            if (isNonNegativeLong(src.get("created"))) {
-                dst.put("created_at", src.get("created").asLong());
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_ID, textOrDefault(src.get(FIELD_ID),
+                    OpenAiResponsesJsonPolicy.RESPONSE_ID_PREFIX + randomOpenAiResponsesIdSuffix()));
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_OBJECT, OpenAiResponsesJsonPolicy.OBJECT_RESPONSE);
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_MODEL,
+                    isBlankText(src.get(FIELD_MODEL)) ? OpenAiResponsesJsonPolicy.DEFAULT_MODEL : src.get(FIELD_MODEL).asText());
+            if (isNonNegativeLong(src.get(FIELD_CREATED))) {
+                dst.put(OpenAiResponsesJsonPolicy.FIELD_CREATED_AT, src.get(FIELD_CREATED).asLong());
             }
 
-            if (!src.has("choices") || src.get("choices").size() == 0) {
+            if (!src.has(FIELD_CHOICES) || src.get(FIELD_CHOICES).size() == 0) {
                 // 无 choices → 空响应
-                dst.put("status", "completed");
-                dst.set("output", JSON.createArrayNode());
+                dst.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+                dst.set(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, JSON.createArrayNode());
                 return dst;
             }
 
-            JsonNode choice = src.get("choices").get(0);
-            JsonNode message = choice.has("message") ? choice.get("message") : null;
-            String finishReason = textOrDefault(choice.get("finish_reason"), "stop");
+            JsonNode choice = src.get(FIELD_CHOICES).get(0);
+            JsonNode message = choice.has(FIELD_MESSAGE) ? choice.get(FIELD_MESSAGE) : null;
+            String finishReason = textOrDefault(choice.get(FIELD_FINISH_REASON), FINISH_REASON_STOP);
 
             ArrayNode output = JSON.createArrayNode();
             boolean hasToolCalls = false;
 
             if (message != null) {
                 // reasoning_content → reasoning output item
-                String reasoningContent = textOrDefault(message.get("reasoning_content"), "");
+                String reasoningContent = textOrDefault(message.get(FIELD_REASONING_CONTENT), "");
                 if (!reasoningContent.isEmpty()) {
                     ObjectNode reasoningItem = JSON.createObjectNode();
-                    reasoningItem.put("type", "reasoning");
-                    reasoningItem.put("status", "completed");
+                    reasoningItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_REASONING);
+                    reasoningItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
                     ArrayNode summary = JSON.createArrayNode();
                     ObjectNode summaryText = JSON.createObjectNode();
-                    summaryText.put("type", "summary_text");
-                    summaryText.put("text", reasoningContent);
+                    summaryText.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_SUMMARY_TEXT);
+                    summaryText.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, reasoningContent);
                     summary.add(summaryText);
-                    reasoningItem.set("summary", summary);
+                    reasoningItem.set(OpenAiResponsesJsonPolicy.FIELD_SUMMARY, summary);
                     output.add(reasoningItem);
                 }
 
                 // content/refusal → output_text/refusal
-                String contentText = textOrDefault(message.get("content"), "");
-                String refusalText = textOrDefault(message.get("refusal"), "");
+                String contentText = textOrDefault(message.get(FIELD_CONTENT), "");
+                String refusalText = textOrDefault(message.get(FIELD_REFUSAL), "");
 
                 // tool_calls / legacy function_call → function_call output items
                 ArrayNode toolCalls = null;
-                if (message.has("tool_calls") && message.get("tool_calls").isArray()) {
-                    toolCalls = (ArrayNode) message.get("tool_calls");
+                if (message.has(FIELD_TOOL_CALLS) && message.get(FIELD_TOOL_CALLS).isArray()) {
+                    toolCalls = (ArrayNode) message.get(FIELD_TOOL_CALLS);
                     for (JsonNode tc : toolCalls) {
-                        if (isBlankText(tc.get("id"))) {
+                        if (isBlankText(tc.get(FIELD_ID))) {
                             log.debug("Chat→Responses: tool_call missing id, ignored");
                             continue;
                         }
                         ObjectNode funcItem = JSON.createObjectNode();
-                        funcItem.put("call_id", tc.get("id").asText());
-                        funcItem.put("status", "completed");
-                        if ("custom".equals(tc.path("type").asText("")) && tc.has("custom")) {
-                            JsonNode custom = tc.get("custom");
-                            if (isBlankText(custom.get("name"))) {
+                        funcItem.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, tc.get(FIELD_ID).asText());
+                        funcItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+                        if (TYPE_CUSTOM.equals(tc.path(FIELD_TYPE).asText("")) && tc.has(FIELD_CUSTOM)) {
+                            JsonNode custom = tc.get(FIELD_CUSTOM);
+                            if (isBlankText(custom.get(FIELD_NAME))) {
                                 log.debug("Chat→Responses: custom tool_call missing name, ignored");
                                 continue;
                             }
-                            funcItem.put("type", "custom_tool_call");
-                            funcItem.put("name", custom.get("name").asText());
-                            funcItem.put("input", textOrDefault(custom.get("input"), ""));
-                        } else if (tc.has("function")) {
-                            JsonNode func = tc.get("function");
-                            if (isBlankText(func.get("name"))) {
+                            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_CUSTOM_TOOL_CALL);
+                            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_NAME, custom.get(FIELD_NAME).asText());
+                            funcItem.put(FIELD_INPUT, textOrDefault(custom.get(FIELD_INPUT), ""));
+                        } else if (tc.has(FIELD_FUNCTION)) {
+                            JsonNode func = tc.get(FIELD_FUNCTION);
+                            if (isBlankText(func.get(FIELD_NAME))) {
                                 log.debug("Chat→Responses: function tool_call missing name, ignored");
                                 continue;
                             }
-                            funcItem.put("type", "function_call");
-                            funcItem.put("name", func.get("name").asText());
-                            String args = textOrDefault(func.get("arguments"), "{}");
-                            funcItem.put("arguments", args.isEmpty() ? "{}" : args);
+                            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL);
+                            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_NAME, func.get(FIELD_NAME).asText());
+                            String args = textOrDefault(func.get(FIELD_ARGUMENTS), DEFAULT_FUNCTION_ARGUMENTS);
+                            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS,
+                                    args.isEmpty() ? DEFAULT_FUNCTION_ARGUMENTS : args);
                         } else {
                             log.debug("Chat→Responses: tool_call missing function/custom payload, ignored");
                             continue;
@@ -250,19 +293,20 @@ public class ChatCompletionsToResponsesConverter {
                         output.add(funcItem);
                         hasToolCalls = true;
                     }
-                } else if (message.has("function_call") && message.get("function_call").isObject()) {
-                    JsonNode fc = message.get("function_call");
-                    if (isBlankText(fc.get("name"))) {
+                } else if (message.has(FIELD_FUNCTION_CALL) && message.get(FIELD_FUNCTION_CALL).isObject()) {
+                    JsonNode fc = message.get(FIELD_FUNCTION_CALL);
+                    if (isBlankText(fc.get(FIELD_NAME))) {
                         log.debug("Chat→Responses: legacy function_call missing name, ignored");
                     } else {
                         ObjectNode funcItem = JSON.createObjectNode();
-                        funcItem.put("type", "function_call");
-                        String name = fc.get("name").asText();
-                        funcItem.put("call_id", name);
-                        funcItem.put("status", "completed");
-                        funcItem.put("name", name);
-                        String args = textOrDefault(fc.get("arguments"), "{}");
-                        funcItem.put("arguments", args.isEmpty() ? "{}" : args);
+                        funcItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL);
+                        String name = fc.get(FIELD_NAME).asText();
+                        funcItem.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, name);
+                        funcItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+                        funcItem.put(OpenAiResponsesJsonPolicy.FIELD_NAME, name);
+                        String args = textOrDefault(fc.get(FIELD_ARGUMENTS), DEFAULT_FUNCTION_ARGUMENTS);
+                        funcItem.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS,
+                                args.isEmpty() ? DEFAULT_FUNCTION_ARGUMENTS : args);
                         output.add(funcItem);
                         hasToolCalls = true;
                     }
@@ -273,58 +317,61 @@ public class ChatCompletionsToResponsesConverter {
                         || (contentText != null && !contentText.isEmpty());
                 if (hasMessagePayload) {
                     ObjectNode msgItem = JSON.createObjectNode();
-                    msgItem.put("type", "message");
-                    msgItem.put("role", "assistant");
-                    msgItem.put("status", "completed");
+                    msgItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_MESSAGE);
+                    msgItem.put(OpenAiResponsesJsonPolicy.FIELD_ROLE, OpenAiResponsesJsonPolicy.ROLE_ASSISTANT);
+                    msgItem.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
                     ArrayNode msgContent = JSON.createArrayNode();
                     ObjectNode textPart = JSON.createObjectNode();
                     if (refusalText != null && !refusalText.isEmpty()) {
-                        textPart.put("type", "refusal");
-                        textPart.put("refusal", refusalText);
+                        textPart.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_REFUSAL);
+                        textPart.put(OpenAiResponsesJsonPolicy.FIELD_REFUSAL, refusalText);
                     } else {
-                        textPart.put("type", "output_text");
-                        textPart.put("text", contentText != null ? contentText : "");
+                        textPart.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_OUTPUT_TEXT);
+                        textPart.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, contentText != null ? contentText : "");
                     }
                     msgContent.add(textPart);
-                    msgItem.set("content", msgContent);
+                    msgItem.set(OpenAiResponsesJsonPolicy.FIELD_CONTENT, msgContent);
                     output.add(msgItem);
                 }
             }
 
-            dst.set("output", output);
+            dst.set(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, output);
 
             // finish_reason → status
             String status = mapChatFinishReasonToResponsesStatus(finishReason);
-            dst.put("status", status);
-            if ("incomplete".equals(status)) {
+            dst.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, status);
+            if (OpenAiResponsesJsonPolicy.STATUS_INCOMPLETE.equals(status)) {
                 ObjectNode incompleteDetails = JSON.createObjectNode();
-                incompleteDetails.put("reason", mapChatFinishReasonToResponsesIncompleteReason(finishReason));
-                dst.set("incomplete_details", incompleteDetails);
+                incompleteDetails.put(OpenAiResponsesJsonPolicy.FIELD_REASON,
+                        mapChatFinishReasonToResponsesIncompleteReason(finishReason));
+                dst.set(OpenAiResponsesJsonPolicy.FIELD_INCOMPLETE_DETAILS, incompleteDetails);
             }
 
             // usage
-            if (src.has("usage")) {
-                JsonNode usage = src.get("usage");
+            if (src.has(FIELD_USAGE)) {
+                JsonNode usage = src.get(FIELD_USAGE);
                 ObjectNode respUsage = JSON.createObjectNode();
-                int inputTokens = nonNegativeIntOrZero(usage.get("prompt_tokens"));
-                int outputTokens = nonNegativeIntOrZero(usage.get("completion_tokens"));
-                respUsage.put("input_tokens", inputTokens);
-                respUsage.put("output_tokens", outputTokens);
-                int totalTokens = isNonNegativeInt(usage.get("total_tokens"))
-                        ? usage.get("total_tokens").asInt()
+                int inputTokens = nonNegativeIntOrZero(usage.get(FIELD_PROMPT_TOKENS));
+                int outputTokens = nonNegativeIntOrZero(usage.get(FIELD_COMPLETION_TOKENS));
+                respUsage.put(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS, inputTokens);
+                respUsage.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS, outputTokens);
+                int totalTokens = isNonNegativeInt(usage.get(FIELD_TOTAL_TOKENS))
+                        ? usage.get(FIELD_TOTAL_TOKENS).asInt()
                         : inputTokens + outputTokens;
-                respUsage.put("total_tokens", totalTokens);
-                if (isPositiveInt(usage.path("prompt_tokens_details").get("cached_tokens"))) {
+                respUsage.put(OpenAiResponsesJsonPolicy.FIELD_TOTAL_TOKENS, totalTokens);
+                if (isPositiveInt(usage.path(FIELD_PROMPT_TOKENS_DETAILS).get(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS))) {
                     ObjectNode details = JSON.createObjectNode();
-                    details.put("cached_tokens", usage.get("prompt_tokens_details").get("cached_tokens").asInt());
-                    respUsage.set("input_tokens_details", details);
+                    details.put(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS,
+                            usage.get(FIELD_PROMPT_TOKENS_DETAILS).get(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS).asInt());
+                    respUsage.set(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS_DETAILS, details);
                 }
-                if (isPositiveInt(usage.path("completion_tokens_details").get("reasoning_tokens"))) {
+                if (isPositiveInt(usage.path(FIELD_COMPLETION_TOKENS_DETAILS).get(FIELD_REASONING_TOKENS))) {
                     ObjectNode details = JSON.createObjectNode();
-                    details.put("reasoning_tokens", usage.get("completion_tokens_details").get("reasoning_tokens").asInt());
-                    respUsage.set("output_tokens_details", details);
+                    details.put(FIELD_REASONING_TOKENS,
+                            usage.get(FIELD_COMPLETION_TOKENS_DETAILS).get(FIELD_REASONING_TOKENS).asInt());
+                    respUsage.set(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS_DETAILS, details);
                 }
-                dst.set("usage", respUsage);
+                dst.set(OpenAiResponsesJsonPolicy.FIELD_USAGE, respUsage);
             }
 
             return dst;
@@ -343,6 +390,11 @@ public class ChatCompletionsToResponsesConverter {
      */
     public StreamTranslator createStreamToIR(String model) {
         return new ChatToIRStreamTranslator(model);
+    }
+
+    private static String randomOpenAiResponsesIdSuffix() {
+        return UUID.randomUUID().toString().replace("-", "")
+                .substring(0, OpenAiResponsesJsonPolicy.RESPONSE_ID_RANDOM_LENGTH);
     }
 
     // ========================
@@ -364,13 +416,13 @@ public class ChatCompletionsToResponsesConverter {
         private int outputIndex = 0;
         private int contentIndex = 0;
         private String currentItemId;
-        private String currentItemType = "message";
+        private String currentItemType = OpenAiResponsesJsonPolicy.TYPE_MESSAGE;
         private String currentCallId = "";
         private String currentFunctionName = "";
         private final StringBuilder currentFunctionArguments = new StringBuilder();
 
         private boolean hasToolCalls = false;
-        private String finishReason = "stop";
+        private String finishReason = FINISH_REASON_STOP;
         private int nextToolCallIndex = 0;
         private final List<String> pendingToolCallIds = new ArrayList<>();
         private final List<String> pendingToolCallNames = new ArrayList<>();
@@ -382,10 +434,10 @@ public class ChatCompletionsToResponsesConverter {
         private int reasoningTokens = 0;
 
         ChatToIRStreamTranslator(String model) {
-            this.model = model != null ? model : "unknown";
-            this.responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+            this.model = model != null ? model : DEFAULT_MODEL;
+            this.responseId = OpenAiResponsesJsonPolicy.RESPONSE_ID_PREFIX + randomOpenAiResponsesIdSuffix();
             this.createdAt = System.currentTimeMillis() / 1000;
-            this.currentItemId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+            this.currentItemId = OpenAiResponsesJsonPolicy.MESSAGE_ID_PREFIX + randomOpenAiResponsesIdSuffix();
         }
 
         private static class ToolCallState {
@@ -409,7 +461,8 @@ public class ChatCompletionsToResponsesConverter {
             List<String> output = new ArrayList<>();
             if (done || line == null || line.isBlank()) return output;
 
-            if ("data: [DONE]".equals(line)) {
+            String json = OpenAiResponsesSsePolicy.extractDataPayload(line);
+            if (OpenAiResponsesSsePolicy.isDoneSentinel(json)) {
                 // 流结束：关闭 open item，发送 completed
                 closeOpenItem(output);
                 closeOpenToolCalls(output);
@@ -418,113 +471,97 @@ public class ChatCompletionsToResponsesConverter {
                 return output;
             }
 
-            if (!line.startsWith("data: ")) return output;
-            String json = line.substring(6);
+            if (json == null) return output;
 
             try {
                 JsonNode chunk = JSON.readTree(json);
-                if (isNonNegativeLong(chunk.get("created"))) {
-                    createdAt = chunk.get("created").asLong();
+                if (isNonNegativeLong(chunk.get(FIELD_CREATED))) {
+                    createdAt = chunk.get(FIELD_CREATED).asLong();
                 }
-                if (!chunk.has("choices") || chunk.get("choices").size() == 0) {
+                if (!chunk.has(FIELD_CHOICES) || chunk.get(FIELD_CHOICES).size() == 0) {
                     // usage-only chunk
-                    if (chunk.has("usage")) {
-                        extractUsage(chunk.get("usage"));
+                    if (chunk.has(FIELD_USAGE)) {
+                        extractUsage(chunk.get(FIELD_USAGE));
                     }
                     return output;
                 }
 
-                JsonNode choice = chunk.get("choices").get(0);
-                JsonNode delta = choice.has("delta") ? choice.get("delta") : null;
+                JsonNode choice = chunk.get(FIELD_CHOICES).get(0);
+                JsonNode delta = choice.has(FIELD_DELTA) ? choice.get(FIELD_DELTA) : null;
 
-                if (chunk.has("usage")) {
-                    extractUsage(chunk.get("usage"));
+                if (chunk.has(FIELD_USAGE)) {
+                    extractUsage(chunk.get(FIELD_USAGE));
                 }
 
                 // role → 只触发 response.created；具体 output item 等到文本、推理或工具调用出现时再创建。
-                if (delta != null && delta.has("role")) {
+                if (delta != null && delta.has(FIELD_ROLE)) {
                     ensureCreatedSent(output);
                 }
 
                 // content → output_text.delta
-                if (delta != null && delta.has("content") && !delta.get("content").isNull()) {
-                    String text = textOrDefault(delta.get("content"), "");
+                if (delta != null && delta.has(FIELD_CONTENT) && !delta.get(FIELD_CONTENT).isNull()) {
+                    String text = textOrDefault(delta.get(FIELD_CONTENT), "");
                     if (!text.isEmpty()) {
-                        if (outputItemAdded && !"message".equals(currentItemType)) {
+                        if (outputItemAdded && !OpenAiResponsesJsonPolicy.TYPE_MESSAGE.equals(currentItemType)) {
                             if (closeOpenItem(output)) outputIndex++;
                         }
                         if (!outputItemAdded) {
                             ensureCreatedSent(output);
-                            currentItemId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
-                            appendEvent(output, "response.output_item.added",
-                                    fmt("{\"type\":\"response.output_item.added\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}",
-                                            sequenceNumber++, responseId, outputIndex, currentItemId));
+                            currentItemId = OpenAiResponsesJsonPolicy.MESSAGE_ID_PREFIX + randomOpenAiResponsesIdSuffix();
+                            appendMessageItemAdded(output, currentItemId);
                             outputItemAdded = true;
-                            currentItemType = "message";
+                            currentItemType = OpenAiResponsesJsonPolicy.TYPE_MESSAGE;
                         }
-                        appendEvent(output, "response.output_text.delta",
-                                fmt("{\"type\":\"response.output_text.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"content_index\":%d,\"delta\":\"%s\"}",
-                                        sequenceNumber++, responseId, currentItemId, outputIndex, contentIndex,
-                                        escapeJsonValue(text)));
+                        appendContentDelta(output, OpenAiResponsesSsePolicy.EVENT_OUTPUT_TEXT_DELTA, currentItemId, text);
                     }
                 }
 
                 // refusal → refusal.delta
-                if (delta != null && delta.has("refusal") && !delta.get("refusal").isNull()) {
-                    String refusal = textOrDefault(delta.get("refusal"), "");
+                if (delta != null && delta.has(FIELD_REFUSAL) && !delta.get(FIELD_REFUSAL).isNull()) {
+                    String refusal = textOrDefault(delta.get(FIELD_REFUSAL), "");
                     if (!refusal.isEmpty()) {
-                        if (outputItemAdded && !"message".equals(currentItemType)) {
+                        if (outputItemAdded && !OpenAiResponsesJsonPolicy.TYPE_MESSAGE.equals(currentItemType)) {
                             if (closeOpenItem(output)) outputIndex++;
                         }
                         if (!outputItemAdded) {
                             ensureCreatedSent(output);
-                            currentItemId = "msg_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
-                            appendEvent(output, "response.output_item.added",
-                                    fmt("{\"type\":\"response.output_item.added\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}",
-                                            sequenceNumber++, responseId, outputIndex, currentItemId));
+                            currentItemId = OpenAiResponsesJsonPolicy.MESSAGE_ID_PREFIX + randomOpenAiResponsesIdSuffix();
+                            appendMessageItemAdded(output, currentItemId);
                             outputItemAdded = true;
-                            currentItemType = "message";
+                            currentItemType = OpenAiResponsesJsonPolicy.TYPE_MESSAGE;
                         }
-                        appendEvent(output, "response.refusal.delta",
-                                fmt("{\"type\":\"response.refusal.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"content_index\":%d,\"delta\":\"%s\"}",
-                                        sequenceNumber++, responseId, currentItemId, outputIndex, contentIndex,
-                                        escapeJsonValue(refusal)));
+                        appendContentDelta(output, OpenAiResponsesSsePolicy.EVENT_REFUSAL_DELTA, currentItemId, refusal);
                     }
                 }
 
                 // reasoning_content → reasoning_summary_text.delta
-                if (delta != null && delta.has("reasoning_content") && !delta.get("reasoning_content").isNull()) {
-                    String rc = textOrDefault(delta.get("reasoning_content"), "");
+                if (delta != null && delta.has(FIELD_REASONING_CONTENT) && !delta.get(FIELD_REASONING_CONTENT).isNull()) {
+                    String rc = textOrDefault(delta.get(FIELD_REASONING_CONTENT), "");
                     if (!rc.isEmpty()) {
-                        if (outputItemAdded && !"reasoning".equals(currentItemType)) {
+                        if (outputItemAdded && !OpenAiResponsesJsonPolicy.TYPE_REASONING.equals(currentItemType)) {
                             if (closeOpenItem(output)) outputIndex++;
                         }
                         if (!outputItemAdded) {
                             ensureCreatedSent(output);
-                            currentItemId = "rsn_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
-                            appendEvent(output, "response.output_item.added",
-                                    fmt("{\"type\":\"response.output_item.added\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"in_progress\",\"summary\":[]}}",
-                                            sequenceNumber++, responseId, outputIndex, currentItemId));
+                            currentItemId = OpenAiResponsesJsonPolicy.REASONING_ID_PREFIX + randomOpenAiResponsesIdSuffix();
+                            appendReasoningItemAdded(output, currentItemId);
                             outputItemAdded = true;
-                            currentItemType = "reasoning";
+                            currentItemType = OpenAiResponsesJsonPolicy.TYPE_REASONING;
                         }
-                        appendEvent(output, "response.reasoning_summary_text.delta",
-                                fmt("{\"type\":\"response.reasoning_summary_text.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"summary_index\":0,\"delta\":\"%s\"}",
-                                        sequenceNumber++, responseId, currentItemId, outputIndex,
-                                        escapeJsonValue(rc)));
+                        appendReasoningDelta(output, currentItemId, rc);
                     }
                 }
 
                 // tool_calls → output_item.added + function_call_arguments.delta
                 // Chat 流式工具调用可按 index 并行/交错输出，因此每个 index 独立累积参数。
-                if (delta != null && delta.has("tool_calls") && delta.get("tool_calls").isArray()) {
-                    for (JsonNode tc : delta.get("tool_calls")) {
-                        int tcIndex = nonNegativeIntOrDefault(tc.get("index"), nextToolCallIndex);
+                if (delta != null && delta.has(FIELD_TOOL_CALLS) && delta.get(FIELD_TOOL_CALLS).isArray()) {
+                    for (JsonNode tc : delta.get(FIELD_TOOL_CALLS)) {
+                        int tcIndex = nonNegativeIntOrDefault(tc.get(FIELD_INDEX), nextToolCallIndex);
 
                         // 新增 tool_call
-                        if (tc.has("id") && tc.has("function") && tc.get("function").has("name")) {
-                            String callId = textOrDefault(tc.get("id"), "");
-                            String funcName = textOrDefault(tc.get("function").get("name"), "");
+                        if (tc.has(FIELD_ID) && tc.has(FIELD_FUNCTION) && tc.get(FIELD_FUNCTION).has(FIELD_NAME)) {
+                            String callId = textOrDefault(tc.get(FIELD_ID), "");
+                            String funcName = textOrDefault(tc.get(FIELD_FUNCTION).get(FIELD_NAME), "");
                             if (callId.isBlank() || funcName.isBlank()) {
                                 log.debug("Chat→Responses stream: tool_call missing id or name, ignored");
                                 continue;
@@ -544,8 +581,8 @@ public class ChatCompletionsToResponsesConverter {
                         }
 
                         // function.arguments → function_call_arguments.delta
-                        if (tc.has("function") && tc.get("function").has("arguments")) {
-                            String args = textOrDefault(tc.get("function").get("arguments"), "");
+                        if (tc.has(FIELD_FUNCTION) && tc.get(FIELD_FUNCTION).has(FIELD_ARGUMENTS)) {
+                            String args = textOrDefault(tc.get(FIELD_FUNCTION).get(FIELD_ARGUMENTS), "");
                             if (!args.isEmpty()) {
                                 ToolCallState state = toolCallStates.get(tcIndex);
                                 if (state == null) {
@@ -553,20 +590,17 @@ public class ChatCompletionsToResponsesConverter {
                                     continue;
                                 }
                                 state.arguments.append(args);
-                                appendEvent(output, "response.function_call_arguments.delta",
-                                        fmt("{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"delta\":\"%s\"}",
-                                                sequenceNumber++, responseId, state.itemId, state.outputIndex,
-                                                escapeJsonValue(args)));
+                                appendFunctionArgumentsDelta(output, state.itemId, state.outputIndex, args);
                             }
                         }
                     }
                 }
 
                 // legacy function_call → function_call item
-                if (delta != null && delta.has("function_call") && delta.get("function_call").isObject()) {
-                    JsonNode fc = delta.get("function_call");
+                if (delta != null && delta.has(FIELD_FUNCTION_CALL) && delta.get(FIELD_FUNCTION_CALL).isObject()) {
+                    JsonNode fc = delta.get(FIELD_FUNCTION_CALL);
                     int tcIndex = 0;
-                    String funcName = textOrDefault(fc.get("name"), "");
+                    String funcName = textOrDefault(fc.get(FIELD_NAME), "");
                     ToolCallState state = toolCallStates.get(tcIndex);
                     if (!funcName.isBlank()) {
                         state = ensureToolCallState(output, tcIndex, funcName, funcName);
@@ -575,23 +609,20 @@ public class ChatCompletionsToResponsesConverter {
                         log.debug("Chat→Responses stream: legacy function_call missing name, ignored");
                         return output;
                     }
-                    if (fc.has("arguments")) {
-                        String args = textOrDefault(fc.get("arguments"), "");
+                    if (fc.has(FIELD_ARGUMENTS)) {
+                        String args = textOrDefault(fc.get(FIELD_ARGUMENTS), "");
                         if (!args.isEmpty()) {
                             state.arguments.append(args);
-                            appendEvent(output, "response.function_call_arguments.delta",
-                                    fmt("{\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"delta\":\"%s\"}",
-                                            sequenceNumber++, responseId, state.itemId, state.outputIndex,
-                                            escapeJsonValue(args)));
+                            appendFunctionArgumentsDelta(output, state.itemId, state.outputIndex, args);
                         }
                     }
                 }
 
                 // finish_reason → 关闭当前 item；等待后续 usage-only chunk 和最终 [DONE] 再完成响应。
-                if (choice.has("finish_reason") && !choice.get("finish_reason").isNull()
-                        && choice.get("finish_reason").isTextual()
-                        && !"null".equals(choice.get("finish_reason").asText())) {
-                    finishReason = choice.get("finish_reason").asText();
+                if (choice.has(FIELD_FINISH_REASON) && !choice.get(FIELD_FINISH_REASON).isNull()
+                        && choice.get(FIELD_FINISH_REASON).isTextual()
+                        && !"null".equals(choice.get(FIELD_FINISH_REASON).asText())) {
+                    finishReason = choice.get(FIELD_FINISH_REASON).asText();
                     closeOpenItem(output);
                     closeOpenToolCalls(output);
                 }
@@ -604,7 +635,8 @@ public class ChatCompletionsToResponsesConverter {
         private ToolCallState ensureToolCallState(List<String> output, int tcIndex, String callId, String funcName) {
             ToolCallState existing = toolCallStates.get(tcIndex);
             if (existing != null) {
-                if (existing.callId == null || existing.callId.isBlank() || existing.callId.startsWith("call_")) {
+                if (existing.callId == null || existing.callId.isBlank()
+                        || existing.callId.startsWith(ID_PREFIX_TOOL_CALL)) {
                     existing.callId = callId;
                 }
                 if (existing.name == null || existing.name.isBlank()) {
@@ -617,71 +649,64 @@ public class ChatCompletionsToResponsesConverter {
                 if (closeOpenItem(output)) outputIndex++;
             }
 
-            String itemId = "item_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
+            String itemId = OpenAiResponsesJsonPolicy.ITEM_ID_PREFIX + randomOpenAiResponsesIdSuffix();
             ToolCallState state = new ToolCallState(outputIndex++, itemId, callId, funcName);
             toolCallStates.put(tcIndex, state);
 
             ensureCreatedSent(output);
-            appendEvent(output, "response.output_item.added",
-                    fmt("{\"type\":\"response.output_item.added\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"status\":\"in_progress\"}}",
-                            sequenceNumber++, responseId, state.outputIndex, state.itemId,
-                            escapeJsonValue(state.callId), escapeJsonValue(state.name)));
+            appendFunctionCallItemAdded(output, state);
             return state;
         }
 
         private void closeOpenToolCalls(List<String> output) {
             for (ToolCallState state : toolCallStates.values()) {
                 if (state.done) continue;
-                String args = state.arguments.length() > 0 ? state.arguments.toString() : "{}";
-                appendEvent(output, "response.function_call_arguments.done",
-                        fmt("{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"arguments\":\"%s\"}",
-                                sequenceNumber++, responseId, state.itemId, state.outputIndex,
-                                escapeJsonValue(args)));
-                appendEvent(output, "response.output_item.done",
-                        fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"arguments\":\"%s\",\"status\":\"completed\"}}",
-                                sequenceNumber++, responseId, state.outputIndex, state.itemId,
-                                escapeJsonValue(state.callId), escapeJsonValue(state.name),
-                                escapeJsonValue(args)));
+                String args = state.arguments.length() > 0 ? state.arguments.toString() : DEFAULT_FUNCTION_ARGUMENTS;
+                appendFunctionArgumentsDone(output, state.itemId, state.outputIndex, args);
+                appendFunctionCallItemDone(output, state.itemId, state.outputIndex, state.callId, state.name, args);
                 state.done = true;
             }
         }
 
         private void ensureCreatedSent(List<String> output) {
             if (!createdSent) {
-                appendEvent(output, "response.created",
-                        fmt("{\"type\":\"response.created\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"in_progress\",\"output\":[],\"usage\":null}}",
-                                sequenceNumber++, responseId, escapeJsonValue(model), createdAt));
+                ObjectNode event = baseResponsesEvent(OpenAiResponsesSsePolicy.EVENT_RESPONSE_CREATED);
+                ObjectNode response = JSON.createObjectNode();
+                response.put(OpenAiResponsesJsonPolicy.FIELD_ID, responseId);
+                response.put(OpenAiResponsesJsonPolicy.FIELD_OBJECT, OpenAiResponsesJsonPolicy.OBJECT_RESPONSE);
+                response.put(OpenAiResponsesJsonPolicy.FIELD_MODEL, model);
+                response.put(OpenAiResponsesJsonPolicy.FIELD_CREATED_AT, createdAt);
+                response.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+                response.set(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, JSON.createArrayNode());
+                response.putNull(OpenAiResponsesJsonPolicy.FIELD_USAGE);
+                event.set(OpenAiResponsesJsonPolicy.FIELD_RESPONSE, response);
+                appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_RESPONSE_CREATED, event);
                 createdSent = true;
             }
         }
 
         private boolean closeOpenItem(List<String> output) {
             if (outputItemAdded) {
-                if ("function_call".equals(currentItemType)) {
-                    String args = currentFunctionArguments.length() > 0 ? currentFunctionArguments.toString() : "{}";
-                    appendEvent(output, "response.function_call_arguments.done",
-                            fmt("{\"type\":\"response.function_call_arguments.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"arguments\":\"%s\"}",
-                                    sequenceNumber++, responseId, currentItemId, outputIndex,
-                                    escapeJsonValue(args)));
-                    appendEvent(output, "response.output_item.done",
-                            fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"function_call\",\"call_id\":\"%s\",\"name\":\"%s\",\"arguments\":\"%s\",\"status\":\"completed\"}}",
-                                    sequenceNumber++, responseId, outputIndex, currentItemId,
-                                    escapeJsonValue(currentCallId), escapeJsonValue(currentFunctionName),
-                                    escapeJsonValue(args)));
-                } else if ("reasoning".equals(currentItemType)) {
-                    appendEvent(output, "response.reasoning_summary_text.done",
-                            fmt("{\"type\":\"response.reasoning_summary_text.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"item_id\":\"%s\",\"output_index\":%d,\"summary_index\":0}",
-                                    sequenceNumber++, responseId, currentItemId, outputIndex));
-                    appendEvent(output, "response.output_item.done",
-                            fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"reasoning\",\"status\":\"completed\"}}",
-                                    sequenceNumber++, responseId, outputIndex, currentItemId));
+                if (OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL.equals(currentItemType)) {
+                    String args = currentFunctionArguments.length() > 0
+                            ? currentFunctionArguments.toString()
+                            : DEFAULT_FUNCTION_ARGUMENTS;
+                    appendFunctionArgumentsDone(output, currentItemId, outputIndex, args);
+                    appendFunctionCallItemDone(output, currentItemId, outputIndex,
+                            currentCallId, currentFunctionName, args);
+                } else if (OpenAiResponsesJsonPolicy.TYPE_REASONING.equals(currentItemType)) {
+                    appendReasoningDone(output, currentItemId);
+                    ObjectNode item = responseItem(currentItemId, OpenAiResponsesJsonPolicy.TYPE_REASONING,
+                            OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+                    appendOutputItemDone(output, outputIndex, item);
                 } else {
-                    appendEvent(output, "response.output_item.done",
-                            fmt("{\"type\":\"response.output_item.done\",\"sequence_number\":%d,\"response_id\":\"%s\",\"output_index\":%d,\"item\":{\"id\":\"%s\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\"}}",
-                                    sequenceNumber++, responseId, outputIndex, currentItemId));
+                    ObjectNode item = responseItem(currentItemId, OpenAiResponsesJsonPolicy.TYPE_MESSAGE,
+                            OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+                    item.put(OpenAiResponsesJsonPolicy.FIELD_ROLE, OpenAiResponsesJsonPolicy.ROLE_ASSISTANT);
+                    appendOutputItemDone(output, outputIndex, item);
                 }
                 outputItemAdded = false;
-                currentItemType = "message";
+                currentItemType = OpenAiResponsesJsonPolicy.TYPE_MESSAGE;
                 currentCallId = "";
                 currentFunctionName = "";
                 currentFunctionArguments.setLength(0);
@@ -691,34 +716,177 @@ public class ChatCompletionsToResponsesConverter {
         }
 
         private void appendCompleted(List<String> output) {
-            String status = isIncompleteFinishReason(finishReason) ? "incomplete" : "completed";
-            String incompleteDetails = isIncompleteFinishReason(finishReason)
-                    ? fmt(",\"incomplete_details\":{\"reason\":\"%s\"}",
-                            mapChatFinishReasonToResponsesIncompleteReason(finishReason))
-                    : "";
-            String cacheDetails = cachedTokens > 0
-                    ? fmt(",\"input_tokens_details\":{\"cached_tokens\":%d}", cachedTokens)
-                    : "";
-            String outputDetails = reasoningTokens > 0
-                    ? fmt(",\"output_tokens_details\":{\"reasoning_tokens\":%d}", reasoningTokens)
-                    : "";
-            String eventType = "incomplete".equals(status) ? "response.incomplete" : "response.completed";
-            appendEvent(output, eventType,
-                    fmt("{\"type\":\"%s\",\"sequence_number\":%d,\"response\":{\"id\":\"%s\",\"object\":\"response\",\"model\":\"%s\",\"created_at\":%d,\"status\":\"%s\"%s,\"usage\":{\"input_tokens\":%d,\"output_tokens\":%d,\"total_tokens\":%d%s%s}}}",
-                            eventType, sequenceNumber++, responseId, escapeJsonValue(model), createdAt, status, incompleteDetails,
-                            inputTokens, outputTokens, inputTokens + outputTokens, cacheDetails, outputDetails));
+            String status = OpenAiChatCompletionsBodyPolicy.isIncompleteFinishReason(finishReason)
+                    ? OpenAiResponsesJsonPolicy.STATUS_INCOMPLETE
+                    : OpenAiResponsesJsonPolicy.STATUS_COMPLETED;
+            String eventType = OpenAiResponsesJsonPolicy.STATUS_INCOMPLETE.equals(status)
+                    ? OpenAiResponsesSsePolicy.EVENT_RESPONSE_INCOMPLETE
+                    : OpenAiResponsesSsePolicy.EVENT_RESPONSE_COMPLETED;
+            ObjectNode event = baseResponsesEvent(eventType);
+            ObjectNode response = JSON.createObjectNode();
+            response.put(OpenAiResponsesJsonPolicy.FIELD_ID, responseId);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_OBJECT, OpenAiResponsesJsonPolicy.OBJECT_RESPONSE);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_MODEL, model);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_CREATED_AT, createdAt);
+            response.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, status);
+            if (OpenAiResponsesJsonPolicy.STATUS_INCOMPLETE.equals(status)) {
+                ObjectNode incompleteDetails = JSON.createObjectNode();
+                incompleteDetails.put(OpenAiResponsesJsonPolicy.FIELD_REASON,
+                        mapChatFinishReasonToResponsesIncompleteReason(finishReason));
+                response.set(OpenAiResponsesJsonPolicy.FIELD_INCOMPLETE_DETAILS, incompleteDetails);
+            }
+            response.set(OpenAiResponsesJsonPolicy.FIELD_USAGE, responseUsage());
+            event.set(OpenAiResponsesJsonPolicy.FIELD_RESPONSE, response);
+            appendJsonEvent(output, eventType, event);
+        }
+
+        private void appendMessageItemAdded(List<String> output, String itemId) {
+            ObjectNode item = responseItem(itemId, OpenAiResponsesJsonPolicy.TYPE_MESSAGE,
+                    OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_ROLE, OpenAiResponsesJsonPolicy.ROLE_ASSISTANT);
+            item.set(OpenAiResponsesJsonPolicy.FIELD_CONTENT, JSON.createArrayNode());
+            appendOutputItemAdded(output, outputIndex, item);
+        }
+
+        private void appendReasoningItemAdded(List<String> output, String itemId) {
+            ObjectNode item = responseItem(itemId, OpenAiResponsesJsonPolicy.TYPE_REASONING,
+                    OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+            item.set(OpenAiResponsesJsonPolicy.FIELD_SUMMARY, JSON.createArrayNode());
+            appendOutputItemAdded(output, outputIndex, item);
+        }
+
+        private void appendFunctionCallItemAdded(List<String> output, ToolCallState state) {
+            ObjectNode item = responseItem(state.itemId, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL,
+                    OpenAiResponsesJsonPolicy.STATUS_IN_PROGRESS);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, state.callId);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_NAME, state.name);
+            appendOutputItemAdded(output, state.outputIndex, item);
+        }
+
+        private void appendOutputItemAdded(List<String> output, int itemOutputIndex, ObjectNode item) {
+            ObjectNode event = baseResponseIdEvent(OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_ADDED);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_INDEX, itemOutputIndex);
+            event.set(OpenAiResponsesJsonPolicy.FIELD_ITEM, item);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_ADDED, event);
+        }
+
+        private void appendOutputItemDone(List<String> output, int itemOutputIndex, ObjectNode item) {
+            ObjectNode event = baseResponseIdEvent(OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_DONE);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_INDEX, itemOutputIndex);
+            event.set(OpenAiResponsesJsonPolicy.FIELD_ITEM, item);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_OUTPUT_ITEM_DONE, event);
+        }
+
+        private void appendContentDelta(List<String> output, String eventType, String itemId, String delta) {
+            ObjectNode event = baseItemEvent(eventType, itemId, outputIndex);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_CONTENT_INDEX, contentIndex);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_DELTA, delta);
+            appendJsonEvent(output, eventType, event);
+        }
+
+        private void appendReasoningDelta(List<String> output, String itemId, String delta) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DELTA,
+                    itemId, outputIndex);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_SUMMARY_INDEX, 0);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_DELTA, delta);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DELTA, event);
+        }
+
+        private void appendReasoningDone(List<String> output, String itemId) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DONE,
+                    itemId, outputIndex);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_SUMMARY_INDEX, 0);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_REASONING_SUMMARY_TEXT_DONE, event);
+        }
+
+        private void appendFunctionArgumentsDelta(List<String> output, String itemId, int itemOutputIndex, String delta) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DELTA,
+                    itemId, itemOutputIndex);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_DELTA, delta);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DELTA, event);
+        }
+
+        private void appendFunctionArgumentsDone(List<String> output, String itemId, int itemOutputIndex, String arguments) {
+            ObjectNode event = baseItemEvent(OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DONE,
+                    itemId, itemOutputIndex);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS, arguments);
+            appendJsonEvent(output, OpenAiResponsesSsePolicy.EVENT_FUNCTION_CALL_ARGUMENTS_DONE, event);
+        }
+
+        private void appendFunctionCallItemDone(List<String> output, String itemId, int itemOutputIndex,
+                                                String callId, String name, String arguments) {
+            ObjectNode item = responseItem(itemId, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL,
+                    OpenAiResponsesJsonPolicy.STATUS_COMPLETED);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, callId);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_NAME, name);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS, arguments);
+            appendOutputItemDone(output, itemOutputIndex, item);
+        }
+
+        private ObjectNode baseResponsesEvent(String eventType) {
+            ObjectNode event = JSON.createObjectNode();
+            event.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, eventType);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_SEQUENCE_NUMBER, sequenceNumber++);
+            return event;
+        }
+
+        private ObjectNode baseResponseIdEvent(String eventType) {
+            ObjectNode event = baseResponsesEvent(eventType);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_RESPONSE_ID, responseId);
+            return event;
+        }
+
+        private ObjectNode baseItemEvent(String eventType, String itemId, int itemOutputIndex) {
+            ObjectNode event = baseResponseIdEvent(eventType);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_ITEM_ID, itemId);
+            event.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_INDEX, itemOutputIndex);
+            return event;
+        }
+
+        private ObjectNode responseItem(String itemId, String type, String status) {
+            ObjectNode item = JSON.createObjectNode();
+            item.put(OpenAiResponsesJsonPolicy.FIELD_ID, itemId);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, type);
+            item.put(OpenAiResponsesJsonPolicy.FIELD_STATUS, status);
+            return item;
+        }
+
+        private ObjectNode responseUsage() {
+            ObjectNode usage = JSON.createObjectNode();
+            usage.put(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS, inputTokens);
+            usage.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS, outputTokens);
+            usage.put(OpenAiResponsesJsonPolicy.FIELD_TOTAL_TOKENS, inputTokens + outputTokens);
+            if (cachedTokens > 0) {
+                ObjectNode details = JSON.createObjectNode();
+                details.put(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS, cachedTokens);
+                usage.set(OpenAiResponsesJsonPolicy.FIELD_INPUT_TOKENS_DETAILS, details);
+            }
+            if (reasoningTokens > 0) {
+                ObjectNode details = JSON.createObjectNode();
+                details.put(FIELD_REASONING_TOKENS, reasoningTokens);
+                usage.set(OpenAiResponsesJsonPolicy.FIELD_OUTPUT_TOKENS_DETAILS, details);
+            }
+            return usage;
+        }
+
+        private void appendJsonEvent(List<String> output, String eventType, ObjectNode event) {
+            appendEvent(output, eventType, event.toString());
         }
 
         private void extractUsage(JsonNode usage) {
-            if (isNonNegativeInt(usage.get("prompt_tokens"))) inputTokens = usage.get("prompt_tokens").asInt();
-            if (isNonNegativeInt(usage.get("completion_tokens"))) outputTokens = usage.get("completion_tokens").asInt();
-            if (usage.has("prompt_tokens_details")
-                    && isNonNegativeInt(usage.get("prompt_tokens_details").get("cached_tokens"))) {
-                cachedTokens = usage.get("prompt_tokens_details").get("cached_tokens").asInt();
+            if (isNonNegativeInt(usage.get(FIELD_PROMPT_TOKENS))) inputTokens = usage.get(FIELD_PROMPT_TOKENS).asInt();
+            if (isNonNegativeInt(usage.get(FIELD_COMPLETION_TOKENS))) {
+                outputTokens = usage.get(FIELD_COMPLETION_TOKENS).asInt();
             }
-            if (usage.has("completion_tokens_details")
-                    && isNonNegativeInt(usage.get("completion_tokens_details").get("reasoning_tokens"))) {
-                reasoningTokens = usage.get("completion_tokens_details").get("reasoning_tokens").asInt();
+            if (usage.has(FIELD_PROMPT_TOKENS_DETAILS)
+                    && isNonNegativeInt(usage.get(FIELD_PROMPT_TOKENS_DETAILS)
+                    .get(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS))) {
+                cachedTokens = usage.get(FIELD_PROMPT_TOKENS_DETAILS)
+                        .get(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS).asInt();
+            }
+            if (usage.has(FIELD_COMPLETION_TOKENS_DETAILS)
+                    && isNonNegativeInt(usage.get(FIELD_COMPLETION_TOKENS_DETAILS).get(FIELD_REASONING_TOKENS))) {
+                reasoningTokens = usage.get(FIELD_COMPLETION_TOKENS_DETAILS).get(FIELD_REASONING_TOKENS).asInt();
             }
         }
 
@@ -736,26 +904,21 @@ public class ChatCompletionsToResponsesConverter {
      */
     private static void convertChatInstructionMessage(String role, JsonNode contentNode, ArrayNode input) {
         ObjectNode item = JSON.createObjectNode();
-        item.put("role", role);
+        item.put(FIELD_ROLE, role);
 
         if (contentNode == null) {
-            item.put("content", "");
+            item.put(FIELD_CONTENT, "");
         } else if (contentNode.isTextual()) {
-            item.put("content", contentNode.asText());
+            item.put(FIELD_CONTENT, contentNode.asText());
         } else if (contentNode.isArray()) {
-            // 数组格式 → 提取文本
-            StringBuilder sb = new StringBuilder();
+            ArrayNode parts = JSON.createArrayNode();
             for (JsonNode part : contentNode) {
-                if ("text".equals(textOrDefault(part.get("type"), ""))
-                        && !isBlankText(part.get("text"))) {
-                    if (sb.length() > 0) sb.append("\n");
-                    sb.append(part.get("text").asText());
-                }
+                appendChatInputContentPart(part, parts, false);
             }
-            if (sb.length() == 0) {
+            if (parts.size() == 0) {
                 return;
             }
-            item.put("content", sb.toString());
+            item.set(FIELD_CONTENT, parts);
         } else {
             return;
         }
@@ -767,72 +930,83 @@ public class ChatCompletionsToResponsesConverter {
      */
     private static void convertChatUserMessage(JsonNode contentNode, ArrayNode input) {
         ObjectNode item = JSON.createObjectNode();
-        item.put("role", "user");
+        item.put(FIELD_ROLE, ROLE_USER);
 
         if (contentNode == null) {
-            item.put("content", "");
+            item.put(FIELD_CONTENT, "");
         } else if (contentNode.isTextual()) {
-            item.put("content", contentNode.asText());
+            item.put(FIELD_CONTENT, contentNode.asText());
         } else if (contentNode.isArray()) {
             ArrayNode parts = JSON.createArrayNode();
             for (JsonNode part : contentNode) {
-                String partType = textOrDefault(part.get("type"), "");
-                switch (partType) {
-                    case "text" -> {
-                        if (isBlankText(part.get("text"))) {
-                            break;
-                        }
-                        ObjectNode p = JSON.createObjectNode();
-                        p.put("type", "input_text");
-                        p.put("text", part.get("text").asText());
-                        parts.add(p);
-                    }
-                    case "image_url" -> {
-                        JsonNode imageUrl = part.get("image_url");
-                        if (imageUrl != null && imageUrl.isObject() && !isBlankText(imageUrl.get("url"))) {
-                            String url = imageUrl.get("url").asText();
-                            if (!isEmptyBase64DataURI(url)) {
-                                ObjectNode p = JSON.createObjectNode();
-                                p.put("type", "input_image");
-                                p.put("image_url", url);
-                                String detail = normalizeImageDetail(imageUrl.get("detail"));
-                                if (detail != null) {
-                                    p.put("detail", detail);
-                                }
-                                parts.add(p);
-                            }
-                        }
-                    }
-                    case "input_audio" -> {
-                        JsonNode inputAudio = part.get("input_audio");
-                        if (inputAudio != null && inputAudio.isObject() && hasChatAudioPayload(inputAudio)) {
-                            ObjectNode p = JSON.createObjectNode();
-                            p.put("type", "input_audio");
-                            p.set("input_audio", inputAudio);
-                            parts.add(p);
-                        }
-                    }
-                    case "file" -> {
-                        JsonNode file = part.get("file");
-                        if (file != null && file.isObject() && hasChatFilePayload(file)) {
-                            ObjectNode p = JSON.createObjectNode();
-                            p.put("type", "input_file");
-                            copyTextIfExists(file, p, "file_data");
-                            copyTextIfExists(file, p, "file_id");
-                            copyTextIfExists(file, p, "filename");
-                            parts.add(p);
-                        }
-                    }
-                    default ->
-                        log.debug("Chat→Responses: unknown content part type '{}'", partType);
-                }
+                appendChatInputContentPart(part, parts, true);
             }
             if (parts.size() == 0) {
                 return;
             }
-            item.set("content", parts);
+            item.set(FIELD_CONTENT, parts);
+        } else {
+            return;
         }
         input.add(item);
+    }
+
+    private static void appendChatInputContentPart(JsonNode part, ArrayNode parts, boolean includeLandGateExtensions) {
+        String partType = textOrDefault(part.get(FIELD_TYPE), "");
+        switch (partType) {
+            case TYPE_TEXT -> {
+                if (isBlankText(part.get(FIELD_TEXT))) {
+                    break;
+                }
+                ObjectNode p = JSON.createObjectNode();
+                p.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_INPUT_TEXT);
+                p.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, part.get(FIELD_TEXT).asText());
+                parts.add(p);
+            }
+            case TYPE_IMAGE_URL -> {
+                JsonNode imageUrl = part.get(FIELD_IMAGE_URL);
+                if (imageUrl != null && imageUrl.isObject() && !isBlankText(imageUrl.get(FIELD_URL))) {
+                    String url = imageUrl.get(FIELD_URL).asText();
+                    if (!isEmptyBase64DataURI(url)) {
+                        ObjectNode p = JSON.createObjectNode();
+                        p.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_INPUT_IMAGE);
+                        p.put(OpenAiResponsesBodyPolicy.FIELD_IMAGE_URL, url);
+                        String detail = normalizeImageDetail(imageUrl.get(FIELD_DETAIL));
+                        if (detail != null) {
+                            p.put(FIELD_DETAIL, detail);
+                        }
+                        parts.add(p);
+                    }
+                }
+            }
+            case TYPE_INPUT_AUDIO -> {
+                if (!includeLandGateExtensions) {
+                    break;
+                }
+                JsonNode inputAudio = part.get(FIELD_INPUT_AUDIO);
+                if (inputAudio != null && inputAudio.isObject() && hasChatAudioPayload(inputAudio)) {
+                    ObjectNode p = JSON.createObjectNode();
+                    p.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, TYPE_INPUT_AUDIO);
+                    p.set(FIELD_INPUT_AUDIO, inputAudio);
+                    parts.add(p);
+                }
+            }
+            case TYPE_FILE -> {
+                if (!includeLandGateExtensions) {
+                    break;
+                }
+                JsonNode file = part.get(FIELD_FILE);
+                if (file != null && file.isObject() && hasChatFilePayload(file)) {
+                    ObjectNode p = JSON.createObjectNode();
+                    p.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_INPUT_FILE);
+                    copyTextIfExists(file, p, FIELD_FILE_DATA);
+                    copyTextIfExists(file, p, FIELD_FILE_ID);
+                    copyTextIfExists(file, p, FIELD_FILENAME);
+                    parts.add(p);
+                }
+            }
+            default -> log.debug("Chat→Responses: unknown content part type '{}'", partType);
+        }
     }
 
     /**
@@ -841,120 +1015,100 @@ public class ChatCompletionsToResponsesConverter {
     private static void convertChatAssistantMessage(JsonNode msg, ArrayNode input) {
         // 对齐 sub2api：assistant 历史 thinking/reasoning content 作为显式标签文本保留，
         // 不构造 Responses reasoning input item，避免 Codex internal 对输入 item 类型挑剔。
-        String contentText = parseAssistantContent(msg.get("content"));
-        String reasoningContent = textOrDefault(msg.get("reasoning_content"), "");
+        String contentText = parseAssistantContent(msg.get(FIELD_CONTENT));
+        String reasoningContent = textOrDefault(msg.get(FIELD_REASONING_CONTENT), "");
 
         StringBuilder fullContent = new StringBuilder();
         if (contentText != null && !contentText.isEmpty()) {
             fullContent.append(contentText);
         }
         if (reasoningContent != null && !reasoningContent.isEmpty()) {
-            fullContent.append("<thinking>").append(reasoningContent).append("</thinking>");
+            fullContent.append(THINKING_OPEN_TAG).append(reasoningContent).append(THINKING_CLOSE_TAG);
         }
 
         // assistant message item（非空文本时）
         if (fullContent.length() > 0) {
             ObjectNode item = JSON.createObjectNode();
-            item.put("type", "message");
-            item.put("role", "assistant");
+            item.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_MESSAGE);
+            item.put(FIELD_ROLE, ROLE_ASSISTANT);
             ArrayNode parts = JSON.createArrayNode();
             ObjectNode part = JSON.createObjectNode();
-            part.put("type", "output_text");
-            part.put("text", fullContent.toString());
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_OUTPUT_TEXT);
+            part.put(OpenAiResponsesJsonPolicy.FIELD_TEXT, fullContent.toString());
             parts.add(part);
-            item.set("content", parts);
+            item.set(FIELD_CONTENT, parts);
             input.add(item);
         }
 
         // tool_calls → function_call/custom_tool_call items
-        if (msg.has("tool_calls") && msg.get("tool_calls").isArray()) {
-            for (JsonNode tc : msg.get("tool_calls")) {
-                if (isBlankText(tc.get("id"))) {
+        if (msg.has(FIELD_TOOL_CALLS) && msg.get(FIELD_TOOL_CALLS).isArray()) {
+            for (JsonNode tc : msg.get(FIELD_TOOL_CALLS)) {
+                if (isBlankText(tc.get(FIELD_ID))) {
                     log.debug("Chat→Responses request: tool_call missing id, ignored");
                     continue;
                 }
                 ObjectNode toolItem = JSON.createObjectNode();
-                toolItem.put("call_id", tc.get("id").asText());
-                if ("custom".equals(tc.path("type").asText("")) && tc.has("custom")) {
-                    JsonNode custom = tc.get("custom");
-                    if (isBlankText(custom.get("name"))) {
+                toolItem.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, tc.get(FIELD_ID).asText());
+                if (TYPE_CUSTOM.equals(tc.path(FIELD_TYPE).asText("")) && tc.has(FIELD_CUSTOM)) {
+                    JsonNode custom = tc.get(FIELD_CUSTOM);
+                    if (isBlankText(custom.get(FIELD_NAME))) {
                         log.debug("Chat→Responses request: custom tool_call missing name, ignored");
                         continue;
                     }
-                    toolItem.put("type", "custom_tool_call");
-                    toolItem.put("name", custom.get("name").asText());
-                    toolItem.put("input", textOrDefault(custom.get("input"), ""));
-                } else if (tc.has("function")) {
-                    JsonNode func = tc.get("function");
-                    if (isBlankText(func.get("name"))) {
+                    toolItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_CUSTOM_TOOL_CALL);
+                    toolItem.put(OpenAiResponsesJsonPolicy.FIELD_NAME, custom.get(FIELD_NAME).asText());
+                    toolItem.put(FIELD_INPUT, textOrDefault(custom.get(FIELD_INPUT), ""));
+                } else if (tc.has(FIELD_FUNCTION)) {
+                    JsonNode func = tc.get(FIELD_FUNCTION);
+                    if (isBlankText(func.get(FIELD_NAME))) {
                         log.debug("Chat→Responses request: function tool_call missing name, ignored");
                         continue;
                     }
-                    toolItem.put("type", "function_call");
-                    toolItem.put("name", func.get("name").asText());
-                    String args = textOrDefault(func.get("arguments"), "{}");
-                    toolItem.put("arguments", args.isEmpty() ? "{}" : args);
+                    toolItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL);
+                    toolItem.put(OpenAiResponsesJsonPolicy.FIELD_NAME, func.get(FIELD_NAME).asText());
+                    String args = textOrDefault(func.get(FIELD_ARGUMENTS), DEFAULT_FUNCTION_ARGUMENTS);
+                    toolItem.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS,
+                            args.isEmpty() ? DEFAULT_FUNCTION_ARGUMENTS : args);
                 } else {
                     log.debug("Chat→Responses request: tool_call missing function/custom payload, ignored");
                     continue;
                 }
                 input.add(toolItem);
             }
-        } else if (msg.has("function_call") && msg.get("function_call").isObject()) {
-            JsonNode fc = msg.get("function_call");
-            if (isBlankText(fc.get("name"))) {
+        } else if (msg.has(FIELD_FUNCTION_CALL) && msg.get(FIELD_FUNCTION_CALL).isObject()) {
+            JsonNode fc = msg.get(FIELD_FUNCTION_CALL);
+            if (isBlankText(fc.get(FIELD_NAME))) {
                 log.debug("Chat→Responses request: legacy function_call missing name, ignored");
                 return;
             }
             ObjectNode funcItem = JSON.createObjectNode();
-            funcItem.put("type", "function_call");
-            String name = fc.get("name").asText();
-            funcItem.put("call_id", name);
-            funcItem.put("name", name);
-            String args = textOrDefault(fc.get("arguments"), "{}");
-            funcItem.put("arguments", args.isEmpty() ? "{}" : args);
+            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.TYPE_FUNCTION_CALL);
+            String name = fc.get(FIELD_NAME).asText();
+            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, name);
+            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_NAME, name);
+            String args = textOrDefault(fc.get(FIELD_ARGUMENTS), DEFAULT_FUNCTION_ARGUMENTS);
+            funcItem.put(OpenAiResponsesJsonPolicy.FIELD_ARGUMENTS,
+                    args.isEmpty() ? DEFAULT_FUNCTION_ARGUMENTS : args);
             input.add(funcItem);
         }
-    }
-
-    private static ObjectNode convertChatReasoningContentToResponsesReasoning(String reasoningContent) {
-        ObjectNode reasoningItem = JSON.createObjectNode();
-        reasoningItem.put("type", "reasoning");
-        reasoningItem.put("status", "completed");
-
-        ArrayNode content = JSON.createArrayNode();
-        ObjectNode contentText = JSON.createObjectNode();
-        contentText.put("type", "reasoning_text");
-        contentText.put("text", reasoningContent);
-        content.add(contentText);
-        reasoningItem.set("content", content);
-
-        ArrayNode summary = JSON.createArrayNode();
-        ObjectNode summaryText = JSON.createObjectNode();
-        summaryText.put("type", "summary_text");
-        summaryText.put("text", reasoningContent);
-        summary.add(summaryText);
-        reasoningItem.set("summary", summary);
-
-        return reasoningItem;
     }
 
     /**
      * Tool 消息（role="tool"）→ function_call_output item。
      */
     private static void convertChatToolMessage(JsonNode msg, ArrayNode input) {
-        if (isBlankText(msg.get("tool_call_id"))) {
+        if (isBlankText(msg.get(FIELD_TOOL_CALL_ID))) {
             log.debug("Chat→Responses request: tool message missing tool_call_id, ignored");
             return;
         }
         ObjectNode item = JSON.createObjectNode();
-        item.put("type", "function_call_output");
-        item.put("call_id", msg.get("tool_call_id").asText());
-        String output = flattenContent(msg.get("content"));
+        item.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL_OUTPUT);
+        item.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, msg.get(FIELD_TOOL_CALL_ID).asText());
+        String output = flattenContent(msg.get(FIELD_CONTENT));
         if (output.isEmpty()) {
-            output = "(empty)";
+            output = DEFAULT_EMPTY_TOOL_OUTPUT;
         }
-        item.put("output", output);
+        item.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, output);
         input.add(item);
     }
 
@@ -963,18 +1117,18 @@ public class ChatCompletionsToResponsesConverter {
      * 使用 name 字段作为 call_id（旧格式无独立 tool_call_id）。
      */
     private static void convertChatFunctionMessage(JsonNode msg, ArrayNode input) {
-        if (isBlankText(msg.get("name"))) {
+        if (isBlankText(msg.get(FIELD_NAME))) {
             log.debug("Chat→Responses request: legacy function message missing name, ignored");
             return;
         }
         ObjectNode item = JSON.createObjectNode();
-        item.put("type", "function_call_output");
-        item.put("call_id", msg.get("name").asText());
-        String output = flattenContent(msg.get("content"));
+        item.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL_OUTPUT);
+        item.put(OpenAiResponsesJsonPolicy.FIELD_CALL_ID, msg.get(FIELD_NAME).asText());
+        String output = flattenContent(msg.get(FIELD_CONTENT));
         if (output.isEmpty()) {
-            output = "(empty)";
+            output = DEFAULT_EMPTY_TOOL_OUTPUT;
         }
-        item.put("output", output);
+        item.put(OpenAiResponsesJsonPolicy.FIELD_OUTPUT, output);
         input.add(item);
     }
 
@@ -990,16 +1144,17 @@ public class ChatCompletionsToResponsesConverter {
         if (content.isArray()) {
             StringBuilder sb = new StringBuilder();
             for (JsonNode part : content) {
-                String partType = textOrDefault(part.get("type"), "");
-                if ("thinking".equals(partType) || "reasoning".equals(partType)) {
-                    String thinkingText = textOrDefault(part.get("thinking"), textOrDefault(part.get("text"), ""));
+                String partType = textOrDefault(part.get(FIELD_TYPE), "");
+                if (OpenAiChatCompletionsBodyPolicy.TYPE_THINKING.equals(partType) || TYPE_REASONING.equals(partType)) {
+                    String thinkingText = textOrDefault(part.get(OpenAiChatCompletionsBodyPolicy.FIELD_THINKING),
+                            textOrDefault(part.get(FIELD_TEXT), ""));
                     if (!thinkingText.isEmpty()) {
-                        sb.append("<thinking>").append(thinkingText).append("</thinking>");
+                        sb.append(THINKING_OPEN_TAG).append(thinkingText).append(THINKING_CLOSE_TAG);
                     }
-                } else if ("refusal".equals(partType) && !isBlankText(part.get("refusal"))) {
-                    sb.append(part.get("refusal").asText());
-                } else if (!isBlankText(part.get("text"))) {
-                    sb.append(part.get("text").asText());
+                } else if (TYPE_REFUSAL.equals(partType) && !isBlankText(part.get(FIELD_REFUSAL))) {
+                    sb.append(part.get(FIELD_REFUSAL).asText());
+                } else if (!isBlankText(part.get(FIELD_TEXT))) {
+                    sb.append(part.get(FIELD_TEXT).asText());
                 }
             }
             return sb.toString();
@@ -1016,9 +1171,9 @@ public class ChatCompletionsToResponsesConverter {
         if (content.isArray()) {
             StringBuilder sb = new StringBuilder();
             for (JsonNode part : content) {
-                if (!isBlankText(part.get("text"))) {
+                if (!isBlankText(part.get(FIELD_TEXT))) {
                     if (sb.length() > 0) sb.append("\n");
-                    sb.append(part.get("text").asText());
+                    sb.append(part.get(FIELD_TEXT).asText());
                 } else if (part.isTextual()) {
                     if (sb.length() > 0) sb.append("\n");
                     sb.append(part.asText());
@@ -1038,15 +1193,15 @@ public class ChatCompletionsToResponsesConverter {
      * stop→"completed", length/content_filter→"incomplete", tool_calls→"completed"
      */
     private static String mapChatFinishReasonToResponsesStatus(String finishReason) {
-        return isIncompleteFinishReason(finishReason) ? "incomplete" : "completed";
-    }
-
-    private static boolean isIncompleteFinishReason(String finishReason) {
-        return "length".equals(finishReason) || "content_filter".equals(finishReason);
+        return OpenAiChatCompletionsBodyPolicy.isIncompleteFinishReason(finishReason)
+                ? OpenAiResponsesJsonPolicy.STATUS_INCOMPLETE
+                : OpenAiResponsesJsonPolicy.STATUS_COMPLETED;
     }
 
     private static String mapChatFinishReasonToResponsesIncompleteReason(String finishReason) {
-        return "content_filter".equals(finishReason) ? "content_filter" : "max_output_tokens";
+        return FINISH_REASON_CONTENT_FILTER.equals(finishReason)
+                ? FINISH_REASON_CONTENT_FILTER
+                : OpenAiResponsesJsonPolicy.DEFAULT_INCOMPLETE_REASON;
     }
 
     /**
@@ -1059,9 +1214,9 @@ public class ChatCompletionsToResponsesConverter {
         }
         if (functionCall.isObject()) {
             ObjectNode obj = JSON.createObjectNode();
-            obj.put("type", "function");
-            obj.put("name", functionCall.has("name") && functionCall.get("name").isTextual()
-                    ? functionCall.get("name").asText()
+            obj.put(FIELD_TYPE, TYPE_FUNCTION);
+            obj.put(FIELD_NAME, functionCall.has(FIELD_NAME) && functionCall.get(FIELD_NAME).isTextual()
+                    ? functionCall.get(FIELD_NAME).asText()
                     : "");
             return obj;
         }
@@ -1081,44 +1236,44 @@ public class ChatCompletionsToResponsesConverter {
             return isSupportedToolChoiceMode(toolChoice.asText()) ? toolChoice : null;
         }
         if (toolChoice.isObject()
-                && "function".equals(toolChoice.path("type").asText(""))
-                && toolChoice.has("function")
-                && toolChoice.get("function").isObject()) {
-            if (isBlankText(toolChoice.get("function").get("name"))) return null;
+                && TYPE_FUNCTION.equals(toolChoice.path(FIELD_TYPE).asText(""))
+                && toolChoice.has(FIELD_FUNCTION)
+                && toolChoice.get(FIELD_FUNCTION).isObject()) {
+            if (isBlankText(toolChoice.get(FIELD_FUNCTION).get(FIELD_NAME))) return null;
             ObjectNode obj = JSON.createObjectNode();
-            obj.put("type", "function");
-            obj.put("name", toolChoice.get("function").get("name").asText());
+            obj.put(FIELD_TYPE, TYPE_FUNCTION);
+            obj.put(FIELD_NAME, toolChoice.get(FIELD_FUNCTION).get(FIELD_NAME).asText());
             return obj;
         }
         if (toolChoice.isObject()
-                && "custom".equals(toolChoice.path("type").asText(""))
-                && toolChoice.has("custom")
-                && toolChoice.get("custom").isObject()) {
-            if (isBlankText(toolChoice.get("custom").get("name"))) return null;
+                && TYPE_CUSTOM.equals(toolChoice.path(FIELD_TYPE).asText(""))
+                && toolChoice.has(FIELD_CUSTOM)
+                && toolChoice.get(FIELD_CUSTOM).isObject()) {
+            if (isBlankText(toolChoice.get(FIELD_CUSTOM).get(FIELD_NAME))) return null;
             ObjectNode obj = JSON.createObjectNode();
-            obj.put("type", "custom");
-            obj.put("name", toolChoice.get("custom").get("name").asText());
+            obj.put(FIELD_TYPE, TYPE_CUSTOM);
+            obj.put(FIELD_NAME, toolChoice.get(FIELD_CUSTOM).get(FIELD_NAME).asText());
             return obj;
         }
         if (toolChoice.isObject()
-                && "allowed_tools".equals(toolChoice.path("type").asText(""))
-                && toolChoice.has("allowed_tools")
-                && toolChoice.get("allowed_tools").isObject()) {
+                && TYPE_ALLOWED_TOOLS.equals(toolChoice.path(FIELD_TYPE).asText(""))
+                && toolChoice.has(FIELD_ALLOWED_TOOLS)
+                && toolChoice.get(FIELD_ALLOWED_TOOLS).isObject()) {
             ObjectNode obj = JSON.createObjectNode();
-            obj.put("type", "allowed_tools");
-            JsonNode allowed = toolChoice.get("allowed_tools");
-            String mode = normalizeAllowedToolsMode(allowed.get("mode"));
+            obj.put(FIELD_TYPE, TYPE_ALLOWED_TOOLS);
+            JsonNode allowed = toolChoice.get(FIELD_ALLOWED_TOOLS);
+            String mode = normalizeAllowedToolsMode(allowed.get(FIELD_MODE));
             if (mode != null) {
-                obj.put("mode", mode);
+                obj.put(FIELD_MODE, mode);
             }
-            if (allowed.has("tools") && allowed.get("tools").isArray()) {
+            if (allowed.has(FIELD_TOOLS) && allowed.get(FIELD_TOOLS).isArray()) {
                 ArrayNode tools = JSON.createArrayNode();
-                for (JsonNode tool : allowed.get("tools")) {
+                for (JsonNode tool : allowed.get(FIELD_TOOLS)) {
                     JsonNode converted = convertChatAllowedToolToResponses(tool);
                     if (converted != null) tools.add(converted);
                 }
                 if (tools.size() == 0) return null;
-                obj.set("tools", tools);
+                obj.set(FIELD_TOOLS, tools);
             }
             return obj;
         }
@@ -1126,49 +1281,45 @@ public class ChatCompletionsToResponsesConverter {
     }
 
     private static boolean isSupportedToolChoiceMode(String mode) {
-        return "auto".equals(mode) || "none".equals(mode) || "required".equals(mode);
-    }
-
-    private static boolean isSupportedLegacyFunctionCallMode(String mode) {
-        return "auto".equals(mode) || "none".equals(mode);
+        return OpenAiChatCompletionsBodyPolicy.isSupportedToolChoiceMode(mode);
     }
 
     private static JsonNode convertChatAllowedToolToResponses(JsonNode tool) {
         if (tool == null || !tool.isObject()) return null;
-        String type = tool.path("type").asText("");
-        if ("function".equals(type) && tool.has("function") && tool.get("function").isObject()) {
-            if (isBlankText(tool.get("function").get("name"))) return null;
+        String type = tool.path(FIELD_TYPE).asText("");
+        if (TYPE_FUNCTION.equals(type) && tool.has(FIELD_FUNCTION) && tool.get(FIELD_FUNCTION).isObject()) {
+            if (isBlankText(tool.get(FIELD_FUNCTION).get(FIELD_NAME))) return null;
             ObjectNode obj = JSON.createObjectNode();
-            obj.put("type", "function");
-            obj.put("name", tool.get("function").path("name").asText(""));
+            obj.put(FIELD_TYPE, TYPE_FUNCTION);
+            obj.put(FIELD_NAME, tool.get(FIELD_FUNCTION).path(FIELD_NAME).asText(""));
             return obj;
         }
-        if ("custom".equals(type) && tool.has("custom") && tool.get("custom").isObject()) {
-            if (isBlankText(tool.get("custom").get("name"))) return null;
+        if (TYPE_CUSTOM.equals(type) && tool.has(FIELD_CUSTOM) && tool.get(FIELD_CUSTOM).isObject()) {
+            if (isBlankText(tool.get(FIELD_CUSTOM).get(FIELD_NAME))) return null;
             ObjectNode obj = JSON.createObjectNode();
-            obj.put("type", "custom");
-            obj.put("name", tool.get("custom").path("name").asText(""));
+            obj.put(FIELD_TYPE, TYPE_CUSTOM);
+            obj.put(FIELD_NAME, tool.get(FIELD_CUSTOM).path(FIELD_NAME).asText(""));
             return obj;
         }
         return null;
     }
 
     private static JsonNode convertChatCustomToolFormatToResponses(JsonNode format) {
-        if (format == null || !format.isObject() || isBlankText(format.get("type"))) return null;
-        String type = format.get("type").asText();
+        if (format == null || !format.isObject() || isBlankText(format.get(FIELD_TYPE))) return null;
+        String type = format.get(FIELD_TYPE).asText();
         ObjectNode normalized = JSON.createObjectNode();
-        if ("text".equals(type)) {
-            normalized.put("type", "text");
+        if (TYPE_TEXT.equals(type)) {
+            normalized.put(FIELD_TYPE, TYPE_TEXT);
             return normalized;
         }
-        if ("grammar".equals(type)) {
-            JsonNode grammar = format.get("grammar");
+        if (TYPE_GRAMMAR.equals(type)) {
+            JsonNode grammar = format.get(TYPE_GRAMMAR);
             if (grammar == null || !grammar.isObject()) return null;
-            String syntax = normalizeCustomToolGrammarSyntax(grammar.get("syntax"));
-            if (syntax == null || isBlankText(grammar.get("definition"))) return null;
-            normalized.put("type", "grammar");
-            normalized.put("syntax", syntax);
-            normalized.put("definition", grammar.get("definition").asText());
+            String syntax = normalizeCustomToolGrammarSyntax(grammar.get(FIELD_SYNTAX));
+            if (syntax == null || isBlankText(grammar.get(FIELD_DEFINITION))) return null;
+            normalized.put(FIELD_TYPE, TYPE_GRAMMAR);
+            normalized.put(FIELD_SYNTAX, syntax);
+            normalized.put(FIELD_DEFINITION, grammar.get(FIELD_DEFINITION).asText());
             return normalized;
         }
         return null;
@@ -1176,28 +1327,22 @@ public class ChatCompletionsToResponsesConverter {
 
     private static String normalizeCustomToolGrammarSyntax(JsonNode syntax) {
         if (syntax == null || !syntax.isTextual()) return null;
-        return switch (syntax.asText()) {
-            case "lark", "regex" -> syntax.asText();
-            default -> null;
-        };
+        return OpenAiChatCompletionsBodyPolicy.normalizeCustomToolGrammarSyntax(syntax.asText());
     }
 
     /**
      * 检测 base64 data URI 是否为空载荷。
      */
     private static boolean isEmptyBase64DataURI(String url) {
-        if (url == null || !url.startsWith("data:")) return false;
-        int commaIdx = url.indexOf(',');
-        if (commaIdx < 0) return false;
-        return url.substring(commaIdx + 1).trim().isEmpty();
+        return OpenAiResponsesBodyPolicy.isEmptyBase64DataUri(url);
     }
 
     private static boolean hasChatFilePayload(JsonNode file) {
-        return !isBlankText(file.get("file_data")) || !isBlankText(file.get("file_id"));
+        return !isBlankText(file.get(FIELD_FILE_DATA)) || !isBlankText(file.get(FIELD_FILE_ID));
     }
 
     private static boolean hasChatAudioPayload(JsonNode inputAudio) {
-        return !isBlankText(inputAudio.get("data")) && !isBlankText(inputAudio.get("format"));
+        return !isBlankText(inputAudio.get(FIELD_DATA)) && !isBlankText(inputAudio.get(FIELD_FORMAT));
     }
 
     private static JsonNode normalizeStopSequences(JsonNode stop) {
@@ -1242,45 +1387,28 @@ public class ChatCompletionsToResponsesConverter {
         return isNonNegativeInt(node) ? node.asInt() : defaultValue;
     }
 
-    private static boolean isValidTopLogprobs(JsonNode node) {
-        return node != null && node.isIntegralNumber() && node.canConvertToInt()
-                && node.asInt() >= 0 && node.asInt() <= 20;
-    }
-
     private static void copyNormalizedServiceTierIfExists(JsonNode src, ObjectNode dst) {
-        String normalized = normalizedOpenAIServiceTierValue(src.get("service_tier"));
-        if (normalized != null) {
-            dst.put("service_tier", normalized);
+        if (!src.has(FIELD_SERVICE_TIER) || !src.get(FIELD_SERVICE_TIER).isTextual()) {
+            return;
+        }
+        String normalized = OpenAiResponsesBodyPolicy.normalizeServiceTier(src.get(FIELD_SERVICE_TIER).asText());
+        if (!normalized.isBlank()) {
+            dst.put(FIELD_SERVICE_TIER, normalized);
         }
     }
 
-    private static String normalizedOpenAIServiceTierValue(JsonNode node) {
-        if (node == null || !node.isTextual()) return null;
-        String value = node.asText().trim().toLowerCase();
-        if (value.isEmpty()) return null;
-        if ("fast".equals(value)) {
-            value = "priority";
+    private static String extractChatReasoningEffort(JsonNode src) {
+        JsonNode nested = src.path(FIELD_REASONING).get(FIELD_EFFORT);
+        String normalized = normalizeChatReasoningEffort(nested);
+        if (normalized != null) {
+            return normalized;
         }
-        return switch (value) {
-            case "priority", "flex", "auto", "default", "scale" -> value;
-            default -> null;
-        };
+        return normalizeChatReasoningEffort(src.get(FIELD_REASONING_EFFORT));
     }
 
     private static String normalizeChatReasoningEffort(JsonNode node) {
         if (node == null || !node.isTextual()) return null;
-        return switch (node.asText()) {
-            case "minimal", "low", "medium", "high", "xhigh" -> node.asText();
-            default -> null;
-        };
-    }
-
-    private static String normalizeVerbosity(JsonNode node) {
-        if (node == null || !node.isTextual()) return null;
-        return switch (node.asText()) {
-            case "low", "medium", "high" -> node.asText();
-            default -> null;
-        };
+        return OpenAiChatCompletionsBodyPolicy.normalizeReasoningEffort(node.asText());
     }
 
     private static JsonNode normalizeToolParameters(JsonNode parameters) {
@@ -1288,8 +1416,8 @@ public class ChatCompletionsToResponsesConverter {
             return parameters;
         }
         ObjectNode schema = JSON.createObjectNode();
-        schema.put("type", "object");
-        schema.set("properties", JSON.createObjectNode());
+        schema.put(FIELD_TYPE, TYPE_OBJECT);
+        schema.set(FIELD_PROPERTIES, JSON.createObjectNode());
         return schema;
     }
 
@@ -1301,71 +1429,9 @@ public class ChatCompletionsToResponsesConverter {
         return node != null && node.isTextual() && !node.asText().isBlank() ? node.asText() : defaultValue;
     }
 
-    private static JsonNode convertChatResponseFormatToResponses(JsonNode responseFormat) {
-        String type = responseFormat.path("type").asText("");
-        if ("json_schema".equals(type)) {
-            JsonNode jsonSchema = responseFormat.path("json_schema");
-            if (!jsonSchema.isObject()) return null;
-            if (isBlankText(jsonSchema.get("name"))) return null;
-            if (!jsonSchema.has("schema") || jsonSchema.get("schema").isNull()) return null;
-            ObjectNode format = JSON.createObjectNode();
-            format.put("type", "json_schema");
-            format.set("name", jsonSchema.get("name"));
-            copyTextIfExists(jsonSchema, format, "description");
-            format.set("schema", jsonSchema.get("schema"));
-            if (jsonSchema.has("strict") && jsonSchema.get("strict").isBoolean()) {
-                format.set("strict", jsonSchema.get("strict"));
-            }
-            return format;
-        }
-        if ("json_object".equals(type) || "text".equals(type)) {
-            ObjectNode format = JSON.createObjectNode();
-            format.put("type", type);
-            return format;
-        }
-        return null;
-    }
-
-    private static ObjectNode convertChatWebSearchOptionsToResponsesTool(JsonNode webSearchOptions) {
-        if (webSearchOptions == null || !webSearchOptions.isObject()) return null;
-        ObjectNode tool = JSON.createObjectNode();
-        tool.put("type", "web_search_preview");
-        String searchContextSize = normalizeSearchContextSize(webSearchOptions.get("search_context_size"));
-        if (searchContextSize != null) {
-            tool.put("search_context_size", searchContextSize);
-        }
-
-        JsonNode userLocation = webSearchOptions.get("user_location");
-        if (userLocation != null && userLocation.isObject()) {
-            JsonNode approximate = userLocation.has("approximate")
-                    ? userLocation.get("approximate")
-                    : userLocation;
-            if (approximate != null && approximate.isObject()) {
-                ObjectNode location = JSON.createObjectNode();
-                location.put("type", "approximate");
-                copyTextIfExists(approximate, location, "country");
-                copyTextIfExists(approximate, location, "region");
-                copyTextIfExists(approximate, location, "city");
-                copyTextIfExists(approximate, location, "timezone");
-                if (location.size() > 1) {
-                    tool.set("user_location", location);
-                }
-            }
-        }
-        return tool;
-    }
-
     // ========================
     // 通用工具方法
     // ========================
-
-    private static void copyIfExists(JsonNode src, ObjectNode dst, String field) {
-        if (src.has(field) && !src.get(field).isNull()) dst.set(field, src.get(field));
-    }
-
-    private static void copyObjectIfExists(JsonNode src, ObjectNode dst, String field) {
-        if (src.has(field) && src.get(field).isObject()) dst.set(field, src.get(field));
-    }
 
     private static void copyTextIfExists(JsonNode src, ObjectNode dst, String field) {
         if (src.has(field) && src.get(field).isTextual() && !src.get(field).asText().isBlank()) {
@@ -1383,10 +1449,7 @@ public class ChatCompletionsToResponsesConverter {
 
     private static String normalizeSearchContextSize(JsonNode node) {
         if (node == null || !node.isTextual()) return null;
-        return switch (node.asText()) {
-            case "low", "medium", "high" -> node.asText();
-            default -> null;
-        };
+        return OpenAiChatCompletionsBodyPolicy.normalizeSearchContextSize(node.asText());
     }
 
     private static String normalizeAllowedToolsMode(JsonNode node) {
@@ -1396,36 +1459,13 @@ public class ChatCompletionsToResponsesConverter {
 
     private static String normalizeImageDetail(JsonNode node) {
         if (node == null || !node.isTextual()) return null;
-        return switch (node.asText()) {
-            case "auto", "low", "high" -> node.asText();
-            default -> null;
-        };
+        return OpenAiChatCompletionsBodyPolicy.normalizeImageDetail(node.asText());
     }
 
     private static void appendEvent(List<String> output, String event, String data) {
-        output.add("event: " + event);
-        output.add("data: " + data);
-        output.add("");
+        output.add(OpenAiResponsesSsePolicy.EVENT_LINE_PREFIX + event);
+        output.add(OpenAiResponsesSsePolicy.DATA_LINE_PREFIX + data);
+        output.add(OpenAiResponsesSsePolicy.FRAME_SEPARATOR_LINE);
     }
 
-    private static String escapeJsonValue(String s) {
-        if (s == null) return "";
-        StringBuilder sb = new StringBuilder(s.length() + 16);
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"'  -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default   -> sb.append(c);
-            }
-        }
-        return sb.toString();
-    }
-
-    private static String fmt(String format, Object... args) {
-        return String.format(format, args);
-    }
 }

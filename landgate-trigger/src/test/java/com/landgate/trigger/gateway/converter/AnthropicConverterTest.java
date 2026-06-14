@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.trigger.gateway.converter.ResponsesConverter;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.GatewayProtocolIrPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -249,7 +251,7 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("stop_sequences → 内部 stop 扩展；反向 Anthropic 请求按 sub2api 不透传")
+        @DisplayName("stop_sequences → 内部 stop 扩展；反向 Anthropic 请求还原 stop_sequences")
         void stopSequencesToInternalStopExtension() throws Exception {
             String body = """
                     {
@@ -260,16 +262,18 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            assertEquals("</end>", resp.get("_landgate_stop_sequences").get(0).asText());
-            assertEquals("DONE", resp.get("_landgate_stop_sequences").get(1).asText());
-            assertEquals(2, resp.get("_landgate_stop_sequences").size());
+            assertEquals("</end>", resp.get(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES).get(0).asText());
+            assertEquals("DONE", resp.get(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES).get(1).asText());
+            assertEquals(2, resp.get(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES).size());
 
             String anthropicBody = fromIR.requestFromIR(resp);
             JsonNode anthropic = JSON.readTree(anthropicBody);
-            assertFalse(anthropic.has("stop_sequences"));
+            assertEquals("</end>", anthropic.get("stop_sequences").get(0).asText());
+            assertEquals("DONE", anthropic.get("stop_sequences").get(1).asText());
+            assertEquals(2, anthropic.get("stop_sequences").size());
 
             String responsesBody = new ResponsesConverter().requestFromIR(resp);
-            assertFalse(JSON.readTree(responsesBody).has("_landgate_stop_sequences"));
+            assertFalse(JSON.readTree(responsesBody).has(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES));
         }
 
         @Test
@@ -285,7 +289,7 @@ class AnthropicConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("_landgate_stop_sequences"));
+            assertFalse(resp.has(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES));
         }
 
         @Test
@@ -665,8 +669,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("未知 tool_choice 不透传到 Responses")
-        void unknownToolChoiceIsDropped() throws Exception {
+        @DisplayName("未知 tool_choice 按 sub2api 原样透传到 Responses")
+        void unknownToolChoiceIsPassedThrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -676,13 +680,15 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
+            JsonNode tc = resp.get("tool_choice");
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("server_tool", tc.get("type").asText());
+            assertEquals("opaque", tc.get("name").asText());
         }
 
         @Test
-        @DisplayName("未知文本 tool_choice 不透传到 Responses")
-        void unknownTextToolChoiceIsDropped() throws Exception {
+        @DisplayName("未知文本 tool_choice 按 sub2api 原样透传到 Responses")
+        void unknownTextToolChoiceIsPassedThrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -693,12 +699,12 @@ class AnthropicConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("server_tool", resp.get("tool_choice").asText());
         }
 
         @Test
-        @DisplayName("缺 name 的 Anthropic tool_choice 不透传到 Responses")
-        void unnamedToolChoiceIsDropped() throws Exception {
+        @DisplayName("缺 name 的 Anthropic tool_choice 按 sub2api 原样透传到 Responses")
+        void unnamedToolChoiceIsPassedThrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -709,7 +715,7 @@ class AnthropicConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("tool_choice"));
+            assertEquals("tool", resp.get("tool_choice").get("type").asText());
         }
 
         @Test
@@ -1041,21 +1047,25 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("tool input_schema 非对象 → 补充空 schema")
-        void toolWithNonObjectSchemaUsesEmptySchema() throws Exception {
+        @DisplayName("tool input_schema 非对象按 sub2api 原样保留")
+        void toolWithNonObjectSchemaIsPreserved() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
                         "max_tokens": 1024,
                         "messages": [{"role": "user", "content": "Hello"}],
-                        "tools": [{"name":"simple_tool","input_schema":"not-a-schema"}]
+                        "tools": [
+                            {"name":"string_tool","input_schema":{"type":"string"}},
+                            {"name":"text_tool","input_schema":"not-a-schema"}
+                        ]
                     }""";
 
             JsonNode resp = toIR.requestToIR(body);
-            JsonNode params = resp.get("tools").get(0).get("parameters");
+            JsonNode tools = resp.get("tools");
 
-            assertEquals("object", params.get("type").asText());
-            assertTrue(params.get("properties").isObject());
+            assertEquals("string", tools.get(0).get("parameters").get("type").asText());
+            assertFalse(tools.get(0).get("parameters").has("properties"));
+            assertEquals("not-a-schema", tools.get(1).get("parameters").asText());
         }
 
         @Test
@@ -1302,6 +1312,28 @@ class AnthropicConverterTest {
             assertEquals("tool_use", content.get(1).get("type").asText());
             assertEquals("call_1", content.get(1).get("id").asText());
             assertEquals("get_weather", content.get(1).get("name").asText());
+        }
+
+        @Test
+        @DisplayName("Responses function_call output id 按 sub2api 只反解原生前缀")
+        void functionCallOutputIdsFollowSub2ApiPolicy() throws Exception {
+            String body = """
+                    {
+                        "id": "resp_tool_ids",
+                        "model": "gpt-5.2",
+                        "status": "completed",
+                        "output": [
+                            {"type":"function_call","call_id":"fc_toolu_123","name":"from_claude","arguments":"{}"},
+                            {"type":"function_call","call_id":"fc_call_123","name":"from_chat","arguments":"{}"},
+                            {"type":"function_call","call_id":"fc_plain","name":"plain_id","arguments":"{}"}
+                        ]
+                    }""";
+
+            JsonNode content = JSON.readTree(fromIR.responseFromIR(JSON.readTree(body))).get("content");
+
+            assertEquals("toolu_123", content.get(0).get("id").asText());
+            assertEquals("call_123", content.get(1).get("id").asText());
+            assertEquals("fc_plain", content.get(2).get("id").asText());
         }
 
         @Test
@@ -1693,8 +1725,7 @@ class AnthropicConverterTest {
             String result = fromIR.requestFromIR(ir);
             JsonNode anth = JSON.readTree(result);
 
-            // requestFromIR 中未提供 max_output_tokens 时默认 8192
-            assertEquals(8192, anth.get("max_tokens").asInt());
+            assertEquals(AnthropicMessagesBodyPolicy.DEFAULT_MAX_TOKENS, anth.get("max_tokens").asInt());
         }
 
         @Test
@@ -1711,7 +1742,7 @@ class AnthropicConverterTest {
             String result = fromIR.requestFromIR(ir);
             JsonNode anth = JSON.readTree(result);
 
-            assertEquals(8192, anth.get("max_tokens").asInt());
+            assertEquals(AnthropicMessagesBodyPolicy.DEFAULT_MAX_TOKENS, anth.get("max_tokens").asInt());
         }
 
         @Test
@@ -1734,7 +1765,7 @@ class AnthropicConverterTest {
             assertFalse(anth.has("stream"));
             assertFalse(anth.has("temperature"));
             assertFalse(anth.has("top_p"));
-            assertEquals(8192, anth.get("max_tokens").asInt());
+            assertEquals(AnthropicMessagesBodyPolicy.DEFAULT_MAX_TOKENS, anth.get("max_tokens").asInt());
         }
     }
 
@@ -2322,8 +2353,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("Responses hosted tools 不降级到 Anthropic tools")
-        void hostedToolsAreNotConvertedToAnthropicTools() throws Exception {
+        @DisplayName("Responses hosted/unknown tools 按 sub2api 透传到 Anthropic tools")
+        void hostedToolsArePassedThroughToAnthropicTools() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -2340,12 +2371,43 @@ class AnthropicConverterTest {
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
 
-            assertFalse(anth.has("tools"));
+            JsonNode tools = anth.get("tools");
+            assertEquals(6, tools.size());
+            assertEquals("file_search", tools.get(0).get("type").asText());
+            assertEquals("computer_use_preview", tools.get(1).get("type").asText());
+            assertEquals("mcp", tools.get(2).get("type").asText());
+            assertEquals("image_generation", tools.get(3).get("type").asText());
+            assertEquals("code_interpreter", tools.get(4).get("type").asText());
+            assertEquals("local_shell", tools.get(5).get("type").asText());
         }
 
         @Test
-        @DisplayName("不支持的 Responses tool_choice 不透传到 Anthropic")
-        void unsupportedToolChoiceIsDropped() throws Exception {
+        @DisplayName("未知 Responses tool 保留 name/description/parameters")
+        void unknownResponsesToolPreservesShapeForAnthropic() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "tools": [{
+                            "type":"custom_tool",
+                            "name":"grammar",
+                            "description":"Check grammar",
+                            "parameters":{"type":"object","properties":{"text":{"type":"string"}}}
+                        }],
+                        "input": [{"role":"user","content":"Hello"}]
+                    }""";
+
+            JsonNode tool = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body))).get("tools").get(0);
+
+            assertEquals("custom_tool", tool.get("type").asText());
+            assertEquals("grammar", tool.get("name").asText());
+            assertEquals("Check grammar", tool.get("description").asText());
+            assertEquals("object", tool.get("input_schema").get("type").asText());
+            assertTrue(tool.get("input_schema").get("properties").has("text"));
+        }
+
+        @Test
+        @DisplayName("未知 Responses tool_choice 按 sub2api 透传到 Anthropic")
+        void unsupportedToolChoiceIsPassedThrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -2354,8 +2416,10 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode tc = anth.get("tool_choice");
 
-            assertFalse(anth.has("tool_choice"));
+            assertEquals("custom", tc.get("type").asText());
+            assertEquals("grammar", tc.get("name").asText());
         }
 
         @Test
@@ -2374,20 +2438,24 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("Responses function parameters 非对象 → Anthropic 空 input_schema")
-        void responsesFunctionToolWithNonObjectParametersUsesEmptySchema() throws Exception {
+        @DisplayName("Responses function parameters 非对象按 sub2api 原样保留")
+        void responsesFunctionToolWithNonObjectParametersIsPreserved() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
-                        "tools": [{"type":"function","name":"simple_tool","parameters":"not-a-schema"}],
+                        "tools": [
+                            {"type":"function","name":"string_tool","parameters":{"type":"string"}},
+                            {"type":"function","name":"text_tool","parameters":"not-a-schema"}
+                        ],
                         "input": [{"role":"user","content":"Hello"}]
                     }""";
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
-            JsonNode schema = anth.get("tools").get(0).get("input_schema");
+            JsonNode tools = anth.get("tools");
 
-            assertEquals("object", schema.get("type").asText());
-            assertTrue(schema.get("properties").isObject());
+            assertEquals("string", tools.get(0).get("input_schema").get("type").asText());
+            assertFalse(tools.get(0).get("input_schema").has("properties"));
+            assertEquals("not-a-schema", tools.get(1).get("input_schema").asText());
         }
 
         @Test
@@ -2406,8 +2474,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("缺 name 的 Responses function tool_choice 不透传到 Anthropic")
-        void unnamedResponsesFunctionToolChoiceIsDropped() throws Exception {
+        @DisplayName("缺 name 的 Responses function tool_choice 按 sub2api 原样透传")
+        void unnamedResponsesFunctionToolChoiceIsPassedThrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -2417,7 +2485,7 @@ class AnthropicConverterTest {
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
 
-            assertFalse(anth.has("tool_choice"));
+            assertEquals("function", anth.get("tool_choice").get("type").asText());
         }
 
         @Test
@@ -2440,8 +2508,25 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("web_search tool_choice → Anthropic web_search tool choice")
-        void webSearchToolChoiceToAnthropic() throws Exception {
+        @DisplayName("tool_choice function top-level name 优先于 legacy nested name")
+        void toolChoiceFunctionTopLevelNameWins() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "input": [{"role":"user","content":"Hello"}],
+                        "tool_choice": {"type":"function","name":"top_level","function":{"name":"nested"}}
+                    }""";
+
+            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
+            JsonNode tc = anth.get("tool_choice");
+
+            assertEquals("tool", tc.get("type").asText());
+            assertEquals("top_level", tc.get("name").asText());
+        }
+
+        @Test
+        @DisplayName("web_search tool_choice 按 sub2api 作为未知对象透传")
+        void webSearchToolChoiceIsPassedThroughToAnthropic() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -2449,11 +2534,10 @@ class AnthropicConverterTest {
                         "tool_choice": {"type":"web_search_preview"}
                     }""";
 
-            JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
-            JsonNode tc = anth.get("tool_choice");
+            JsonNode tc = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body))).get("tool_choice");
 
-            assertEquals("tool", tc.get("type").asText());
-            assertEquals("web_search", tc.get("name").asText());
+            assertEquals("web_search_preview", tc.get("type").asText());
+            assertFalse(tc.has("name"));
         }
 
         @Test
@@ -2511,8 +2595,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("unsupported tool_choice 且 parallel_tool_calls=false 时不生成 fallback")
-        void unsupportedToolChoiceWithParallelFalseFallsBackToAuto() throws Exception {
+        @DisplayName("未知 tool_choice 且 parallel_tool_calls=false 时仍按 sub2api 透传")
+        void unsupportedToolChoiceWithParallelFalseIsPassedThrough() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -2522,7 +2606,10 @@ class AnthropicConverterTest {
                     }""";
 
             JsonNode anth = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body)));
-            assertFalse(anth.has("tool_choice"));
+            JsonNode tc = anth.get("tool_choice");
+            assertEquals("custom", tc.get("type").asText());
+            assertEquals("grammar", tc.get("name").asText());
+            assertFalse(tc.has("disable_parallel_tool_use"));
         }
 
         @Test
@@ -2570,6 +2657,28 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("Responses function_call input id 按 sub2api 转为 Anthropic 原生 id")
+        void functionCallInputIdsFollowSub2ApiPolicy() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.2",
+                        "input": [
+                            {"type":"function_call","call_id":"fc_toolu_123","name":"from_claude","arguments":"{}"},
+                            {"type":"function_call","call_id":"fc_call_123","name":"from_chat","arguments":"{}"},
+                            {"type":"function_call","call_id":"plain","name":"plain_id","arguments":"{}"},
+                            {"type":"function_call_output","call_id":"plain","output":"ok"}
+                        ]
+                    }""";
+
+            JsonNode messages = JSON.readTree(fromIR.requestFromIR(JSON.readTree(body))).get("messages");
+
+            assertEquals("toolu_123", messages.get(0).get("content").get(0).get("id").asText());
+            assertEquals("call_123", messages.get(0).get("content").get(1).get("id").asText());
+            assertEquals("toolu_plain", messages.get(0).get("content").get(2).get("id").asText());
+            assertEquals("toolu_plain", messages.get(1).get("content").get(0).get("tool_use_id").asText());
+        }
+
+        @Test
         @DisplayName("缺 call_id/name 的 function_call input 不构造 Anthropic tool_use")
         void invalidFunctionCallInputIgnored() throws Exception {
             String body = """
@@ -2597,8 +2706,8 @@ class AnthropicConverterTest {
         }
 
         @Test
-        @DisplayName("function_call_output 缺 output → Anthropic 空 tool_result text")
-        void missingFunctionCallOutputContentStaysEmpty() throws Exception {
+        @DisplayName("function_call_output 缺 output → Anthropic tool_result 使用 sub2api 空输出默认值")
+        void missingFunctionCallOutputContentUsesSub2ApiDefault() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -2613,12 +2722,12 @@ class AnthropicConverterTest {
 
             assertEquals("tool_result", toolResult.get("type").asText());
             assertEquals("call_1", toolResult.get("tool_use_id").asText());
-            assertEquals("", toolResult.get("content").get(0).get("text").asText());
+            assertEquals("(empty)", toolResult.get("content").asText());
         }
 
         @Test
-        @DisplayName("非文本 function_call_output output 不降级为 Anthropic 文本")
-        void nonTextFunctionCallOutputContentStaysEmpty() throws Exception {
+        @DisplayName("非文本 function_call_output output → Anthropic tool_result 使用 sub2api 空输出默认值")
+        void nonTextFunctionCallOutputContentUsesSub2ApiDefault() throws Exception {
             String body = """
                     {
                         "model": "gpt-5.2",
@@ -2631,7 +2740,7 @@ class AnthropicConverterTest {
             JsonNode toolResult = anth.get("messages").get(0).get("content").get(0);
 
             assertEquals("tool_result", toolResult.get("type").asText());
-            assertEquals("", toolResult.get("content").get(0).get("text").asText());
+            assertEquals("(empty)", toolResult.get("content").asText());
         }
 
         @Test
@@ -3248,6 +3357,18 @@ class AnthropicConverterTest {
         }
 
         @Test
+        @DisplayName("response.completed status=incomplete 按 response.status → max_tokens")
+        void responseCompletedIncompleteStatusMapsToMaxTokens() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_inc\",\"model\":\"gpt-5.2\"}}");
+
+            List<String> out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":12,\"output_tokens\":4}}}");
+
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"stop_reason\":\"max_tokens\"")));
+            assertTrue(t.isDone());
+        }
+
+        @Test
         @DisplayName("Responses stream 非文本 status/reason 不降级为 Anthropic max_tokens")
         void nonTextResponsesStreamStatusIgnoredInAnthropicStopReason() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
@@ -3290,6 +3411,19 @@ class AnthropicConverterTest {
             out = t.feed("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10}}}");
             assertTrue(out.stream().anyMatch(s -> s.contains("\"tool_use\"")));
             assertTrue(t.isDone());
+        }
+
+        @Test
+        @DisplayName("Responses function_call 流式 id 按 sub2api 反解原生前缀")
+        void streamingToolCallIdsFollowSub2ApiPolicy() {
+            StreamTranslator t = fromIR.createStreamFromIR("gpt-5.2");
+            t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_tool_ids\",\"model\":\"gpt-5.2\"}}");
+
+            List<String> added = t.feed("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"fc_toolu_123\",\"name\":\"from_claude\"}}");
+            assertTrue(added.stream().anyMatch(s -> s.contains("\"id\":\"toolu_123\"")));
+
+            List<String> done = t.feed("data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"fc_plain\",\"name\":\"plain_id\",\"arguments\":\"{}\",\"status\":\"completed\"}}");
+            assertTrue(done.stream().anyMatch(s -> s.contains("\"id\":\"fc_plain\"")));
         }
 
         @Test

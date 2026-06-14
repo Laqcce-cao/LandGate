@@ -29,12 +29,10 @@ public record UpstreamRoute(
 ) {
     /** ChatGPT Codex /compact 返回普通 JSON，不能被客户端 stream=true 强制走 SSE 分支。 */
     public boolean forceNonStreamingResponse() {
-        return isCompactCodexResponsesEndpoint(endpointKind, targetUrl);
+        return UpstreamStreamPolicy.forceNonStreamingResponse(endpointKind, targetUrl);
     }
 
     public static boolean isCompactCodexResponsesEndpoint(EndpointKind endpointKind, String targetUrl) {
-        return endpointKind == EndpointKind.OPENAI_CODEX_RESPONSES
-                && targetUrl != null
-                && targetUrl.replaceAll("/+$", "").endsWith("/compact");
+        return UpstreamStreamPolicy.forceNonStreamingResponse(endpointKind, targetUrl);
     }
 }

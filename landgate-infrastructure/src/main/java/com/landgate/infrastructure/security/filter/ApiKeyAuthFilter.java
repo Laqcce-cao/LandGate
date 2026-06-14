@@ -3,6 +3,7 @@ package com.landgate.infrastructure.security.filter;
 import com.landgate.infrastructure.dao.IApiKeyDao;
 import com.landgate.infrastructure.dao.po.ApiKeyPO;
 import com.landgate.types.enums.Status;
+import com.landgate.types.gateway.GatewayPathPolicy;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -70,13 +71,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
         // Only filter gateway paths
-        return !path.startsWith("/v1/")
-                && !path.startsWith("/v1beta/")
-                && !path.startsWith("/chat/completions")
-                && !path.startsWith("/images/")
-                && !path.startsWith("/responses")
-                && !path.startsWith("/antigravity/")
-                && !path.startsWith("/backend-api/codex/");
+        return !GatewayPathPolicy.isGatewayPath(path);
     }
 
     private String extractApiKey(HttpServletRequest request) {

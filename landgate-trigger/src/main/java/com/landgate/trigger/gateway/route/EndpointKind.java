@@ -9,6 +9,8 @@ public enum EndpointKind {
 
     /** Anthropic Messages API。 */
     ANTHROPIC_MESSAGES,
+    /** Anthropic Messages count_tokens API。 */
+    ANTHROPIC_MESSAGES_COUNT_TOKENS,
     /** OpenAI Chat Completions API。 */
     OPENAI_CHAT_COMPLETIONS,
     /** OpenAI Responses API。 */

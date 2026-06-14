@@ -134,6 +134,22 @@ class AbstractGatewayHandlerTest {
     }
 
     @Test
+    @DisplayName("上游 stream 意图为 true 时即使 Content-Type 是 JSON 也按流式读取")
+    void upstreamStreamIntentForcesStreamingHandling() {
+        var upstreamResp = new InputStreamHttpResponse("{}", "application/json");
+
+        assertTrue(AbstractGatewayHandler.shouldHandleResponseAsStreaming(true, upstreamResp));
+    }
+
+    @Test
+    @DisplayName("上游非 SSE JSON 且无 stream 意图时按非流式读取")
+    void jsonResponseWithoutStreamIntentUsesNonStreamingHandling() {
+        var upstreamResp = new InputStreamHttpResponse("{}", "application/json");
+
+        assertFalse(AbstractGatewayHandler.shouldHandleResponseAsStreaming(false, upstreamResp));
+    }
+
+    @Test
     @DisplayName("OpenAI OAuth 上游流式可聚合为客户端非流式 messages 响应")
     void forcedUpstreamStreamingCanAggregateToNonStreamingMessages() throws Exception {
         TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
@@ -162,6 +178,35 @@ class AbstractGatewayHandlerTest {
         assertEquals(20, usage.getInputTokens());
         assertEquals(6, usage.getOutputTokens());
         assertEquals(80, usage.getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("messages 客户端非流式聚合可从空 terminal output 的 Responses deltas 重建文本")
+    void messagesClientAggregatesEmptyTerminalOutputFromBufferedResponsesDeltas() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.ANTHROPIC, "messages"));
+        String sse = """
+                data: {"type":"response.created","response":{"id":"resp_empty_output","model":"gpt-5.5"}}
+
+                data: {"type":"response.output_text.delta","output_index":0,"delta":"rebuilt "}
+
+                data: {"type":"response.output_text.delta","output_index":0,"delta":"answer"}
+
+                data: {"type":"response.completed","response":{"id":"resp_empty_output","model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":15,"output_tokens":4,"input_tokens_details":{"cached_tokens":5}}}}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UsageTokens usage = handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        String body = response.getContentAsString();
+        assertTrue(body.contains("\"type\":\"message\""));
+        assertTrue(body.contains("\"text\":\"rebuilt answer\""));
+        assertEquals(10, usage.getInputTokens());
+        assertEquals(4, usage.getOutputTokens());
+        assertEquals(5, usage.getCacheReadTokens());
     }
 
     @Test
@@ -196,8 +241,166 @@ class AbstractGatewayHandlerTest {
     }
 
     @Test
-    @DisplayName("OpenAI OAuth 上游 response.failed 聚合保留 error 对象")
-    void forcedUpstreamStreamingAggregatesFailedResponseError() throws Exception {
+    @DisplayName("OpenAI Responses SSE 聚合兼容 data: 无空格格式")
+    void forcedUpstreamStreamingAggregatesDataLinesWithoutSpace() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "responses"));
+        String sse = """
+                data:{"type":"response.created","response":{"id":"resp_no_space","model":"gpt-5.5"}}
+
+                data:{"type":"response.output_text.delta","output_index":0,"delta":"no-space ok"}
+
+                data:{"type":"response.completed","response":{"id":"resp_no_space","model":"gpt-5.5","status":"completed","usage":{"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UsageTokens usage = handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertTrue(response.getContentAsString().contains("no-space ok"));
+        assertEquals(10, usage.getInputTokens());
+        assertEquals(3, usage.getOutputTokens());
+        assertEquals(2, usage.getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Responses 客户端非流式聚合缺 final response 时保留原始 SSE")
+    void responsesClientPreservesSseWhenUpstreamHasNoFinalResponse() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "responses"));
+        String sse = """
+                data: {"type":"response.created","response":{"id":"resp_partial","model":"gpt-5.5"}}
+
+                data: {"type":"response.output_text.delta","output_index":0,"delta":"partial"}
+
+                data: [DONE]
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getContentType().startsWith("text/event-stream"));
+        assertTrue(response.getContentAsString().contains("response.output_text.delta"));
+        assertTrue(response.getContentAsString().contains("data: [DONE]"));
+    }
+
+    @Test
+    @DisplayName("Responses 客户端非流式聚合遇到 response.incomplete 时保留原始 SSE")
+    void responsesClientPreservesSseWhenTerminalIsIncomplete() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "responses"));
+        String sse = """
+                data: {"type":"response.created","response":{"id":"resp_incomplete","model":"gpt-5.5"}}
+
+                data: {"type":"response.incomplete","response":{"id":"resp_incomplete","model":"gpt-5.5","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getContentType().startsWith("text/event-stream"));
+        assertTrue(response.getContentAsString().contains("response.incomplete"));
+        assertFalse(response.getContentAsString().contains("\"object\":\"response\""));
+    }
+
+    @Test
+    @DisplayName("Chat 客户端非流式聚合 response.incomplete terminal response")
+    void chatClientAggregatesIncompleteTerminalResponse() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "chat_completions"));
+        String sse = """
+                data: {"type":"response.incomplete","response":{"id":"resp_incomplete","model":"gpt-5.5","status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"partial answer"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UsageTokens usage = handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        String body = response.getContentAsString();
+        assertTrue(body.contains("\"object\":\"chat.completion\""));
+        assertTrue(body.contains("\"content\":\"partial answer\""));
+        assertTrue(body.contains("\"finish_reason\":\"stop\""));
+        assertEquals(7, usage.getInputTokens());
+        assertEquals(2, usage.getOutputTokens());
+        assertEquals(3, usage.getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Chat 客户端非流式聚合 response.canceled terminal response")
+    void chatClientAggregatesCanceledTerminalResponse() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "chat_completions"));
+        String sse = """
+                data: {"type":"response.canceled","response":{"id":"resp_canceled","model":"gpt-5.5","status":"canceled","error":{"code":"canceled","message":"Request canceled"},"output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"partial before cancel"}]}],"usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        UsageTokens usage = handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        String body = response.getContentAsString();
+        assertTrue(body.contains("\"object\":\"chat.completion\""));
+        assertTrue(body.contains("\"content\":\"partial before cancel\""));
+        assertTrue(body.contains("\"finish_reason\":\"stop\""));
+        assertFalse(body.contains("missing terminal event"));
+        assertEquals(7, usage.getInputTokens());
+        assertEquals(2, usage.getOutputTokens());
+        assertEquals(3, usage.getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Chat 客户端非流式聚合 terminal event 缺 response 时返回协议错误")
+    void chatClientReturnsProtocolErrorWhenTerminalEventHasNoResponseObject() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "chat_completions"));
+        String sse = """
+                data: {"type":"response.output_text.delta","output_index":0,"delta":"partial"}
+
+                data: {"type":"response.incomplete"}
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(502, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        assertTrue(response.getContentAsString().contains("\"type\":\"upstream_error\""));
+        assertTrue(response.getContentAsString().contains("missing terminal event"));
+    }
+
+    @Test
+    @DisplayName("Chat 客户端非流式聚合缺 terminal event 时返回 Sub2API 对齐的协议错误")
+    void chatClientReturnsProtocolErrorWhenUpstreamHasNoTerminalEvent() throws Exception {
+        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
+        GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "chat_completions"));
+        String sse = """
+                data: {"type":"response.created","response":{"id":"resp_partial","model":"gpt-5.5"}}
+
+                data: [DONE]
+
+                """;
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
+
+        assertEquals(502, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        assertTrue(response.getContentAsString().contains("\"type\":\"upstream_error\""));
+        assertTrue(response.getContentAsString().contains("missing terminal event"));
+    }
+
+    @Test
+    @DisplayName("OpenAI OAuth 上游 response.failed 非流式聚合返回 upstream_error")
+    void forcedUpstreamStreamingFailedResponseReturnsProtocolError() throws Exception {
         TestGatewayHandler handler = new TestGatewayHandler(converterRegistry());
         GatewayRequestContext.set(oauthCodexContext(Platform.OPENAI, "responses"));
         String sse = """
@@ -210,9 +413,9 @@ class AbstractGatewayHandlerTest {
 
         handler.captureStreamingAsNonStreaming(sse, response, new ResponsesUsageParser());
 
-        assertTrue(response.getContentAsString().contains("\"status\":\"failed\""));
-        assertTrue(response.getContentAsString().contains("\"error\""));
-        assertTrue(response.getContentAsString().contains("\"code\":\"server_error\""));
+        assertEquals(502, response.getStatus());
+        assertTrue(response.getContentType().startsWith("application/json"));
+        assertTrue(response.getContentAsString().contains("\"type\":\"upstream_error\""));
         assertTrue(response.getContentAsString().contains("\"message\":\"Upstream failed\""));
     }
 
@@ -503,7 +706,7 @@ class AbstractGatewayHandlerTest {
             super(null, null, null, null, null, null, null, null, null, null,
                     new ProtocolTranslationService(converterRegistry), converterRegistry,
                     new GatewayProtocolPlanner(),
-                    null, null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null, null, null, null, null);
         }
 
         UsageTokens captureStreamingUsage(String sse, IUsageParser usageParser) throws IOException {

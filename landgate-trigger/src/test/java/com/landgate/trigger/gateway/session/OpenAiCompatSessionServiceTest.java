@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.OpenAiAnthropicMessagesCompatPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.redisson.api.RMapCache;
@@ -82,7 +83,9 @@ class OpenAiCompatSessionServiceTest {
 
         assertTrue(root.has("instructions"));
         assertEquals("", root.get("instructions").asText());
-        assertEquals("你好", root.get("input").get(0).get("content").asText());
+        assertTrue(root.get("input").get(0).get("content").get(0).get("text").asText()
+                .contains(OpenAiAnthropicMessagesCompatPolicy.TODO_GUARD_MARKER));
+        assertEquals("你好", root.get("input").get(1).get("content").asText());
     }
 
     @Test
@@ -138,6 +141,96 @@ class OpenAiCompatSessionServiceTest {
         assertEquals(1024, root.get("max_output_tokens").asInt());
     }
 
+    @Test
+    @DisplayName("OpenAI API Key messages compat 为 Codex 模型插入 Claude Code todo guard")
+    void apiKeyMessagesCompatAddsTodoGuardForCodexModel() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .build();
+        String anthropic = """
+                {"model":"gpt-5.5","messages":[{"role":"user","content":"你好"}]}""";
+        String responsesBody = """
+                {"model":"gpt-5.5","input":[{"type":"message","role":"user","content":"你好"}]}""";
+
+        OpenAiCompatSessionService.CompatState state = service.prepareAnthropicMessagesCompat(
+                account, 42L, anthropic, responsesBody, "gpt-5.5");
+        JsonNode input = JSON.readTree(state.body()).get("input");
+
+        assertEquals("developer", input.get(0).get("role").asText());
+        assertTrue(input.get(0).get("content").get(0).get("text").asText()
+                .contains(OpenAiAnthropicMessagesCompatPolicy.TODO_GUARD_MARKER));
+        assertEquals("user", input.get(1).get("role").asText());
+    }
+
+    @Test
+    @DisplayName("OpenAI API Key messages compat 对映射后的 Codex 模型执行 full replay trim")
+    void apiKeyCompatTrimsFullReplayForMappedCodexModel() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .credentials("""
+                        {"model_mapping":{"claude-sonnet-4-5":"gpt-5.3-codex"}}""")
+                .build();
+
+        OpenAiCompatSessionService.FullReplayTrimState state =
+                service.trimAnthropicMessagesFullReplayForApiKeyCompat(
+                        account, 42L, requestWithMessages("claude-sonnet-4-5", 15), "claude-sonnet-4-5");
+        JsonNode root = JSON.readTree(state.body());
+
+        assertTrue(state.trimmed());
+        assertEquals(12, state.messagesAfterTrim());
+        assertEquals("message-03", root.get("messages").get(0).get("content").asText());
+        assertEquals("message-14", root.get("messages").get(11).get("content").asText());
+    }
+
+    @Test
+    @DisplayName("OpenAI API Key messages compat 对非 Codex 模型不执行 full replay trim")
+    void apiKeyCompatSkipsFullReplayTrimForNonCodexModel() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .credentials("{}")
+                .build();
+
+        OpenAiCompatSessionService.FullReplayTrimState state =
+                service.trimAnthropicMessagesFullReplayForApiKeyCompat(
+                        account, 42L, requestWithMessages("gpt-4o", 15), "gpt-4o");
+        JsonNode root = JSON.readTree(state.body());
+
+        assertFalse(state.trimmed());
+        assertEquals(15, root.get("messages").size());
+        assertEquals("message-00", root.get("messages").get(0).get("content").asText());
+    }
+
+    @Test
+    @DisplayName("OpenAI OAuth messages compat 保留 full replay 以便上游缓存增长")
+    void oauthCompatKeepsFullReplayForCacheGrowth() throws Exception {
+        OpenAiCompatSessionService service = newService();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .credentials("""
+                        {"model_mapping":{"claude-sonnet-4-5":"gpt-5.4"}}""")
+                .build();
+
+        OpenAiCompatSessionService.FullReplayTrimState state =
+                service.trimAnthropicMessagesFullReplayForApiKeyCompat(
+                        account, 42L, requestWithMessages("claude-sonnet-4-5", 15), "claude-sonnet-4-5");
+        JsonNode root = JSON.readTree(state.body());
+
+        assertFalse(state.trimmed());
+        assertEquals(15, root.get("messages").size());
+        assertEquals("message-00", root.get("messages").get(0).get("content").asText());
+    }
+
     @SuppressWarnings("unchecked")
     private static OpenAiCompatSessionService newService() {
         RMapCache<String, String> responseIds = mapCache(new HashMap<>());
@@ -145,6 +238,17 @@ class OpenAiCompatSessionServiceTest {
         RMapCache<String, Boolean> disabled = mapCache(new HashMap<>());
         RMapCache<String, String> digests = mapCache(new HashMap<>());
         return new OpenAiCompatSessionService(responseIds, turnStates, disabled, digests);
+    }
+
+    private static String requestWithMessages(String model, int count) {
+        StringBuilder messages = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            if (i > 0) messages.append(',');
+            messages.append("""
+                    {"role":"user","content":"message-%02d"}""".formatted(i));
+        }
+        return """
+                {"model":"%s","messages":[%s]}""".formatted(model, messages);
     }
 
     private static <V> RMapCache<String, V> mapCache(Map<String, V> backing) {

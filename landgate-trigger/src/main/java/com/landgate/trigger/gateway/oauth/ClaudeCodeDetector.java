@@ -2,6 +2,10 @@ package com.landgate.trigger.gateway.oauth;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.types.gateway.AnthropicApiProfile;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.GatewayHeaderPolicy;
+import com.landgate.types.gateway.MetadataUserIdParser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -80,16 +84,19 @@ public class ClaudeCodeDetector {
     public static String extractSystemPrompt(String body) {
         try {
             JsonNode root = JSON.readTree(body);
-            if (root.has("system")) {
-                JsonNode system = root.get("system");
+            if (root.has(AnthropicMessagesBodyPolicy.FIELD_SYSTEM)) {
+                JsonNode system = root.get(AnthropicMessagesBodyPolicy.FIELD_SYSTEM);
                 if (system.isTextual()) return system.asText();
                 if (system.isArray()) {
                     StringBuilder sb = new StringBuilder();
                     for (JsonNode block : system) {
-                        if ("text".equals(block.has("type") ? block.get("type").asText() : "")
-                                && block.has("text")) {
+                        if (AnthropicMessagesBodyPolicy.TYPE_TEXT.equals(
+                                block.has(AnthropicMessagesBodyPolicy.FIELD_TYPE)
+                                        ? block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE).asText()
+                                        : "")
+                                && block.has(AnthropicMessagesBodyPolicy.FIELD_TEXT)) {
                             if (sb.length() > 0) sb.append("\n");
-                            sb.append(block.get("text").asText());
+                            sb.append(block.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).asText());
                         }
                     }
                     return sb.toString();
@@ -139,9 +146,9 @@ public class ClaudeCodeDetector {
      */
     private static boolean hasRequiredCCHeaders(Map<String, String> headers) {
         if (headers == null) return false;
-        String xApp = headers.get("X-App");
-        String beta = headers.get("Anthropic-Beta");
-        String version = headers.get("Anthropic-Version");
+        String xApp = GatewayHeaderPolicy.value(headers, AnthropicApiProfile.HEADER_X_APP);
+        String beta = GatewayHeaderPolicy.value(headers, AnthropicApiProfile.HEADER_ANTHROPIC_BETA);
+        String version = GatewayHeaderPolicy.value(headers, AnthropicApiProfile.HEADER_ANTHROPIC_VERSION);
         return xApp != null && !xApp.isEmpty()
                 && beta != null && !beta.isEmpty()
                 && version != null && !version.isEmpty();

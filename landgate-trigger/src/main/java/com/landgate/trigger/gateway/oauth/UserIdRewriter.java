@@ -3,6 +3,8 @@ package com.landgate.trigger.gateway.oauth;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.MetadataUserIdParser;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.stereotype.Component;
@@ -43,10 +45,10 @@ public class UserIdRewriter {
 
         try {
             JsonNode root = JSON.readTree(body);
-            if (!root.has("metadata")) return body;
-            JsonNode metadata = root.get("metadata");
-            if (metadata == null || !metadata.has("user_id")) return body;
-            String userId = metadata.get("user_id").asText();
+            if (!root.has(AnthropicMessagesBodyPolicy.FIELD_METADATA)) return body;
+            JsonNode metadata = root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA);
+            if (metadata == null || !metadata.has(AnthropicMessagesBodyPolicy.FIELD_USER_ID)) return body;
+            String userId = metadata.get(AnthropicMessagesBodyPolicy.FIELD_USER_ID).asText();
             if (userId == null || userId.isEmpty()) return body;
 
             // 解析 user_id
@@ -67,7 +69,7 @@ public class UserIdRewriter {
             if (newUserId.equals(userId)) return body;
 
             // 替换 metadata.user_id
-            return replaceMetadataUserId(body, userId, newUserId);
+            return replaceMetadataUserId(root, newUserId);
         } catch (Exception e) {
             log.debug("Failed to rewrite user_id for account {}: {}", accountId, e.getMessage());
             return body;
@@ -99,8 +101,12 @@ public class UserIdRewriter {
     public String extractCurrentSessionId(String body) {
         try {
             JsonNode root = JSON.readTree(body);
-            if (root.has("metadata") && root.get("metadata").has("user_id")) {
-                String userId = root.get("metadata").get("user_id").asText();
+            if (root.has(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                    && root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                    .has(AnthropicMessagesBodyPolicy.FIELD_USER_ID)) {
+                String userId = root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA)
+                        .get(AnthropicMessagesBodyPolicy.FIELD_USER_ID)
+                        .asText();
                 MetadataUserIdParser.ParsedMetadataUserId parsed = MetadataUserIdParser.parse(userId);
                 if (parsed != null) return parsed.sessionId();
             }
@@ -145,12 +151,17 @@ public class UserIdRewriter {
     }
 
     /**
-     * 在 body 中替换 metadata.user_id 值（字符串级别替换，避免重新序列化）。
+     * 在解析后的 body 中替换 metadata.user_id 值。
      */
-    private static String replaceMetadataUserId(String body, String oldUserId, String newUserId) {
-        // 使用 JSON 字符串替换，避免影响 body 中其他字段
-        String oldJson = "\"user_id\":\"" + oldUserId + "\"";
-        String newJson = "\"user_id\":\"" + newUserId + "\"";
-        return body.replace(oldJson, newJson);
+    private static String replaceMetadataUserId(JsonNode root, String newUserId) {
+        if (!root.isObject()) {
+            return root.toString();
+        }
+        JsonNode metadata = root.get(AnthropicMessagesBodyPolicy.FIELD_METADATA);
+        if (metadata != null && metadata.isObject()) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) metadata)
+                    .put(AnthropicMessagesBodyPolicy.FIELD_USER_ID, newUserId);
+        }
+        return root.toString();
     }
 }

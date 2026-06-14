@@ -14,12 +14,16 @@ import com.landgate.trigger.gateway.billing.GatewayBillingSettlementService;
 import com.landgate.trigger.gateway.client.ClientProfileService;
 import com.landgate.trigger.gateway.error.ErrorPassthroughService;
 import com.landgate.trigger.gateway.error.OpenAiErrorWriter;
+import com.landgate.trigger.gateway.forwarding.AnthropicForwardingRuntimePolicyProvider;
 import com.landgate.trigger.gateway.group.GatewayGroupResolver;
 import com.landgate.trigger.gateway.limit.ConcurrencyService;
 import com.landgate.trigger.gateway.limit.RateLimitHeaderParser;
 import com.landgate.trigger.gateway.PlatformRouter;
 import com.landgate.trigger.gateway.converter.ProtocolTranslationService;
+import com.landgate.trigger.gateway.request.AnthropicMessagesHttpRequestValidator;
 import com.landgate.trigger.gateway.request.GatewayRequestParser;
+import com.landgate.trigger.gateway.request.OpenAiChatCompletionsHttpRequestValidator;
+import com.landgate.trigger.gateway.request.OpenAiResponsesHttpRequestValidator;
 import com.landgate.trigger.gateway.response.GatewayResponseService;
 import com.landgate.trigger.gateway.route.UpstreamRouteResolver;
 import com.landgate.trigger.gateway.account.AccountSelector;
@@ -59,8 +63,12 @@ public class OpenAiGatewayHandler extends AbstractGatewayHandler {
             GatewayGroupResolver gatewayGroupResolver,
             ClientProfileService clientProfileService,
             GatewayRequestParser gatewayRequestParser,
+            AnthropicMessagesHttpRequestValidator anthropicMessagesHttpRequestValidator,
+            OpenAiChatCompletionsHttpRequestValidator openAiChatCompletionsHttpRequestValidator,
+            OpenAiResponsesHttpRequestValidator openAiResponsesHttpRequestValidator,
             GatewayResponseService gatewayResponseService,
             OpenAiCompatSessionService openAiCompatSessionService,
+            AnthropicForwardingRuntimePolicyProvider anthropicForwardingRuntimePolicyProvider,
             OpenAiErrorWriter errorWriter) {
         super(accountSelector, getAccessTokenService, httpUpstreamClient,
                 gatewayAccessService, concurrencyService, sessionHashService, oauthTokenRefreshService,
@@ -68,8 +76,12 @@ public class OpenAiGatewayHandler extends AbstractGatewayHandler {
                 translationService, converterRegistry, protocolPlanner,
                 oAuthMimicryService, fingerprintService,
                 upstreamRouteResolver, billingSettlementService,
-                gatewayGroupResolver, clientProfileService, gatewayRequestParser, gatewayResponseService,
-                openAiCompatSessionService);
+                gatewayGroupResolver, clientProfileService, gatewayRequestParser,
+                anthropicMessagesHttpRequestValidator,
+                openAiChatCompletionsHttpRequestValidator,
+                openAiResponsesHttpRequestValidator, gatewayResponseService,
+                openAiCompatSessionService,
+                anthropicForwardingRuntimePolicyProvider);
         this.errorWriter = errorWriter;
     }
 

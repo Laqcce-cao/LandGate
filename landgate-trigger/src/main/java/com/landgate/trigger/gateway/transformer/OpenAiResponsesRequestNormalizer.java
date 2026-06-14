@@ -3,8 +3,17 @@ package com.landgate.trigger.gateway.transformer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.landgate.domain.account.model.entity.AccountEntity;
+import com.landgate.trigger.gateway.route.UpstreamRoute;
+import com.landgate.types.gateway.GatewayResponsesRoutePolicy;
+import com.landgate.types.gateway.OpenAiCompactAccountPolicy;
+import com.landgate.types.gateway.OpenAiCompactRequestBodyPolicy;
+import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Normalizes public OpenAI Responses API-key requests before forwarding upstream.
@@ -16,13 +25,26 @@ public class OpenAiResponsesRequestNormalizer {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public String normalize(String body) {
+        return normalize(body, null);
+    }
+
+    public String normalize(String body, UpstreamRoute route) {
+        return normalize(body, route, null);
+    }
+
+    public String normalize(String body, UpstreamRoute route, AccountEntity account) {
         try {
             JsonNode parsed = JSON.readTree(body);
             if (!(parsed instanceof ObjectNode root)) return body;
-            normalizeOpenAIServiceTier(root);
-            root.remove("max_completion_tokens");
-            root.remove("prompt_cache_retention");
-            root.remove("safety_identifier");
+            if (isCompactEndpoint(route)) {
+                applyCompactModelMapping(root, account);
+                retainCompactRequestFields(root);
+            } else {
+                OpenAiModelMappingRequestNormalizer.apply(root, account, OpenAiResponsesBodyPolicy.FIELD_MODEL);
+                normalizeOpenAIServiceTier(root);
+                normalizeReasoningEffort(root);
+                root.remove(OpenAiNormalizerProfile.publicResponsesUnsupportedFields());
+            }
             sanitizeEmptyBase64InputImages(root);
             return JSON.writeValueAsString(root);
         } catch (Exception e) {
@@ -31,34 +53,66 @@ public class OpenAiResponsesRequestNormalizer {
         }
     }
 
+    private static void applyCompactModelMapping(ObjectNode root, AccountEntity account) {
+        if (account == null) {
+            return;
+        }
+        JsonNode model = root.get(OpenAiResponsesBodyPolicy.FIELD_MODEL);
+        if (model == null || !model.isTextual()) {
+            return;
+        }
+        OpenAiCompactAccountPolicy.CompactModelMapping mapping =
+                OpenAiCompactAccountPolicy.resolveCompactMappedModel(
+                        account.getCredentials(), model.asText());
+        if (mapping.matched()) {
+            root.put(OpenAiResponsesBodyPolicy.FIELD_MODEL, mapping.model());
+        }
+    }
+
+    private static boolean isCompactEndpoint(UpstreamRoute route) {
+        return route != null && GatewayResponsesRoutePolicy.isCompactPath(route.targetUrl());
+    }
+
+    private static void retainCompactRequestFields(ObjectNode root) {
+        List<String> toRemove = new ArrayList<>();
+        root.fieldNames().forEachRemaining(field -> {
+            if (!OpenAiCompactRequestBodyPolicy.isCompactAllowedField(field)) {
+                toRemove.add(field);
+            }
+        });
+        root.remove(toRemove);
+    }
+
     private static void normalizeOpenAIServiceTier(ObjectNode root) {
-        JsonNode value = root.get("service_tier");
+        JsonNode value = root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
         if (value == null || !value.isTextual()) {
             return;
         }
-        String normalized = normalizedOpenAIServiceTierValue(value.asText());
+        String normalized = OpenAiNormalizerProfile.normalizeServiceTier(value.asText());
         if (normalized.isBlank()) {
-            root.remove("service_tier");
+            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
         } else {
-            root.put("service_tier", normalized);
+            root.put(OpenAiNormalizerProfile.FIELD_SERVICE_TIER, normalized);
         }
     }
 
-    private static String normalizedOpenAIServiceTierValue(String raw) {
-        if (raw == null) return "";
-        String value = raw.trim().toLowerCase();
-        if (value.isBlank()) return "";
-        if ("fast".equals(value)) {
-            value = "priority";
+    private static void normalizeReasoningEffort(ObjectNode root) {
+        JsonNode reasoning = root.get(OpenAiResponsesBodyPolicy.FIELD_REASONING);
+        if (!(reasoning instanceof ObjectNode reasoningObject)) {
+            return;
         }
-        return switch (value) {
-            case "priority", "flex", "auto", "default", "scale" -> value;
-            default -> "";
-        };
+        JsonNode effort = reasoningObject.get(OpenAiResponsesBodyPolicy.FIELD_EFFORT);
+        if (effort == null || !effort.isTextual()) {
+            return;
+        }
+        String normalized = OpenAiResponsesBodyPolicy.normalizeReasoningEffort(effort.asText());
+        if (!effort.asText().equals(normalized)) {
+            reasoningObject.put(OpenAiResponsesBodyPolicy.FIELD_EFFORT, normalized);
+        }
     }
 
     private static void sanitizeEmptyBase64InputImages(ObjectNode root) {
-        JsonNode input = root.get("input");
+        JsonNode input = root.get(OpenAiNormalizerProfile.FIELD_INPUT);
         if (input == null || !input.isArray()) {
             return;
         }
@@ -73,7 +127,7 @@ public class OpenAiResponsesRequestNormalizer {
                 changed = true;
                 continue;
             }
-            JsonNode content = itemObject.get("content");
+            JsonNode content = itemObject.get(OpenAiNormalizerProfile.FIELD_CONTENT);
             if (content == null || !content.isArray()) {
                 normalizedItems.add(item);
                 continue;
@@ -93,32 +147,23 @@ public class OpenAiResponsesRequestNormalizer {
                     continue;
                 }
                 ObjectNode copied = itemObject.deepCopy();
-                copied.set("content", normalizedParts);
+                copied.set(OpenAiNormalizerProfile.FIELD_CONTENT, normalizedParts);
                 normalizedItems.add(copied);
             } else {
                 normalizedItems.add(item);
             }
         }
         if (changed) {
-            root.set("input", normalizedItems);
+            root.set(OpenAiNormalizerProfile.FIELD_INPUT, normalizedItems);
         }
     }
 
     private static boolean shouldDropEmptyBase64InputImagePart(ObjectNode part) {
-        JsonNode type = part.get("type");
-        JsonNode imageUrl = part.get("image_url");
-        return type != null && type.isTextual() && "input_image".equals(type.asText().trim())
+        JsonNode type = part.get(OpenAiNormalizerProfile.FIELD_TYPE);
+        JsonNode imageUrl = part.get(OpenAiNormalizerProfile.FIELD_IMAGE_URL);
+        return type != null && type.isTextual()
+                && OpenAiNormalizerProfile.TYPE_INPUT_IMAGE.equals(type.asText().trim())
                 && imageUrl != null && imageUrl.isTextual()
-                && isEmptyBase64DataURI(imageUrl.asText().trim());
-    }
-
-    private static boolean isEmptyBase64DataURI(String raw) {
-        if (raw == null || !raw.startsWith("data:")) return false;
-        String rest = raw.substring("data:".length());
-        int semicolon = rest.indexOf(';');
-        if (semicolon < 0) return false;
-        rest = rest.substring(semicolon + 1);
-        if (!rest.startsWith("base64,")) return false;
-        return rest.substring("base64,".length()).trim().isEmpty();
+                && OpenAiNormalizerProfile.isEmptyBase64DataUri(imageUrl.asText().trim());
     }
 }

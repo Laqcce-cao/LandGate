@@ -9,6 +9,7 @@ import com.landgate.trigger.gateway.transformer.OpenAiTransformer;
 import com.landgate.trigger.gateway.transformer.UpstreamRequestContext;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.OpenAiAnthropicMessagesCompatPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -142,15 +143,21 @@ class OpenAiTransformerTest {
                 false,
                 Map.of(
                         "Accept", "text/event-stream",
-                        "User-Agent", "openai-sdk-java/1.0",
+                        "User-Agent", "curl/8.0",
                         "Accept-Language", "zh-CN",
+                        "Authorization", "Bearer inbound-should-not-forward",
+                        "Proxy-Authorization", "Basic inbound-proxy",
+                        "x-api-key", "inbound-api-key",
                         "OpenAI-Beta", "responses=experimental",
                         "originator", "codex_cli_rs",
                         "session_id", "sess_1",
                         "x-codex-turn-state", "turn_state")));
 
+        assertEquals("Bearer token-1", request.headers().firstValue("Authorization").orElse(""));
+        assertTrue(request.headers().firstValue("Proxy-Authorization").isEmpty());
+        assertTrue(request.headers().firstValue("x-api-key").isEmpty());
         assertEquals("text/event-stream", request.headers().firstValue("Accept").orElse(""));
-        assertEquals("openai-sdk-java/1.0", request.headers().firstValue("User-Agent").orElse(""));
+        assertEquals("curl/8.0", request.headers().firstValue("User-Agent").orElse(""));
         assertEquals("zh-CN", request.headers().firstValue("Accept-Language").orElse(""));
         assertTrue(request.headers().firstValue("OpenAI-Beta").isEmpty());
         assertTrue(request.headers().firstValue("originator").isEmpty());
@@ -187,19 +194,25 @@ class OpenAiTransformerTest {
                 null,
                 false,
                 false,
-                Map.of(
-                        "User-Agent", "openai-sdk-java/1.0",
-                        "Accept-Language", "zh-CN",
-                        "OpenAI-Beta", "responses=experimental",
-                        "originator", "codex_cli_rs",
-                        "session_id", "sess_1",
-                        "conversation_id", "conv_1",
-                        "x-codex-turn-state", "turn_state",
-                        "x-stainless-timeout", "1")));
+                Map.ofEntries(
+                        Map.entry("User-Agent", "curl/8.0"),
+                        Map.entry("Accept-Language", "zh-CN"),
+                        Map.entry("Authorization", "Bearer inbound-should-not-forward"),
+                        Map.entry("Proxy-Authorization", "Basic inbound-proxy"),
+                        Map.entry("x-api-key", "inbound-api-key"),
+                        Map.entry("OpenAI-Beta", "responses=experimental"),
+                        Map.entry("originator", "codex_cli_rs"),
+                        Map.entry("session_id", "sess_1"),
+                        Map.entry("conversation_id", "conv_1"),
+                        Map.entry("x-codex-turn-state", "turn_state"),
+                        Map.entry("x-stainless-timeout", "1"))));
 
+        assertEquals("Bearer token-1", request.headers().firstValue("Authorization").orElse(""));
+        assertTrue(request.headers().firstValue("Proxy-Authorization").isEmpty());
+        assertTrue(request.headers().firstValue("x-api-key").isEmpty());
         assertEquals("application/json", request.headers().firstValue("Accept").orElse(""));
         assertEquals(List.of("application/json"), request.headers().allValues("Accept"));
-        assertEquals("openai-sdk-java/1.0", request.headers().firstValue("User-Agent").orElse(""));
+        assertEquals("curl/8.0", request.headers().firstValue("User-Agent").orElse(""));
         assertEquals("zh-CN", request.headers().firstValue("Accept-Language").orElse(""));
         assertTrue(request.headers().firstValue("OpenAI-Beta").isEmpty());
         assertTrue(request.headers().firstValue("originator").isEmpty());
@@ -399,20 +412,21 @@ class OpenAiTransformerTest {
 
         assertFalse(root.has("store"));
         assertFalse(root.has("stream"));
-        assertEquals("message.output_text.logprobs", root.get("include").get(0).asText());
         assertEquals("resp_prev", root.get("previous_response_id").asText());
-        assertEquals("auto", root.get("truncation").asText());
-        assertEquals("pmpt_1", root.get("prompt").get("id").asText());
-        assertTrue(root.get("background").asBoolean());
-        assertEquals("conv_1", root.get("conversation").get("id").asText());
-        assertEquals("auto", root.get("context_management").get(0).get("type").asText());
+        assertFalse(root.has("include"));
+        assertFalse(root.has("truncation"));
+        assertFalse(root.has("prompt"));
+        assertFalse(root.has("background"));
+        assertFalse(root.has("conversation"));
+        assertFalse(root.has("context_management"));
         assertFalse(root.has("metadata"));
         assertFalse(root.has("user"));
         assertFalse(root.has("safety_identifier"));
         assertFalse(root.has("prompt_cache_key"));
         assertFalse(root.has("prompt_cache_retention"));
+        assertFalse(root.has("instructions"));
         assertTrue(root.get("parallel_tool_calls").asBoolean());
-        assertEquals(4, root.get("max_tool_calls").asInt());
+        assertFalse(root.has("max_tool_calls"));
         assertEquals("application/json", request.headers().firstValue("Accept").orElse(""));
         assertEquals("0.125.0", request.headers().firstValue("Version").orElse(""));
     }
@@ -569,6 +583,38 @@ class OpenAiTransformerTest {
     }
 
     @Test
+    @DisplayName("OAuth Codex 请求保留未知 tool 结构")
+    void codexOAuthRequestPreservesUnknownToolStructures() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .build();
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "tools":[
+                    "raw-tool",
+                    {"type":"web_search","name":"search"},
+                    {"type":"function","function":null},
+                    {"type":"function","name":"get_weather","parameters":{"type":"object"}}
+                  ],
+                  "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Hi"}]}]
+                }""";
+
+        Method method = OpenAiTransformer.class.getDeclaredMethod(
+                "normalizeCodexOAuthRequestBody", String.class, AccountEntity.class);
+        method.setAccessible(true);
+        JsonNode root = JSON.readTree((String) method.invoke(transformer, body, account));
+
+        assertEquals(3, root.get("tools").size());
+        assertEquals("raw-tool", root.get("tools").get(0).asText());
+        assertEquals("web_search", root.get("tools").get(1).get("type").asText());
+        assertEquals("get_weather", root.get("tools").get(2).get("name").asText());
+    }
+
+    @Test
     @DisplayName("OAuth Codex 请求将无效 tool_choice 回退 auto")
     void codexOAuthRequestFallbacksInvalidToolChoiceToAuto() throws Exception {
         OpenAiTransformer transformer = new OpenAiTransformer();
@@ -675,6 +721,37 @@ class OpenAiTransformerTest {
     }
 
     @Test
+    @DisplayName("OAuth Codex 请求不为非 Codex tool-call input 保留 call_id")
+    void codexOAuthRequestRemovesCallIdFromNonCodexToolCallInputItems() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .build();
+        Method method = OpenAiTransformer.class.getDeclaredMethod(
+                "normalizeCodexOAuthRequestBody", String.class, AccountEntity.class);
+        method.setAccessible(true);
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "tool_choice":"auto",
+                  "input":[
+                    {"type":"image_generation_call","id":"ig_123","call_id":"call_image","status":"completed"},
+                    {"type":"web_search_call","call_id":"call_web","status":"completed"},
+                    {"type":"tool_search_output","call_id":"call_search","output":"ok"}
+                  ]
+                }""";
+
+        JsonNode root = JSON.readTree((String) method.invoke(transformer, body, account));
+
+        assertEquals("ig_123", root.get("input").get(0).get("id").asText());
+        assertFalse(root.get("input").get(0).has("call_id"));
+        assertFalse(root.get("input").get(1).has("call_id"));
+        assertEquals("fcsearch", root.get("input").get(2).get("call_id").asText());
+    }
+
+    @Test
     @DisplayName("OAuth Codex 请求转发并隔离会话 Header")
     void codexOAuthRequestForwardsIsolatedSessionHeaders() throws Exception {
         OpenAiTransformer transformer = new OpenAiTransformer();
@@ -718,6 +795,9 @@ class OpenAiTransformerTest {
                         "conversation_id", "client-conversation",
                         "Content-Type", "application/json; charset=utf-8",
                         "Accept", "application/json",
+                        "Authorization", "Bearer inbound-should-not-forward",
+                        "Proxy-Authorization", "Basic inbound-proxy",
+                        "x-api-key", "inbound-api-key",
                         "x-codex-turn-state", "turn-state-1",
                         "User-Agent", "codex-tui/0.139.0",
                         "Accept-Language", "en-US")));
@@ -728,6 +808,9 @@ class OpenAiTransformerTest {
 
         assertEquals("body-cache-key", root.get("prompt_cache_key").asText());
         assertEquals("https://chatgpt.com/backend-api/codex/responses", request.uri().toString());
+        assertEquals("Bearer token-1", request.headers().firstValue("Authorization").orElse(""));
+        assertTrue(request.headers().firstValue("Proxy-Authorization").isEmpty());
+        assertTrue(request.headers().firstValue("x-api-key").isEmpty());
         assertFalse(sessionId.isBlank());
         assertEquals(16, sessionId.length());
         assertNotEquals("client-session", sessionId);
@@ -833,6 +916,60 @@ class OpenAiTransformerTest {
     }
 
     @Test
+    @DisplayName("Anthropic Messages 兼容 OpenAI OAuth 时保留 Claude tool_call id")
+    void anthropicMessagesCompatOAuthPreservesClaudeToolCallIds() throws Exception {
+        OpenAiTransformer transformer = new OpenAiTransformer();
+        AccountEntity account = AccountEntity.builder()
+                .id(6L)
+                .platform(Platform.OPENAI)
+                .type(AccountType.OAUTH)
+                .credentials("{\"chatgpt_account_id\":\"chatgpt-acc\"}")
+                .build();
+        String body = """
+                {
+                  "model":"gpt-5.5",
+                  "prompt_cache_key":"anthropic-cache-abc",
+                  "input":[
+                    {"type":"message","role":"user","content":[{"type":"input_text","text":"list files"}]},
+                    {"type":"function_call","call_id":"toolu_123","name":"Bash","arguments":"{\\"command\\":\\"ls\\"}"},
+                    {"type":"function_call_output","call_id":"toolu_123","output":"ok"}
+                  ],
+                  "stream":false
+                }""";
+
+        var request = transformer.buildUpstreamRequest(new UpstreamRequestContext(
+                "req-1",
+                42L,
+                body,
+                account,
+                "token-1",
+                new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://chatgpt.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "openai_oauth_codex"),
+                null,
+                "/v1/messages",
+                "gpt-5.5",
+                true,
+                false,
+                Map.of()));
+
+        JsonNode root = JSON.readTree(readBody(request));
+
+        assertFalse(root.has("prompt_cache_key"));
+        assertTrue(root.get("input").get(0).get("content").get(0).get("text").asText()
+                .contains(OpenAiAnthropicMessagesCompatPolicy.TODO_GUARD_MARKER));
+        assertEquals("toolu_123", root.get("input").get(2).get("call_id").asText());
+        assertEquals("toolu_123", root.get("input").get(3).get("call_id").asText());
+    }
+
+    @Test
     @DisplayName("OAuth Codex 请求保留官方 Codex User-Agent")
     void codexOAuthRequestKeepsOfficialCodexUserAgent() {
         OpenAiTransformer transformer = new OpenAiTransformer();
@@ -881,6 +1018,7 @@ class OpenAiTransformerTest {
                   "model":"gpt-5.5",
                   "input":"Hi",
                   "service_tier":"fast",
+                  "reasoning":{"effort":"minimal"},
                   "max_output_tokens":512,
                   "max_completion_tokens":256,
                   "include":["message.output_text.logprobs","web_search_call.results"],
@@ -925,7 +1063,8 @@ class OpenAiTransformerTest {
         JsonNode root = JSON.readTree(readBody(request));
 
         assertEquals("priority", root.get("service_tier").asText());
-        assertEquals(512, root.get("max_output_tokens").asInt());
+        assertEquals("none", root.get("reasoning").get("effort").asText());
+        assertFalse(root.has("max_output_tokens"));
         assertFalse(root.has("max_completion_tokens"));
         assertEquals("web_search_call.results", root.get("include").get(1).asText());
         assertEquals("resp_prev", root.get("previous_response_id").asText());

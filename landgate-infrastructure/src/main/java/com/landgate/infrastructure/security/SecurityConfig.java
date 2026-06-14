@@ -4,6 +4,7 @@ import com.landgate.infrastructure.security.filter.ApiKeyAuthFilter;
 import com.landgate.infrastructure.security.filter.ClientRequestIdFilter;
 import com.landgate.infrastructure.security.filter.JwtAuthFilter;
 import com.landgate.infrastructure.security.filter.RequestBodyLimitFilter;
+import com.landgate.types.gateway.GatewayPathPolicy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -90,9 +91,7 @@ public class SecurityConfig {
      */
     @Bean
     public SecurityFilterChain gatewayFilterChain(HttpSecurity http) throws Exception {
-        http.securityMatcher("/v1/**", "/v1beta/**", "/chat/completions",
-                        "/images/**", "/responses/**", "/antigravity/**",
-                        "/backend-api/codex/**")
+        http.securityMatcher(GatewayPathPolicy.securityMatchers())
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .addFilterBefore(requestBodyLimitFilter, UsernamePasswordAuthenticationFilter.class)

@@ -4,9 +4,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.group.model.entity.GroupEntity;
+import com.landgate.types.gateway.GatewayProtocolFormat;
 
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -29,14 +29,14 @@ public final class ProtocolFormatResolver {
         String normalized = normalizeFormat(clientFormat);
         return protocols.stream()
                 .map(ProtocolFormatResolver::normalizeFormat)
-                .anyMatch(value -> "*".equals(value) || value.equals(normalized));
+                .anyMatch(value -> GatewayProtocolFormat.isWildcard(value) || value.equals(normalized));
     }
 
     public static String resolveAccountUpstreamFormat(AccountEntity account, String fallback) {
         List<String> protocols = account == null ? List.of() : parseProtocols(account.getSupportedProtocols());
         for (String protocol : protocols) {
             String normalized = normalizeFormat(protocol);
-            if (!normalized.isBlank() && !"*".equals(normalized)) {
+            if (!normalized.isBlank() && !GatewayProtocolFormat.isWildcard(normalized)) {
                 return normalized;
             }
         }
@@ -55,7 +55,7 @@ public final class ProtocolFormatResolver {
         List<String> normalized = (account == null ? List.<String>of() : parseProtocols(account.getSupportedProtocols()))
                 .stream()
                 .map(ProtocolFormatResolver::normalizeFormat)
-                .filter(value -> !value.isBlank() && !"*".equals(value))
+                .filter(value -> !value.isBlank() && !GatewayProtocolFormat.isWildcard(value))
                 .distinct()
                 .toList();
         if (normalized.size() != 1) {
@@ -73,20 +73,7 @@ public final class ProtocolFormatResolver {
     }
 
     public static String normalizeFormat(String raw) {
-        if (raw == null) return "";
-        String value = raw.trim().toLowerCase(Locale.ROOT)
-                .replace('-', '_')
-                .replace(' ', '_');
-        while (value.contains("__")) {
-            value = value.replace("__", "_");
-        }
-        return switch (value) {
-            case "anthropic", "anthropic_messages", "messages_api" -> "messages";
-            case "openai", "openai_chat", "chat", "chat_completion", "chat_completions" -> "chat_completions";
-            case "openai_responses", "response", "responses_api" -> "responses";
-            case "google", "google_gemini", "gemini_generate_content" -> "gemini";
-            default -> value;
-        };
+        return GatewayProtocolFormat.normalizeId(raw);
     }
 
     public static boolean isSameFormat(String left, String right) {

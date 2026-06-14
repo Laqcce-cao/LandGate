@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.landgate.domain.billing.model.valobj.UsageTokens;
+import com.landgate.types.gateway.OpenAiChatCompletionsBodyPolicy;
+import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
+import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -28,16 +31,17 @@ public class OpenAiUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(responseBody);
-            JsonNode usage = root.path("usage");
+            JsonNode usage = root.path(OpenAiChatCompletionsBodyPolicy.FIELD_USAGE);
             if (usage.isMissingNode() || usage.isNull()) {
                 return new UsageTokens();
             }
             // OpenAI API: prompt_tokens 包含缓存部分，需减去避免重复计费
-            int rawPromptTokens = usage.path("prompt_tokens").asInt();
-            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt();
+            int rawPromptTokens = usage.path(OpenAiChatCompletionsBodyPolicy.FIELD_PROMPT_TOKENS).asInt();
+            int cachedTokens = usage.path(OpenAiChatCompletionsBodyPolicy.FIELD_PROMPT_TOKENS_DETAILS)
+                    .path(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS).asInt();
             return UsageTokens.builder()
                     .inputTokens(Math.max(0, rawPromptTokens - cachedTokens))
-                    .outputTokens(usage.path("completion_tokens").asInt())
+                    .outputTokens(usage.path(OpenAiChatCompletionsBodyPolicy.FIELD_COMPLETION_TOKENS).asInt())
                     .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
@@ -53,16 +57,17 @@ public class OpenAiUsageParser implements IUsageParser {
         }
         try {
             JsonNode root = JSON.readTree(sseData);
-            JsonNode usage = root.path("usage");
+            JsonNode usage = root.path(OpenAiChatCompletionsBodyPolicy.FIELD_USAGE);
             if (usage.isMissingNode() || usage.isNull()) {
                 return null;
             }
             // OpenAI API: prompt_tokens 包含缓存部分，需减去避免重复计费
-            int rawPromptTokens = usage.path("prompt_tokens").asInt();
-            int cachedTokens = usage.path("prompt_tokens_details").path("cached_tokens").asInt();
+            int rawPromptTokens = usage.path(OpenAiChatCompletionsBodyPolicy.FIELD_PROMPT_TOKENS).asInt();
+            int cachedTokens = usage.path(OpenAiChatCompletionsBodyPolicy.FIELD_PROMPT_TOKENS_DETAILS)
+                    .path(OpenAiResponsesJsonPolicy.FIELD_CACHED_TOKENS).asInt();
             return UsageTokens.builder()
                     .inputTokens(Math.max(0, rawPromptTokens - cachedTokens))
-                    .outputTokens(usage.path("completion_tokens").asInt())
+                    .outputTokens(usage.path(OpenAiChatCompletionsBodyPolicy.FIELD_COMPLETION_TOKENS).asInt())
                     .cacheReadTokens(cachedTokens)
                     .build();
         } catch (Exception e) {
@@ -73,6 +78,6 @@ public class OpenAiUsageParser implements IUsageParser {
 
     @Override
     public boolean isStreamDone(String sseLine) {
-        return "data: [DONE]".equals(sseLine);
+        return OpenAiResponsesSsePolicy.isDoneSentinel(OpenAiResponsesSsePolicy.extractDataPayload(sseLine));
     }
 }

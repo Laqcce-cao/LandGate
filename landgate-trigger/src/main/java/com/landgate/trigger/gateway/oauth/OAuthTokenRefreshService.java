@@ -154,9 +154,8 @@ public class OAuthTokenRefreshService {
                     ? provider.getRefreshScopes()
                     : provider.getScopes();
 
-            boolean useJson = "json".equalsIgnoreCase(provider.getTokenExchangeFormat());
+            boolean useJson = OAuthHttpProfile.usesJsonTokenExchange(provider);
             String body;
-            String contentType;
 
             if (useJson) {
                 ObjectNode refreshReq = JSON.createObjectNode();
@@ -164,22 +163,18 @@ public class OAuthTokenRefreshService {
                 refreshReq.put("refresh_token", refreshToken);
                 refreshReq.put("client_id", provider.getClientId());
                 body = refreshReq.toString();
-                contentType = "application/json";
             } else {
                 body = "grant_type=refresh_token"
                         + "&refresh_token=" + java.net.URLEncoder.encode(refreshToken, java.nio.charset.StandardCharsets.UTF_8)
                         + "&client_id=" + java.net.URLEncoder.encode(provider.getClientId(), java.nio.charset.StandardCharsets.UTF_8)
                         + "&scope=" + java.net.URLEncoder.encode(refreshScopes, java.nio.charset.StandardCharsets.UTF_8);
-                contentType = "application/x-www-form-urlencoded";
             }
 
             var reqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getTokenUrl()))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", contentType);
-            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
-                reqBuilder.header("User-Agent", provider.getUserAgent());
-            }
+                    .timeout(Duration.ofSeconds(15));
+            OAuthHttpProfile.applyContentType(reqBuilder, OAuthHttpProfile.tokenExchangeContentType(provider));
+            OAuthHttpProfile.applyProviderUserAgent(reqBuilder, provider);
             HttpRequest req = reqBuilder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
             HttpResponse<String> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofString());

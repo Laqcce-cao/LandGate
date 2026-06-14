@@ -2,9 +2,8 @@ package com.landgate.trigger.gateway.response;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
+import com.landgate.trigger.gateway.billing.AnthropicCacheTtlUsageOverrideService;
 import com.landgate.trigger.gateway.limit.ConcurrencyService;
 import com.landgate.trigger.gateway.GatewayRequestContext;
 import com.landgate.trigger.gateway.usage.IUsageParser;
@@ -15,55 +14,60 @@ import com.landgate.trigger.gateway.converter.ProtocolConverter;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
+import com.landgate.types.gateway.GatewayResponseContentPolicy;
+import com.landgate.types.gateway.GatewayResponseHeaderPolicy;
+import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.GatewayStreamAggregationPolicy;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
+import com.landgate.types.gateway.OpenAiResponsesJsonPolicy;
 import jakarta.servlet.http.HttpServletResponse;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class GatewayResponseService {
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
-    private static final Set<String> RESPONSE_HEADER_ALLOWLIST = Set.of(
-            "content-language",
-            "cache-control",
-            "etag",
-            "last-modified",
-            "expires",
-            "vary",
-            "date",
-            "x-request-id",
-            "x-ratelimit-limit-requests",
-            "x-ratelimit-limit-tokens",
-            "x-ratelimit-remaining-requests",
-            "x-ratelimit-remaining-tokens",
-            "x-ratelimit-reset-requests",
-            "x-ratelimit-reset-tokens",
-            "retry-after",
-            "location",
-            "www-authenticate");
-    private static final Set<String> HOP_BY_HOP_RESPONSE_HEADERS = Set.of(
-            "content-length",
-            "transfer-encoding",
-            "connection");
-
     private final ConcurrencyService concurrencyService;
     private final ProtocolTranslationService translationService;
     private final ConverterRegistry converterRegistry;
+    private final AnthropicCacheTtlUsageOverrideService cacheTtlUsageOverrideService;
+    private final AnthropicUsageCompatibilityService anthropicUsageCompatibilityService;
+
+    public GatewayResponseService(ConcurrencyService concurrencyService,
+                                  ProtocolTranslationService translationService,
+                                  ConverterRegistry converterRegistry) {
+        this(concurrencyService, translationService, converterRegistry,
+                new AnthropicCacheTtlUsageOverrideService(),
+                new AnthropicUsageCompatibilityService());
+    }
+
+    @Autowired
+    public GatewayResponseService(ConcurrencyService concurrencyService,
+                                  ProtocolTranslationService translationService,
+                                  ConverterRegistry converterRegistry,
+                                  AnthropicCacheTtlUsageOverrideService cacheTtlUsageOverrideService,
+                                  AnthropicUsageCompatibilityService anthropicUsageCompatibilityService) {
+        this.concurrencyService = concurrencyService;
+        this.translationService = translationService;
+        this.converterRegistry = converterRegistry;
+        this.cacheTtlUsageOverrideService = cacheTtlUsageOverrideService;
+        this.anthropicUsageCompatibilityService = anthropicUsageCompatibilityService;
+    }
 
     public GatewayResponseResult handleStreaming(HttpResponse<InputStream> upstreamResp,
                                                  HttpServletResponse response,
@@ -73,8 +77,8 @@ public class GatewayResponseService {
         UpstreamRoute route = ctx.getUpstreamRoute();
         boolean passthrough = isPassthrough(ctx, route);
         copyUpstreamResponseHeaders(upstreamResp, response, passthrough);
-        response.setContentType("text/event-stream");
-        response.setCharacterEncoding("UTF-8");
+        response.setContentType(GatewayResponseContentPolicy.MEDIA_TYPE_EVENT_STREAM);
+        response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
         response.setHeader("Cache-Control", "no-cache");
         response.setHeader("Connection", "keep-alive");
         response.setHeader("X-Accel-Buffering", "no");
@@ -124,6 +128,8 @@ public class GatewayResponseService {
             String line;
             long lastRenewal = System.currentTimeMillis();
             while ((line = reader.readLine()) != null) {
+                line = restoreAnthropicToolNames(ctx, line);
+                line = normalizeAnthropicUsageSseLine(ctx, route, line);
 
                 // 每 60 秒续约一次并发槽位租约，防止流式长连接期间 permit 过期
                 if (System.currentTimeMillis() - lastRenewal > 60_000) {
@@ -134,7 +140,7 @@ public class GatewayResponseService {
                 }
 
                 // 记录 SSE 结构化摘要，不输出完整响应内容，避免泄露用户数据。
-                if (line.startsWith("data: ")) {
+                if (OpenAiResponsesSsePolicy.extractDataPayload(line) != null) {
                     sseDataLines++;
                     responseId = firstNonBlank(responseId, extractResponseIdFromSseLine(line));
                 }
@@ -149,33 +155,37 @@ public class GatewayResponseService {
 
                 if (upstreamToIR == null || irToClient == null) {
                     // === 透传模式（无翻译或 Converter 不可用） ===
+                    if (!clientDisconnected && !writeSseLine(writer, line, usageParser.isStreamDone(line))) {
+                        clientDisconnected = true;
+                        logClientDisconnected(ctx, totalUsage);
+                    }
                     if (usageParser.isStreamDone(line)) {
-                        writer.write(line);
-                        writer.write("\n\n");
-                        writer.flush();
                         break;
                     }
-                    writer.write(line);
-                    writer.write("\n");
-                    writer.flush();
                 } else {
                     // === Hub-and-Spoke 流式翻译：上游 SSE → IR SSE → 客户端 SSE ===
                     for (String irLine : upstreamToIR.feed(line)) {
                         for (String clientLine : irToClient.feed(irLine)) {
-                            writer.write(clientLine);
-                            writer.write("\n");
+                            if (!clientDisconnected && !writeSseLine(writer, clientLine, false)) {
+                                clientDisconnected = true;
+                                logClientDisconnected(ctx, totalUsage);
+                            }
                         }
                     }
-                    writer.flush();
+                    if (!clientDisconnected) {
+                        writer.flush();
+                        if (writer.checkError()) {
+                            clientDisconnected = true;
+                            logClientDisconnected(ctx, totalUsage);
+                        }
+                    }
                     if (upstreamToIR.isDone()) break;
                 }
             }
         } catch (IOException e) {
-            if (response.isCommitted()) {
+            if (clientDisconnected || response.isCommitted()) {
                 clientDisconnected = true;
-                log.warn("[{}] 客户端在流式响应期间断开: input={}, output={}, cache_w={}, cache_r={}",
-                        ctx.getRequestId(), totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
-                        totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
+                logClientDisconnected(ctx, totalUsage);
             } else {
                 log.warn("SSE stream error", e);
                 throw e;
@@ -201,11 +211,27 @@ public class GatewayResponseService {
 
         log.debug("[{}] 流式完成: parser={}, content_type={}, data_lines={}, usage_events={}, done_seen={}, client_disconnected={}, has_usage={}, input={}, output={}, cache_w={}, cache_r={}",
                 ctx.getRequestId(), usageParser.getClass().getSimpleName(),
-                upstreamResp.headers().firstValue("Content-Type").orElse(""),
+                upstreamResp.headers().firstValue(GatewayHttpHeaderPolicy.HEADER_CONTENT_TYPE).orElse(""),
                 sseDataLines, usageEventLines, doneSignalSeen, clientDisconnected, totalUsage.hasUsage(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
         return new GatewayResponseResult(totalUsage, clientDisconnected, responseId);
+    }
+
+    private static boolean writeSseLine(PrintWriter writer, String line, boolean terminalLine) {
+        writer.write(line);
+        writer.write(terminalLine ? "\n\n" : "\n");
+        writer.flush();
+        return !writer.checkError();
+    }
+
+    private static void logClientDisconnected(GatewayRequestContext ctx, UsageTokens totalUsage) {
+        log.warn("[{}] 客户端在流式响应期间断开，继续读取上游以收集 terminal usage: input={}, output={}, cache_w={}, cache_r={}",
+                ctx != null ? ctx.getRequestId() : "?",
+                totalUsage != null ? totalUsage.getInputTokens() : 0,
+                totalUsage != null ? totalUsage.getOutputTokens() : 0,
+                totalUsage != null ? totalUsage.getCacheCreationTokens() : 0,
+                totalUsage != null ? totalUsage.getCacheReadTokens() : 0);
     }
 
     /** 将上游 SSE 聚合为客户端非流式响应，适配 OpenAI OAuth Codex 仅支持上游流式的场景。 */
@@ -215,152 +241,72 @@ public class GatewayResponseService {
                                                                IUsageParser usageParser) throws IOException {
         response.setStatus(200);
         copyUpstreamResponseHeaders(upstreamResp, response, false);
-        response.setContentType("application/json");
-        response.setCharacterEncoding("UTF-8");
+        response.setContentType(GatewayResponseContentPolicy.MEDIA_TYPE_JSON);
+        response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
 
         UsageTokens totalUsage = UsageTokens.builder().build();
-        Map<Integer, ObjectNode> outputItems = new LinkedHashMap<>();
-        Map<Integer, StringBuilder> textByContentKey = new LinkedHashMap<>();
-        Map<Integer, String> contentTypeByContentKey = new LinkedHashMap<>();
-        Map<Integer, StringBuilder> argumentsByOutputIndex = new LinkedHashMap<>();
-        Map<Integer, StringBuilder> reasoningByOutputIndex = new LinkedHashMap<>();
-        String responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 24);
-        String responseModel = ctx != null && ctx.getRequestedModel() != null ? ctx.getRequestedModel() : "unknown";
-        String status = "completed";
-        String incompleteReason = null;
-        ObjectNode errorNode = null;
+        String responseModel = ctx != null && ctx.getRequestedModel() != null
+                ? ctx.getRequestedModel()
+                : OpenAiResponsesJsonPolicy.DEFAULT_MODEL;
+        OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator(responseModel);
+        StringBuilder rawSseBody = new StringBuilder();
+        String failedMessage = "";
 
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                line = restoreAnthropicToolNames(ctx, line);
+                line = normalizeAnthropicUsageSseLine(ctx, ctx != null ? ctx.getUpstreamRoute() : null, line);
+                rawSseBody.append(line).append('\n');
                 mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line);
-                if (!line.startsWith("data: ")) continue;
+                String dataPayload = OpenAiResponsesSsePolicy.extractDataPayload(line);
+                if (dataPayload == null) continue;
 
                 JsonNode event;
                 try {
-                    event = JSON_MAPPER.readTree(line.substring(6));
+                    event = JSON_MAPPER.readTree(dataPayload);
                 } catch (Exception e) {
                     continue;
                 }
-                String type = event.path("type").asText("");
-                if ("response.created".equals(type) && event.has("response")) {
-                    JsonNode resp = event.get("response");
-                    if (resp.has("id")) responseId = resp.get("id").asText(responseId);
-                    if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
-                } else if ("response.output_item.added".equals(type) && event.has("item")) {
-                    int outputIndex = event.path("output_index").asInt(outputItems.size());
-                    ObjectNode item = normalizeStreamingOutputItem(event.get("item"));
-                    outputItems.put(outputIndex, item);
-                } else if ("response.output_item.done".equals(type) && event.has("item")) {
-                    int outputIndex = event.path("output_index").asInt(outputItems.size());
-                    JsonNode item = event.get("item");
-                    outputItems.put(outputIndex, normalizeStreamingOutputItem(item));
-                    mergeFinalOutputItem(outputIndex, item, textByContentKey, contentTypeByContentKey,
-                            argumentsByOutputIndex, reasoningByOutputIndex);
-                } else if ("response.output_text.delta".equals(type)) {
-                    int outputIndex = event.path("output_index").asInt(0);
-                    int contentIndex = event.path("content_index").asInt(0);
-                    int contentKey = contentKey(outputIndex, contentIndex);
-                    contentTypeByContentKey.put(contentKey, "output_text");
-                    textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder())
-                            .append(event.path("delta").asText(""));
-                } else if ("response.output_text.done".equals(type)) {
-                    int outputIndex = event.path("output_index").asInt(0);
-                    int contentIndex = event.path("content_index").asInt(0);
-                    String text = event.path("text").asText("");
-                    if (!text.isEmpty()) {
-                        int contentKey = contentKey(outputIndex, contentIndex);
-                        contentTypeByContentKey.put(contentKey, "output_text");
-                        StringBuilder builder = textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder());
-                        builder.setLength(0);
-                        builder.append(text);
-                    }
-                } else if ("response.content_part.done".equals(type)) {
-                    JsonNode part = event.path("part");
-                    String partType = part.path("type").asText("");
-                    if ("output_text".equals(partType) || "refusal".equals(partType)) {
-                        int outputIndex = event.path("output_index").asInt(0);
-                        int contentIndex = event.path("content_index").asInt(0);
-                        String text = "refusal".equals(partType)
-                                ? part.path("refusal").asText("")
-                                : part.path("text").asText("");
-                        int contentKey = contentKey(outputIndex, contentIndex);
-                        contentTypeByContentKey.put(contentKey, partType);
-                        StringBuilder builder = textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder());
-                        builder.setLength(0);
-                        builder.append(text);
-                    }
-                } else if ("response.refusal.delta".equals(type)) {
-                    int outputIndex = event.path("output_index").asInt(0);
-                    int contentIndex = event.path("content_index").asInt(0);
-                    int contentKey = contentKey(outputIndex, contentIndex);
-                    contentTypeByContentKey.put(contentKey, "refusal");
-                    textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder())
-                            .append(event.path("delta").asText(""));
-                } else if ("response.refusal.done".equals(type)) {
-                    int outputIndex = event.path("output_index").asInt(0);
-                    int contentIndex = event.path("content_index").asInt(0);
-                    String refusal = event.path("refusal").asText("");
-                    if (!refusal.isEmpty()) {
-                        int contentKey = contentKey(outputIndex, contentIndex);
-                        contentTypeByContentKey.put(contentKey, "refusal");
-                        StringBuilder builder = textByContentKey.computeIfAbsent(contentKey, ignored -> new StringBuilder());
-                        builder.setLength(0);
-                        builder.append(refusal);
-                    }
-                } else if ("response.function_call_arguments.delta".equals(type)) {
-                    int outputIndex = event.path("output_index").asInt(0);
-                    argumentsByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
-                            .append(event.path("delta").asText(""));
-                } else if ("response.function_call_arguments.done".equals(type)) {
-                    int outputIndex = event.path("output_index").asInt(0);
-                    String arguments = event.path("arguments").asText("");
-                    if (!arguments.isEmpty()) {
-                        argumentsByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
-                                .setLength(0);
-                        argumentsByOutputIndex.get(outputIndex).append(arguments);
-                    }
-                } else if ("response.reasoning_summary_text.delta".equals(type)) {
-                    int outputIndex = event.path("output_index").asInt(0);
-                    reasoningByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder())
-                            .append(event.path("delta").asText(""));
-                } else if ("response.completed".equals(type) || "response.done".equals(type)) {
-                    if (event.has("response")) {
-                        JsonNode resp = event.get("response");
-                        if (resp.has("id")) responseId = resp.get("id").asText(responseId);
-                        if (resp.has("model")) responseModel = resp.get("model").asText(responseModel);
-                        mergeFinalResponseOutput(resp.path("output"), outputItems, textByContentKey,
-                                contentTypeByContentKey, argumentsByOutputIndex, reasoningByOutputIndex);
-                        if ("incomplete".equals(resp.path("status").asText(""))) {
-                            status = "incomplete";
-                            incompleteReason = resp.path("incomplete_details").path("reason").asText("max_output_tokens");
-                        }
-                    }
+                if (OpenAiResponsesSsePolicy.EVENT_RESPONSE_FAILED.equals(
+                        event.path(OpenAiResponsesJsonPolicy.FIELD_TYPE).asText(""))) {
+                    failedMessage = extractUpstreamErrorMessage(event);
                     break;
-                } else if ("response.incomplete".equals(type)) {
-                    status = "incomplete";
-                    incompleteReason = "max_output_tokens";
-                    break;
-                } else if ("response.failed".equals(type)) {
-                    status = "failed";
-                    if (event.has("response") && event.get("response").has("error")
-                            && event.get("response").get("error").isObject()) {
-                        errorNode = (ObjectNode) event.get("response").get("error").deepCopy();
-                    }
+                }
+                if (accumulator.process(event)) {
                     break;
                 }
             }
         }
 
-        String responsesBody = buildResponsesJson(
-                responseId, responseModel, status, incompleteReason, errorNode,
-                outputItems, textByContentKey, contentTypeByContentKey,
-                argumentsByOutputIndex, reasoningByOutputIndex, totalUsage);
+        if (!failedMessage.isBlank()) {
+            writeOpenAiProtocolError(response, failedMessage);
+            return new GatewayResponseResult(totalUsage, false, accumulator.responseId());
+        }
+
         String clientFormat = resolveClientFormat(ctx, ctx != null ? ctx.getUpstreamRoute() : null);
-        String clientBody = "responses".equals(clientFormat)
+        if (!accumulator.terminalSeen()) {
+            return switch (GatewayStreamAggregationPolicy.missingTerminalAction(clientFormat)) {
+                case PRESERVE_UPSTREAM_SSE -> writePreservedSseResponse(upstreamResp, response, totalUsage, rawSseBody.toString());
+                case PROTOCOL_ERROR -> {
+                    writeOpenAiProtocolError(response, GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE);
+                    yield new GatewayResponseResult(totalUsage, false, accumulator.responseId());
+                }
+            };
+        }
+        if (GatewayStreamAggregationPolicy.isResponsesClient(clientFormat) && !accumulator.finalResponseSeen()) {
+            return writePreservedSseResponse(upstreamResp, response, totalUsage, rawSseBody.toString());
+        }
+        if (!GatewayStreamAggregationPolicy.isResponsesClient(clientFormat) && !accumulator.terminalResponseSeen()) {
+            writeOpenAiProtocolError(response, GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE);
+            return new GatewayResponseResult(totalUsage, false, accumulator.responseId());
+        }
+
+        String responsesBody = accumulator.buildResponsesJson(totalUsage);
+        String clientBody = GatewayProtocolFormat.RESPONSES.is(clientFormat)
                 ? responsesBody
-                : translationService.translateResponse(responsesBody, "responses", clientFormat);
+                : translationService.translateResponse(responsesBody, GatewayProtocolFormat.RESPONSES.id(), clientFormat);
         try (var output = response.getOutputStream()) {
             output.write(clientBody.getBytes(StandardCharsets.UTF_8));
             output.flush();
@@ -370,212 +316,55 @@ public class GatewayResponseService {
                 ctx != null ? ctx.getRequestId() : "?", totalUsage.hasUsage(),
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
-        return new GatewayResponseResult(totalUsage, false, responseId);
+        return new GatewayResponseResult(totalUsage, false, accumulator.responseId());
     }
 
-    private static ObjectNode normalizeStreamingOutputItem(JsonNode item) {
-        ObjectNode normalized = JSON_MAPPER.createObjectNode();
-        String type = item.path("type").asText("message");
-        normalized.put("type", type);
-        if (item.has("id")) normalized.set("id", item.get("id"));
-        if ("function_call".equals(type)) {
-            normalized.put("call_id", item.path("call_id").asText(""));
-            normalized.put("name", item.path("name").asText(""));
-            normalized.put("arguments", item.path("arguments").asText("{}"));
-            normalized.put("status", "completed");
-        } else if ("reasoning".equals(type)) {
-            normalized.put("status", "completed");
-            normalized.set("summary", item.has("summary") ? item.get("summary") : JSON_MAPPER.createArrayNode());
-        } else {
-            normalized.put("type", "message");
-            normalized.put("role", item.path("role").asText("assistant"));
-            normalized.put("status", "completed");
-            normalized.set("content", JSON_MAPPER.createArrayNode());
+    private GatewayResponseResult writePreservedSseResponse(HttpResponse<InputStream> upstreamResp,
+                                                            HttpServletResponse response,
+                                                            UsageTokens usage,
+                                                            String body) throws IOException {
+        response.setStatus(upstreamResp.statusCode());
+        response.setContentType(upstreamResp.headers().firstValue(GatewayHttpHeaderPolicy.HEADER_CONTENT_TYPE)
+                .orElse(GatewayResponseContentPolicy.MEDIA_TYPE_EVENT_STREAM));
+        response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
+        try (var output = response.getOutputStream()) {
+            output.write((body == null ? "" : body).getBytes(StandardCharsets.UTF_8));
+            output.flush();
         }
-        return normalized;
+        return new GatewayResponseResult(usage, false, "");
     }
 
-    private static void mergeFinalResponseOutput(JsonNode output,
-                                                 Map<Integer, ObjectNode> outputItems,
-                                                 Map<Integer, StringBuilder> textByContentKey,
-                                                 Map<Integer, String> contentTypeByContentKey,
-                                                 Map<Integer, StringBuilder> argumentsByOutputIndex,
-                                                 Map<Integer, StringBuilder> reasoningByOutputIndex) {
-        if (output == null || !output.isArray()) return;
-        for (int i = 0; i < output.size(); i++) {
-            JsonNode item = output.get(i);
-            outputItems.put(i, normalizeStreamingOutputItem(item));
-            mergeFinalOutputItem(i, item, textByContentKey, contentTypeByContentKey,
-                    argumentsByOutputIndex, reasoningByOutputIndex);
+    private static void writeOpenAiProtocolError(HttpServletResponse response, String message) throws IOException {
+        response.setStatus(GatewayStreamAggregationPolicy.PROTOCOL_ERROR_STATUS);
+        response.setContentType(GatewayResponseContentPolicy.MEDIA_TYPE_JSON);
+        response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
+
+        var root = JSON_MAPPER.createObjectNode();
+        var error = JSON_MAPPER.createObjectNode();
+        error.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, GatewayStreamAggregationPolicy.PROTOCOL_ERROR_TYPE);
+        error.put(OpenAiResponsesJsonPolicy.FIELD_MESSAGE, message == null || message.isBlank()
+                ? GatewayStreamAggregationPolicy.INVALID_NON_STREAMING_RESPONSE_MESSAGE
+                : message);
+        root.set(OpenAiResponsesJsonPolicy.FIELD_ERROR, error);
+
+        try (var output = response.getOutputStream()) {
+            output.write(JSON_MAPPER.writeValueAsBytes(root));
+            output.flush();
         }
     }
 
-    private static void mergeFinalOutputItem(int outputIndex,
-                                             JsonNode item,
-                                             Map<Integer, StringBuilder> textByContentKey,
-                                             Map<Integer, String> contentTypeByContentKey,
-                                             Map<Integer, StringBuilder> argumentsByOutputIndex,
-                                             Map<Integer, StringBuilder> reasoningByOutputIndex) {
-        String itemType = item.path("type").asText("");
-        if ("message".equals(itemType) && item.has("content") && item.get("content").isArray()) {
-            int contentIndex = 0;
-            for (JsonNode part : item.get("content")) {
-                String partType = part.path("type").asText("");
-                if ("output_text".equals(partType) || "refusal".equals(partType)) {
-                    String text = "refusal".equals(partType)
-                            ? part.path("refusal").asText("")
-                            : part.path("text").asText("");
-                    int key = contentKey(outputIndex, contentIndex);
-                    contentTypeByContentKey.put(key, partType);
-                    StringBuilder builder = textByContentKey.computeIfAbsent(key, ignored -> new StringBuilder());
-                    builder.setLength(0);
-                    builder.append(text);
-                }
-                contentIndex++;
-            }
-        } else if ("function_call".equals(itemType)) {
-            if (item.has("arguments")) {
-                StringBuilder builder = argumentsByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder());
-                builder.setLength(0);
-                builder.append(item.path("arguments").asText("{}"));
-            }
-        } else if ("reasoning".equals(itemType) && item.has("summary") && item.get("summary").isArray()) {
-            StringBuilder builder = reasoningByOutputIndex.computeIfAbsent(outputIndex, ignored -> new StringBuilder());
-            builder.setLength(0);
-            for (JsonNode summary : item.get("summary")) {
-                if (!"summary_text".equals(summary.path("type").asText(""))) continue;
-                if (builder.length() > 0) builder.append("\n");
-                builder.append(summary.path("text").asText(""));
-            }
+    private static String extractUpstreamErrorMessage(JsonNode event) {
+        if (event == null) {
+            return GatewayStreamAggregationPolicy.FAILED_TERMINAL_FALLBACK_MESSAGE;
         }
-    }
-
-    private static String buildResponsesJson(String responseId,
-                                             String responseModel,
-                                             String status,
-                                             String incompleteReason,
-                                             ObjectNode errorNode,
-                                             Map<Integer, ObjectNode> outputItems,
-                                             Map<Integer, StringBuilder> textByContentKey,
-                                             Map<Integer, String> contentTypeByContentKey,
-                                             Map<Integer, StringBuilder> argumentsByOutputIndex,
-                                             Map<Integer, StringBuilder> reasoningByOutputIndex,
-                                             UsageTokens usage) throws IOException {
-        Map<Integer, ArrayNode> contentByOutputIndex = new LinkedHashMap<>();
-        textByContentKey.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> {
-                    int outputIndex = outputIndexFromContentKey(entry.getKey());
-                    String partType = contentTypeByContentKey.getOrDefault(entry.getKey(), "output_text");
-                    ObjectNode text = JSON_MAPPER.createObjectNode();
-                    text.put("type", partType);
-                    if ("refusal".equals(partType)) {
-                        text.put("refusal", entry.getValue().toString());
-                    } else {
-                        text.put("text", entry.getValue().toString());
-                    }
-                    contentByOutputIndex.computeIfAbsent(outputIndex, ignored -> JSON_MAPPER.createArrayNode())
-                            .add(text);
-                });
-
-        for (Map.Entry<Integer, ArrayNode> entry : contentByOutputIndex.entrySet()) {
-            ObjectNode item = outputItems.computeIfAbsent(entry.getKey(), ignored -> {
-                ObjectNode message = JSON_MAPPER.createObjectNode();
-                message.put("type", "message");
-                message.put("role", "assistant");
-                message.put("status", "completed");
-                message.set("content", JSON_MAPPER.createArrayNode());
-                return message;
-            });
-            if (!"message".equals(item.path("type").asText())) continue;
-            item.set("content", entry.getValue());
-        }
-
-        for (Map.Entry<Integer, StringBuilder> entry : argumentsByOutputIndex.entrySet()) {
-            ObjectNode item = outputItems.get(entry.getKey());
-            if (item != null && "function_call".equals(item.path("type").asText())) {
-                String arguments = entry.getValue().toString();
-                item.put("arguments", arguments.isEmpty() ? "{}" : arguments);
-                item.put("status", "completed");
-            }
-        }
-
-        for (Map.Entry<Integer, StringBuilder> entry : reasoningByOutputIndex.entrySet()) {
-            ObjectNode item = outputItems.computeIfAbsent(entry.getKey(), ignored -> {
-                ObjectNode reasoning = JSON_MAPPER.createObjectNode();
-                reasoning.put("type", "reasoning");
-                reasoning.put("status", "completed");
-                reasoning.set("summary", JSON_MAPPER.createArrayNode());
-                return reasoning;
-            });
-            if (!"reasoning".equals(item.path("type").asText())) continue;
-            ArrayNode summary = JSON_MAPPER.createArrayNode();
-            ObjectNode text = JSON_MAPPER.createObjectNode();
-            text.put("type", "summary_text");
-            text.put("text", entry.getValue().toString());
-            summary.add(text);
-            item.set("summary", summary);
-            item.put("status", "completed");
-        }
-
-        if (outputItems.isEmpty()) {
-            ObjectNode message = JSON_MAPPER.createObjectNode();
-            message.put("type", "message");
-            message.put("role", "assistant");
-            message.put("status", "completed");
-            ArrayNode content = JSON_MAPPER.createArrayNode();
-            ObjectNode text = JSON_MAPPER.createObjectNode();
-            text.put("type", "output_text");
-            text.put("text", "");
-            content.add(text);
-            message.set("content", content);
-            outputItems.put(0, message);
-        }
-
-        ObjectNode root = JSON_MAPPER.createObjectNode();
-        root.put("id", responseId);
-        root.put("object", "response");
-        root.put("model", responseModel);
-        root.put("status", status == null || status.isBlank() ? "completed" : status);
-        if ("incomplete".equals(status)) {
-            ObjectNode details = JSON_MAPPER.createObjectNode();
-            details.put("reason", incompleteReason == null || incompleteReason.isBlank()
-                    ? "max_output_tokens"
-                    : incompleteReason);
-            root.set("incomplete_details", details);
-        }
-        if ("failed".equals(status) && errorNode != null) {
-            root.set("error", errorNode);
-        }
-        ArrayNode output = JSON_MAPPER.createArrayNode();
-        outputItems.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(entry -> output.add(entry.getValue()));
-        root.set("output", output);
-
-        ObjectNode usageNode = JSON_MAPPER.createObjectNode();
-        int inputTokens = usage != null ? usage.getInputTokens() : 0;
-        int cachedTokens = usage != null ? usage.getCacheReadTokens() : 0;
-        int outputTokens = usage != null ? usage.getOutputTokens() : 0;
-        usageNode.put("input_tokens", inputTokens + cachedTokens);
-        usageNode.put("output_tokens", outputTokens);
-        usageNode.put("total_tokens", inputTokens + cachedTokens + outputTokens);
-        if (cachedTokens > 0) {
-            ObjectNode inputDetails = JSON_MAPPER.createObjectNode();
-            inputDetails.put("cached_tokens", cachedTokens);
-            usageNode.set("input_tokens_details", inputDetails);
-        }
-        root.set("usage", usageNode);
-
-        return JSON_MAPPER.writeValueAsString(root);
-    }
-
-    private static int contentKey(int outputIndex, int contentIndex) {
-        return outputIndex * 10_000 + contentIndex;
-    }
-
-    private static int outputIndexFromContentKey(int contentKey) {
-        return contentKey / 10_000;
+        String message = firstNonBlank(
+                event.path(OpenAiResponsesJsonPolicy.FIELD_RESPONSE)
+                        .path(OpenAiResponsesJsonPolicy.FIELD_ERROR)
+                        .path(OpenAiResponsesJsonPolicy.FIELD_MESSAGE).asText(""),
+                event.path(OpenAiResponsesJsonPolicy.FIELD_ERROR)
+                        .path(OpenAiResponsesJsonPolicy.FIELD_MESSAGE).asText(""),
+                event.path(OpenAiResponsesJsonPolicy.FIELD_MESSAGE).asText(""));
+        return message.isBlank() ? GatewayStreamAggregationPolicy.FAILED_TERMINAL_FALLBACK_MESSAGE : message;
     }
 
     private static String resolveClientFormat(GatewayRequestContext ctx, UpstreamRoute route) {
@@ -611,6 +400,18 @@ public class GatewayResponseService {
                 && clientFormat.equals(upstreamFormat);
     }
 
+    private String normalizeAnthropicUsageBody(GatewayRequestContext ctx, UpstreamRoute route, String body) {
+        return GatewayProtocolFormat.MESSAGES.is(resolveUpstreamFormat(ctx, route))
+                ? anthropicUsageCompatibilityService.normalizeNonStreamingBody(body)
+                : body;
+    }
+
+    private String normalizeAnthropicUsageSseLine(GatewayRequestContext ctx, UpstreamRoute route, String line) {
+        return GatewayProtocolFormat.MESSAGES.is(resolveUpstreamFormat(ctx, route))
+                ? anthropicUsageCompatibilityService.normalizeSseLine(line)
+                : line;
+    }
+
     private static void copyUpstreamResponseHeaders(HttpResponse<?> upstreamResp,
                                                     HttpServletResponse response,
                                                     boolean passthrough) {
@@ -622,13 +423,7 @@ public class GatewayResponseService {
             if (name == null || name.isBlank()) {
                 continue;
             }
-            String lower = name.toLowerCase();
-            if (HOP_BY_HOP_RESPONSE_HEADERS.contains(lower) || "content-type".equals(lower)) {
-                continue;
-            }
-            boolean allowed = RESPONSE_HEADER_ALLOWLIST.contains(lower)
-                    || (passthrough && lower.startsWith("x-codex-"));
-            if (!allowed) {
+            if (!GatewayResponseHeaderPolicy.shouldCopy(name, passthrough)) {
                 continue;
             }
             for (String value : entry.getValue()) {
@@ -648,17 +443,22 @@ public class GatewayResponseService {
         response.setStatus(upstreamResp.statusCode());
         copyUpstreamResponseHeaders(upstreamResp, response, passthrough);
         response.setContentType(passthrough
-                ? upstreamResp.headers().firstValue("Content-Type").orElse("application/json")
-                : "application/json");
-        response.setCharacterEncoding("UTF-8");
+                ? upstreamResp.headers().firstValue(GatewayHttpHeaderPolicy.HEADER_CONTENT_TYPE).orElse(GatewayResponseContentPolicy.MEDIA_TYPE_JSON)
+                : GatewayResponseContentPolicy.MEDIA_TYPE_JSON);
+        response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
 
         String responseBody;
         try (var input = upstreamResp.body()) {
             responseBody = new String(input.readAllBytes(), StandardCharsets.UTF_8);
         }
+        responseBody = restoreAnthropicToolNames(ctx, responseBody);
+        responseBody = normalizeAnthropicUsageBody(ctx, route, responseBody);
 
         // 先解析用量（用上游格式），再做响应协议翻译
         UsageTokens usage = usageParser.parseNonStreaming(responseBody);
+        var cacheTtlOverrideResult = cacheTtlUsageOverrideService.applyToNonStreamingBody(
+                responseBody, usage, ctx != null ? ctx.getSelectedAccount() : null);
+        responseBody = cacheTtlOverrideResult.body();
 
         // 协议翻译：上游格式 → 客户端格式。
         // 优先使用 UpstreamRoute 中的格式，保证与请求翻译、usage parser 的路由决策一致。
@@ -691,12 +491,14 @@ public class GatewayResponseService {
     }
 
     private static String extractResponseIdFromSseLine(String line) {
-        if (line == null || !line.startsWith("data: ")) return "";
+        String dataPayload = OpenAiResponsesSsePolicy.extractDataPayload(line);
+        if (dataPayload == null) return "";
         try {
-            JsonNode root = JSON_MAPPER.readTree(line.substring(6));
+            JsonNode root = JSON_MAPPER.readTree(dataPayload);
             return firstNonBlank(
-                    root.path("response").path("id").asText(""),
-                    root.path("id").asText(""));
+                    root.path(OpenAiResponsesJsonPolicy.FIELD_RESPONSE)
+                            .path(OpenAiResponsesJsonPolicy.FIELD_ID).asText(""),
+                    root.path(OpenAiResponsesJsonPolicy.FIELD_ID).asText(""));
         } catch (Exception ignored) {
             return "";
         }
@@ -707,8 +509,9 @@ public class GatewayResponseService {
         try {
             JsonNode root = JSON_MAPPER.readTree(body);
             return firstNonBlank(
-                    root.path("id").asText(""),
-                    root.path("response").path("id").asText(""));
+                    root.path(OpenAiResponsesJsonPolicy.FIELD_ID).asText(""),
+                    root.path(OpenAiResponsesJsonPolicy.FIELD_RESPONSE)
+                            .path(OpenAiResponsesJsonPolicy.FIELD_ID).asText(""));
         } catch (Exception ignored) {
             return "";
         }
@@ -727,10 +530,13 @@ public class GatewayResponseService {
                                       String responseBody) throws IOException {
         response.setStatus(upstreamResp.statusCode());
         copyUpstreamResponseHeaders(upstreamResp, response, true);
-        response.setContentType(upstreamResp.headers().firstValue("Content-Type").orElse("application/json"));
-        response.setCharacterEncoding("UTF-8");
+        response.setContentType(upstreamResp.headers().firstValue(GatewayHttpHeaderPolicy.HEADER_CONTENT_TYPE)
+                .orElse(GatewayResponseContentPolicy.MEDIA_TYPE_JSON));
+        response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
         try (var output = response.getOutputStream()) {
-            output.write((responseBody == null ? "" : responseBody).getBytes(StandardCharsets.UTF_8));
+            GatewayRequestContext ctx = GatewayRequestContext.get();
+            output.write(restoreAnthropicToolNames(ctx, responseBody == null ? "" : responseBody)
+                    .getBytes(StandardCharsets.UTF_8));
             output.flush();
         }
     }
@@ -739,28 +545,32 @@ public class GatewayResponseService {
     private String buildAnthropicMessageJson(String id, String model, String text, String stopReason, UsageTokens usage)
             throws IOException {
         var root = JSON_MAPPER.createObjectNode();
-        root.put("id", id);
-        root.put("type", "message");
-        root.put("role", "assistant");
-        root.put("model", model);
+        root.put(AnthropicMessagesBodyPolicy.FIELD_ID, id);
+        root.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_MESSAGE);
+        root.put(AnthropicMessagesBodyPolicy.FIELD_ROLE, AnthropicMessagesBodyPolicy.ROLE_ASSISTANT);
+        root.put(AnthropicMessagesBodyPolicy.FIELD_MODEL, model);
         var content = JSON_MAPPER.createArrayNode();
         var textBlock = JSON_MAPPER.createObjectNode();
-        textBlock.put("type", "text");
-        textBlock.put("text", text);
+        textBlock.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_TEXT);
+        textBlock.put(AnthropicMessagesBodyPolicy.FIELD_TEXT, text);
         content.add(textBlock);
-        root.set("content", content);
-        root.put("stop_reason", stopReason);
-        root.putNull("stop_sequence");
+        root.set(AnthropicMessagesBodyPolicy.FIELD_CONTENT, content);
+        root.put(AnthropicMessagesBodyPolicy.FIELD_STOP_REASON, stopReason);
+        root.putNull(AnthropicMessagesBodyPolicy.FIELD_STOP_SEQUENCE);
         var usageNode = JSON_MAPPER.createObjectNode();
-        usageNode.put("input_tokens", usage != null ? usage.getInputTokens() : 0);
-        usageNode.put("output_tokens", usage != null ? usage.getOutputTokens() : 0);
+        usageNode.put(AnthropicMessagesBodyPolicy.FIELD_INPUT_TOKENS,
+                usage != null ? usage.getInputTokens() : 0);
+        usageNode.put(AnthropicMessagesBodyPolicy.FIELD_OUTPUT_TOKENS,
+                usage != null ? usage.getOutputTokens() : 0);
         if (usage != null && usage.getCacheCreationTokens() > 0) {
-            usageNode.put("cache_creation_input_tokens", usage.getCacheCreationTokens());
+            usageNode.put(AnthropicMessagesBodyPolicy.FIELD_CACHE_CREATION_INPUT_TOKENS,
+                    usage.getCacheCreationTokens());
         }
         if (usage != null && usage.getCacheReadTokens() > 0) {
-            usageNode.put("cache_read_input_tokens", usage.getCacheReadTokens());
+            usageNode.put(AnthropicMessagesBodyPolicy.FIELD_CACHE_READ_INPUT_TOKENS,
+                    usage.getCacheReadTokens());
         }
-        root.set("usage", usageNode);
+        root.set(AnthropicMessagesBodyPolicy.FIELD_USAGE, usageNode);
         return JSON_MAPPER.writeValueAsString(root);
     }
 
@@ -769,13 +579,22 @@ public class GatewayResponseService {
                                                         IUsageParser usageParser,
                                                         String line) {
         if (totalUsage == null || usageParser == null || line == null) return false;
-        if (!line.startsWith("data: ")) return false;
+        String dataPayload = OpenAiResponsesSsePolicy.extractDataPayload(line);
+        if (dataPayload == null) return false;
 
-        UsageTokens eventUsage = usageParser.parseSSELine(line.substring(6));
+        UsageTokens eventUsage = usageParser.parseSSELine(dataPayload);
         if (eventUsage != null) {
             totalUsage.merge(eventUsage);
             return eventUsage.hasUsage();
         }
         return false;
+    }
+
+    private static String restoreAnthropicToolNames(GatewayRequestContext ctx, String data) {
+        if (ctx == null || data == null || !ctx.isShouldMimicClaudeCode()
+                || ctx.getAnthropicToolNameRewrite() == null) {
+            return data;
+        }
+        return ctx.getAnthropicToolNameRewrite().restore(data);
     }
 }

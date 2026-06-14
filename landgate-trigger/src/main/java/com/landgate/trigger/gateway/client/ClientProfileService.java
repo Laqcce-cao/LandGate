@@ -5,6 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.trigger.gateway.GatewayDispatcher;
 import com.landgate.trigger.gateway.oauth.ClaudeCodeDetector;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
+import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.GatewayRequestBodyPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,16 +42,16 @@ public class ClientProfileService {
             metadataUserId = extractMetadataUserIdFromBody(body);
             // /v1/messages 端点: 完整校验（UA + system prompt 相似度 + 必要 header）
             // 非 messages 端点: UA 匹配 claude-cli/* 即视为 true（与 Sub2API gateway_helper.go:42-44 一致）
-            if ("messages".equals(requestFormat)) {
+            if (GatewayProtocolFormat.MESSAGES.is(requestFormat)) {
                 String systemPrompt = ClaudeCodeDetector.extractSystemPrompt(body);
                 isClaudeCode = claudeCodeDetector.validateForMessages(
-                        request.getHeader("User-Agent"), metadataUserId,
+                        request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT), metadataUserId,
                         systemPrompt,
                         extractMaxTokens(body), extractModel(body),
                         headers);
             } else {
                 isClaudeCode = claudeCodeDetector.validateForNonMessages(
-                        request.getHeader("User-Agent"));
+                        request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT));
             }
         }
 
@@ -58,11 +62,13 @@ public class ClientProfileService {
     private static String extractModel(String body) {
         try {
             JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("model")) return root.get("model").asText();
+            if (root.has(GatewayRequestBodyPolicy.FIELD_MODEL)) {
+                return root.get(GatewayRequestBodyPolicy.FIELD_MODEL).asText();
+            }
         } catch (Exception e) {
             // ignore
         }
-        return "unknown";
+        return GatewayRequestBodyPolicy.DEFAULT_MODEL;
     }
 
     /** 从请求 body 中提取 metadata.user_id */
@@ -82,7 +88,9 @@ public class ClientProfileService {
     private static int extractMaxTokens(String body) {
         try {
             JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("max_tokens")) return root.get("max_tokens").asInt();
+            if (root.has(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS)) {
+                return root.get(AnthropicMessagesBodyPolicy.FIELD_MAX_TOKENS).asInt();
+            }
         } catch (Exception e) {
             // ignore
         }

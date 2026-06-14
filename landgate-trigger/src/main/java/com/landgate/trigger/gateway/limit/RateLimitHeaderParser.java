@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.OpenAiCodexProfile;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -44,19 +45,6 @@ public class RateLimitHeaderParser {
     private static final String OPENAI_REQ_LIMIT       = "x-ratelimit-limit-requests";
     private static final String OPENAI_REQ_REMAINING   = "x-ratelimit-remaining-requests";
     private static final String OPENAI_REQ_RESET       = "x-ratelimit-reset-requests";
-
-    // ---- OpenAI OAuth Codex 内部端点限额头 ----
-    private static final String CODEX_ACTIVE_LIMIT = "x-codex-active-limit";
-    private static final String CODEX_CREDITS_UNLIMITED = "x-codex-credits-unlimited";
-    private static final String CODEX_PRIMARY_USED_PERCENT = "x-codex-primary-used-percent";
-    private static final String CODEX_PRIMARY_RESET_AFTER_SECONDS = "x-codex-primary-reset-after-seconds";
-    private static final String CODEX_PRIMARY_RESET_AT = "x-codex-primary-reset-at";
-    private static final String CODEX_PRIMARY_WINDOW_MINUTES = "x-codex-primary-window-minutes";
-    private static final String CODEX_SECONDARY_USED_PERCENT = "x-codex-secondary-used-percent";
-    private static final String CODEX_SECONDARY_RESET_AFTER_SECONDS = "x-codex-secondary-reset-after-seconds";
-    private static final String CODEX_SECONDARY_RESET_AT = "x-codex-secondary-reset-at";
-    private static final String CODEX_SECONDARY_WINDOW_MINUTES = "x-codex-secondary-window-minutes";
-    private static final String CODEX_PRIMARY_OVER_SECONDARY_LIMIT_PERCENT = "x-codex-primary-over-secondary-limit-percent";
 
     /**
      * 解析上游响应头，提取 Rate Limit 信息。
@@ -114,13 +102,21 @@ public class RateLimitHeaderParser {
 
     /** 解析 ChatGPT Codex 内部端点返回的 5h/7d 限额窗口。 */
     private RateLimitSnapshot parseCodex(HttpHeaders headers) {
-        CodexWindow primary = parseCodexWindow(headers, "primary", CODEX_PRIMARY_USED_PERCENT,
-                CODEX_PRIMARY_RESET_AFTER_SECONDS, CODEX_PRIMARY_RESET_AT, CODEX_PRIMARY_WINDOW_MINUTES);
-        CodexWindow secondary = parseCodexWindow(headers, "secondary", CODEX_SECONDARY_USED_PERCENT,
-                CODEX_SECONDARY_RESET_AFTER_SECONDS, CODEX_SECONDARY_RESET_AT, CODEX_SECONDARY_WINDOW_MINUTES);
-        Double overSecondaryPercent = parseDouble(headers, CODEX_PRIMARY_OVER_SECONDARY_LIMIT_PERCENT).orElse(null);
-        String activeLimit = headers.firstValue(CODEX_ACTIVE_LIMIT).orElse(null);
-        Boolean creditsUnlimited = parseBoolean(headers, CODEX_CREDITS_UNLIMITED).orElse(null);
+        CodexWindow primary = parseCodexWindow(headers, OpenAiCodexProfile.RATE_LIMIT_SCOPE_PRIMARY,
+                OpenAiCodexProfile.HEADER_CODEX_PRIMARY_USED_PERCENT,
+                OpenAiCodexProfile.HEADER_CODEX_PRIMARY_RESET_AFTER_SECONDS,
+                OpenAiCodexProfile.HEADER_CODEX_PRIMARY_RESET_AT,
+                OpenAiCodexProfile.HEADER_CODEX_PRIMARY_WINDOW_MINUTES);
+        CodexWindow secondary = parseCodexWindow(headers, OpenAiCodexProfile.RATE_LIMIT_SCOPE_SECONDARY,
+                OpenAiCodexProfile.HEADER_CODEX_SECONDARY_USED_PERCENT,
+                OpenAiCodexProfile.HEADER_CODEX_SECONDARY_RESET_AFTER_SECONDS,
+                OpenAiCodexProfile.HEADER_CODEX_SECONDARY_RESET_AT,
+                OpenAiCodexProfile.HEADER_CODEX_SECONDARY_WINDOW_MINUTES);
+        Double overSecondaryPercent = parseDouble(headers,
+                OpenAiCodexProfile.HEADER_CODEX_PRIMARY_OVER_SECONDARY_LIMIT_PERCENT).orElse(null);
+        String activeLimit = headers.firstValue(OpenAiCodexProfile.HEADER_CODEX_ACTIVE_LIMIT).orElse(null);
+        Boolean creditsUnlimited = parseBoolean(headers,
+                OpenAiCodexProfile.HEADER_CODEX_CREDITS_UNLIMITED).orElse(null);
 
         boolean hasData = primary.hasData() || secondary.hasData() || overSecondaryPercent != null
                 || activeLimit != null || creditsUnlimited != null;
@@ -137,7 +133,7 @@ public class RateLimitHeaderParser {
                 .orElse(null);
 
         ObjectNode root = MAPPER.createObjectNode();
-        root.put("source", "openai_oauth_codex");
+        root.put("source", OpenAiCodexProfile.RATE_LIMIT_SOURCE);
         root.put("captured_at", now.toString());
         if (activeLimit != null) {
             root.put("active_limit", activeLimit);
@@ -216,32 +212,44 @@ public class RateLimitHeaderParser {
         List<CodexWindow> windows = new ArrayList<>(2);
         if (primary.windowMinutes() != null && secondary.windowMinutes() != null) {
             if (primary.windowMinutes() <= secondary.windowMinutes()) {
-                windows.add(primary.withLabel("5h"));
-                windows.add(secondary.withLabel("7d"));
+                windows.add(primary.withLabel(OpenAiCodexProfile.RATE_LIMIT_LABEL_SHORT_WINDOW));
+                windows.add(secondary.withLabel(OpenAiCodexProfile.RATE_LIMIT_LABEL_LONG_WINDOW));
             } else {
-                windows.add(secondary.withLabel("5h"));
-                windows.add(primary.withLabel("7d"));
+                windows.add(secondary.withLabel(OpenAiCodexProfile.RATE_LIMIT_LABEL_SHORT_WINDOW));
+                windows.add(primary.withLabel(OpenAiCodexProfile.RATE_LIMIT_LABEL_LONG_WINDOW));
             }
         } else if (primary.windowMinutes() != null) {
-            windows.add(primary.withLabel(primary.windowMinutes() <= 360 ? "5h" : "7d"));
+            windows.add(primary.withLabel(windowLabel(primary.windowMinutes())));
             if (secondary.hasData()) {
-                windows.add(secondary.withLabel(primary.windowMinutes() <= 360 ? "7d" : "5h"));
+                windows.add(secondary.withLabel(complementWindowLabel(primary.windowMinutes())));
             }
         } else if (secondary.windowMinutes() != null) {
-            windows.add(secondary.withLabel(secondary.windowMinutes() <= 360 ? "5h" : "7d"));
+            windows.add(secondary.withLabel(windowLabel(secondary.windowMinutes())));
             if (primary.hasData()) {
-                windows.add(primary.withLabel(secondary.windowMinutes() <= 360 ? "7d" : "5h"));
+                windows.add(primary.withLabel(complementWindowLabel(secondary.windowMinutes())));
             }
         } else {
             // 兼容没有 window_minutes 的旧头：沿用 sub2api 的 legacy 假设 primary=7d, secondary=5h。
             if (secondary.hasData()) {
-                windows.add(secondary.withLabel("5h"));
+                windows.add(secondary.withLabel(OpenAiCodexProfile.RATE_LIMIT_LABEL_SHORT_WINDOW));
             }
             if (primary.hasData()) {
-                windows.add(primary.withLabel("7d"));
+                windows.add(primary.withLabel(OpenAiCodexProfile.RATE_LIMIT_LABEL_LONG_WINDOW));
             }
         }
         return windows;
+    }
+
+    private String windowLabel(int windowMinutes) {
+        return windowMinutes <= OpenAiCodexProfile.RATE_LIMIT_SHORT_WINDOW_MAX_MINUTES
+                ? OpenAiCodexProfile.RATE_LIMIT_LABEL_SHORT_WINDOW
+                : OpenAiCodexProfile.RATE_LIMIT_LABEL_LONG_WINDOW;
+    }
+
+    private String complementWindowLabel(int windowMinutes) {
+        return windowMinutes <= OpenAiCodexProfile.RATE_LIMIT_SHORT_WINDOW_MAX_MINUTES
+                ? OpenAiCodexProfile.RATE_LIMIT_LABEL_LONG_WINDOW
+                : OpenAiCodexProfile.RATE_LIMIT_LABEL_SHORT_WINDOW;
     }
 
     private Optional<Integer> parseInt(HttpHeaders headers, String name) {

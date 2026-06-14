@@ -6,6 +6,8 @@ import com.landgate.domain.group.adapter.repository.IAccountGroupRepository;
 import com.landgate.domain.group.model.entity.AccountGroupEntity;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.trigger.gateway.account.AccountSelector;
+import com.landgate.types.enums.AccountType;
+import com.landgate.types.enums.Platform;
 import com.landgate.types.enums.Status;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -55,6 +57,25 @@ class AccountSelectorRateLimitTest {
         AccountEntity account = selector.getById(16L);
 
         assertNull(account);
+    }
+
+    @Test
+    @DisplayName("未配置 supportedModels 时使用 OpenAI model_mapping 判断模型支持")
+    void modelSupportUsesOpenAiModelMappingWhenSupportedModelsMissing() {
+        AccountEntity account = AccountEntity.builder()
+                .id(21L)
+                .name("openai-api-key")
+                .platform(Platform.OPENAI)
+                .type(AccountType.API_KEY)
+                .status(Status.ACTIVE)
+                .credentials("""
+                        {"model_mapping":{"gpt-5.*":"gpt-5.4"}}
+                        """)
+                .build();
+        AccountSelector selector = new AccountSelector(null, null, null);
+
+        assertEquals(true, selector.isModelSupportedByAccount(account, "gpt-5.3"));
+        assertEquals(false, selector.isModelSupportedByAccount(account, "o3-mini"));
     }
 
     private static class InMemoryAccountRepository implements IAccountRepository {

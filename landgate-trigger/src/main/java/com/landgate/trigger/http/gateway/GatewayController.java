@@ -4,6 +4,10 @@ import com.landgate.infrastructure.dao.IUserDao;
 import com.landgate.infrastructure.dao.po.ApiKeyPO;
 import com.landgate.infrastructure.dao.po.UserPO;
 import com.landgate.trigger.gateway.GatewayDispatcher;
+import com.landgate.trigger.gateway.counttokens.CountTokensGatewayService;
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
+import com.landgate.types.gateway.GatewayResponsesRoutePolicy;
+import com.landgate.types.gateway.GatewayUnsupportedFeaturePolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -31,6 +35,7 @@ public class GatewayController {
 
     private final GatewayDispatcher dispatcher;
     private final IUserDao userDao;
+    private final CountTokensGatewayService countTokensGatewayService;
 
     private static final String ATTR_GATEWAY_MODEL = "gateway_model";
     private static final String ATTR_GATEWAY_UPSTREAM_PATH = "gateway_upstream_path";
@@ -46,7 +51,7 @@ public class GatewayController {
         request.setAttribute(ATTR_REQUEST_ID, requestId);
         log.debug("[{}] => POST /v1/messages | content_length={} | remote_addr={} | ua={}",
                 requestId, body != null ? body.length() : 0,
-                request.getRemoteAddr(), request.getHeader("User-Agent"));
+                request.getRemoteAddr(), request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT));
         dispatcher.dispatch(request, response, body);
     }
 
@@ -54,16 +59,18 @@ public class GatewayController {
     public void countTokens(@RequestBody String body,
                             HttpServletRequest request,
                             HttpServletResponse response) throws IOException {
-        log.debug("POST /v1/messages/count_tokens");
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write(
-                "{\"type\":\"error\",\"error\":{\"type\":\"not_implemented\",\"message\":\"count_tokens is not yet implemented\"}}");
+        String requestId = UUID.randomUUID().toString();
+        request.setAttribute(ATTR_REQUEST_ID, requestId);
+        log.debug("[{}] => POST /v1/messages/count_tokens | content_length={} | remote_addr={} | ua={}",
+                requestId, body != null ? body.length() : 0,
+                request.getRemoteAddr(), request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT));
+        countTokensGatewayService.handle(body, request, response);
     }
 
     @GetMapping("/v1/models")
     public void models(HttpServletRequest request, HttpServletResponse response) throws IOException {
         log.debug("GET /v1/models");
-        response.setContentType("application/json;charset=UTF-8");
+        response.setContentType(GatewayHttpHeaderPolicy.MEDIA_TYPE_JSON_UTF8);
         response.getWriter().write("{\"data\":[],\"has_more\":false,\"first_id\":null,\"last_id\":null}");
     }
 
@@ -120,21 +127,21 @@ public class GatewayController {
 
     // ---- OpenAI Chat Completions API ----
 
-    @PostMapping("/v1/chat/completions")
+    @PostMapping({"/v1/chat/completions", "/chat/completions"})
     public void chatCompletions(@RequestBody String body,
                                 HttpServletRequest request,
                                 HttpServletResponse response) throws IOException {
         String requestId = UUID.randomUUID().toString();
         request.setAttribute(ATTR_REQUEST_ID, requestId);
-        log.debug("[{}] => POST /v1/chat/completions | content_length={} | remote_addr={} | ua={}",
-                requestId, body != null ? body.length() : 0,
-                request.getRemoteAddr(), request.getHeader("User-Agent"));
+        log.debug("[{}] => POST {} | content_length={} | remote_addr={} | ua={}",
+                requestId, request.getServletPath(), body != null ? body.length() : 0,
+                request.getRemoteAddr(), request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT));
 
         Long groupId = (Long) request.getAttribute("group_id");
         if (groupId == null) {
             log.warn("[{}] 缺少 API Key 认证 (group_id=null)，返回 401", requestId);
             response.setStatus(401);
-            response.setContentType("application/json;charset=UTF-8");
+            response.setContentType(GatewayHttpHeaderPolicy.MEDIA_TYPE_JSON_UTF8);
             response.getWriter().write(
                     "{\"error\":{\"message\":\"Missing API key\",\"type\":\"authentication_error\",\"param\":null,\"code\":null}}");
             return;
@@ -168,20 +175,21 @@ public class GatewayController {
         request.setAttribute(ATTR_REQUEST_ID, requestId);
         log.debug("[{}] => POST {} | content_length={} | remote_addr={} | ua={}",
                 requestId, request.getServletPath(), body != null ? body.length() : 0,
-                request.getRemoteAddr(), request.getHeader("User-Agent"));
+                request.getRemoteAddr(), request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT));
 
         Long groupId = (Long) request.getAttribute("group_id");
         if (groupId == null) {
             log.warn("[{}] 缺少 API Key 认证 (group_id=null)，返回 401", requestId);
             response.setStatus(401);
-            response.setContentType("application/json;charset=UTF-8");
+            response.setContentType(GatewayHttpHeaderPolicy.MEDIA_TYPE_JSON_UTF8);
             response.getWriter().write(
                     "{\"error\":{\"message\":\"Missing API key\",\"type\":\"authentication_error\",\"param\":null,\"code\":null}}");
             return;
         }
         log.debug("[{}] 认证通过: group_id={}", requestId, groupId);
 
-        request.setAttribute(ATTR_GATEWAY_UPSTREAM_PATH, canonicalResponsesPath(request.getServletPath()));
+        request.setAttribute(ATTR_GATEWAY_UPSTREAM_PATH,
+                GatewayResponsesRoutePolicy.canonicalClientUpstreamPath(request.getServletPath()));
         dispatcher.dispatch(request, response, body);
     }
 
@@ -206,22 +214,6 @@ public class GatewayController {
         }
     }
 
-    private static String canonicalResponsesPath(String servletPath) {
-        if (servletPath == null || servletPath.isBlank()) {
-            return "/v1/responses";
-        }
-        if (servletPath.startsWith("/v1/responses")) {
-            return servletPath;
-        }
-        if (servletPath.startsWith("/responses")) {
-            return "/v1" + servletPath;
-        }
-        if (servletPath.startsWith("/backend-api/codex/responses")) {
-            return servletPath;
-        }
-        return "/v1/responses";
-    }
-
     // ---- Gemini API ----
 
     @PostMapping("/v1beta/models/{modelPath}/**")
@@ -229,18 +221,8 @@ public class GatewayController {
                             @PathVariable String modelPath,
                             HttpServletRequest request,
                             HttpServletResponse response) throws IOException {
-        writeGoogleError(response, 404, "UNSUPPORTED", "Gemini gateway is not supported in this build");
-    }
-
-    private static void writeGoogleError(HttpServletResponse response, int status, String code, String message) throws IOException {
-        response.setStatus(status);
-        response.setContentType("application/json;charset=UTF-8");
-        response.getWriter().write(String.format(
-                "{\"error\":{\"code\":%d,\"message\":\"%s\",\"status\":\"%s\"}}",
-                status, escapeJson(message), code));
-    }
-
-    private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+        response.setStatus(GatewayUnsupportedFeaturePolicy.STATUS_NOT_FOUND);
+        response.setContentType(GatewayHttpHeaderPolicy.MEDIA_TYPE_JSON_UTF8);
+        response.getWriter().write(GatewayUnsupportedFeaturePolicy.googleUnsupportedBody());
     }
 }

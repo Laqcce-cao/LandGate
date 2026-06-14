@@ -4,6 +4,8 @@ import com.landgate.infrastructure.dao.IUserDao;
 import com.landgate.infrastructure.dao.po.ApiKeyPO;
 import com.landgate.infrastructure.dao.po.UserPO;
 import com.landgate.trigger.gateway.GatewayDispatcher;
+import com.landgate.trigger.gateway.counttokens.CountTokensGatewayService;
+import com.landgate.types.gateway.GatewayUnsupportedFeaturePolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.junit.jupiter.api.DisplayName;
@@ -31,7 +33,9 @@ class GatewayControllerTest {
 
     private final GatewayDispatcher dispatcher = mock(GatewayDispatcher.class);
     private final IUserDao userDao = mock(IUserDao.class);
-    private final MockMvc mockMvc = standaloneSetup(new GatewayController(dispatcher, userDao)).build();
+    private final CountTokensGatewayService countTokensGatewayService = mock(CountTokensGatewayService.class);
+    private final MockMvc mockMvc = standaloneSetup(
+            new GatewayController(dispatcher, userDao, countTokensGatewayService)).build();
 
     @Test
     @DisplayName("Codex 直连 Responses 路径进入 dispatcher")
@@ -85,5 +89,30 @@ class GatewayControllerTest {
 
         mockMvc.perform(get("/usage"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("count_tokens 路径进入独立服务")
+    void countTokensRoutesToCountTokensService() throws Exception {
+        String body = "{\"model\":\"claude-sonnet-4-5\",\"messages\":[]}";
+
+        mockMvc.perform(post("/v1/messages/count_tokens")
+                        .contentType("application/json")
+                .content(body))
+                .andExpect(status().isOk());
+
+        verify(countTokensGatewayService).handle(
+                eq(body), any(HttpServletRequest.class), any(HttpServletResponse.class));
+    }
+
+    @Test
+    @DisplayName("Gemini 当前显式返回 unsupported")
+    void geminiIsExplicitlyUnsupported() throws Exception {
+        mockMvc.perform(post("/v1beta/models/gemini-2.5-flash:generateContent")
+                        .contentType("application/json")
+                .content("{}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.status").value(GatewayUnsupportedFeaturePolicy.GOOGLE_STATUS_UNSUPPORTED))
+                .andExpect(jsonPath("$.error.message").value(GatewayUnsupportedFeaturePolicy.GEMINI_UNSUPPORTED_MESSAGE));
     }
 }

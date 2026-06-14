@@ -1,5 +1,6 @@
 package com.landgate.infrastructure.security.filter;
 
+import com.landgate.types.gateway.GatewayPathPolicy;
 import jakarta.servlet.*;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -43,12 +44,6 @@ public class ClientRequestIdFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getServletPath();
-        return !path.startsWith("/v1/")
-                && !path.startsWith("/v1beta/")
-                && !path.startsWith("/chat/")
-                && !path.startsWith("/images/")
-                && !path.startsWith("/responses")
-                && !path.startsWith("/backend-api/codex/")
-                && !path.startsWith("/antigravity/");
+        return !GatewayPathPolicy.isGatewayPath(path);
     }
 }

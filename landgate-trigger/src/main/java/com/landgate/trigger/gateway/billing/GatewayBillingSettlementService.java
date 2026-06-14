@@ -7,6 +7,7 @@ import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.domain.billing.service.BillingDomainService;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.trigger.gateway.billing.BalanceDomainService;
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,8 @@ public class GatewayBillingSettlementService {
 
     private final BillingDomainService billingDomainService;
     private final BalanceDomainService balanceDomainService;
+    private final AnthropicCacheTtlUsageOverrideService cacheTtlUsageOverrideService;
+    private final ForceCacheBillingUsageService forceCacheBillingUsageService;
 
     /**
      * 保存用量日志并完成余额扣减，失败时保留可对账状态，避免资损静默发生。
@@ -38,15 +41,19 @@ public class GatewayBillingSettlementService {
                                boolean clientDisconnected,
                                long durationMs,
                                HttpServletRequest request,
-                               String requestId) {
+                               String requestId,
+                               boolean forceCacheBilling) {
         UsageLogEntity logEntry;
         try {
+            forceCacheBillingUsageService.applyIfNeeded(usage, forceCacheBilling,
+                    account != null ? account.getId() : null, requestId);
+            cacheTtlUsageOverrideService.applyIfNeeded(usage, account);
             logEntry = billingDomainService.calculateAndBuildLog(
                     usage, model, platform,
                     userId, apiKeyId, account.getId(), group.getId(),
                     group.getRateMultiplier(),
                     stream, durationMs,
-                    request.getHeader("User-Agent"),
+                    request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT),
                     request.getRemoteAddr(),
                     clientDisconnected,
                     requestId);

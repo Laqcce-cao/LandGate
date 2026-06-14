@@ -3,6 +3,7 @@ package com.landgate.trigger.gateway.converter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.landgate.trigger.gateway.converter.compat.ChatCompletionsToResponsesConverter;
 import com.landgate.trigger.gateway.converter.compat.ResponsesToChatCompletionsConverter;
+import com.landgate.types.gateway.GatewayProtocolFormat;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -31,7 +32,7 @@ public class ChatCompletionsConverter implements ProtocolConverter {
 
     @Override
     public String getFormatId() {
-        return "chat_completions";
+        return GatewayProtocolFormat.CHAT_COMPLETIONS.id();
     }
 
     // ========================

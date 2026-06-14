@@ -117,9 +117,8 @@ public class OAuthAuthorizationService implements IOAuthService {
 
         try {
             // Exchange code for tokens (JSON for Anthropic, form-encoded for others)
-            boolean useJson = "json".equalsIgnoreCase(provider.getTokenExchangeFormat());
+            boolean useJson = OAuthHttpProfile.usesJsonTokenExchange(provider);
             String body;
-            String contentType;
 
             if (useJson) {
                 ObjectNode tokenReq = JSON.createObjectNode();
@@ -129,23 +128,19 @@ public class OAuthAuthorizationService implements IOAuthService {
                 tokenReq.put("code_verifier", stateData.codeVerifier);
                 tokenReq.put("client_id", provider.getClientId());
                 body = tokenReq.toString();
-                contentType = "application/json";
             } else {
                 body = "grant_type=authorization_code"
                         + "&code=" + URLEncoder.encode(request.code(), StandardCharsets.UTF_8)
                         + "&redirect_uri=" + URLEncoder.encode(stateData.redirectUri, StandardCharsets.UTF_8)
                         + "&code_verifier=" + URLEncoder.encode(stateData.codeVerifier, StandardCharsets.UTF_8)
                         + "&client_id=" + URLEncoder.encode(provider.getClientId(), StandardCharsets.UTF_8);
-                contentType = "application/x-www-form-urlencoded";
             }
 
             var httpReqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getTokenUrl()))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", contentType);
-            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
-                httpReqBuilder.header("User-Agent", provider.getUserAgent());
-            }
+                    .timeout(Duration.ofSeconds(15));
+            OAuthHttpProfile.applyContentType(httpReqBuilder, OAuthHttpProfile.tokenExchangeContentType(provider));
+            OAuthHttpProfile.applyProviderUserAgent(httpReqBuilder, provider);
             HttpRequest httpReq = httpReqBuilder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
             HttpResponse<String> resp = HTTP.send(httpReq, HttpResponse.BodyHandlers.ofString());
@@ -264,11 +259,9 @@ public class OAuthAuthorizationService implements IOAuthService {
 
             var httpReqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getDeviceCodeUrl()))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", "application/json");
-            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
-                httpReqBuilder.header("User-Agent", provider.getUserAgent());
-            }
+                    .timeout(Duration.ofSeconds(15));
+            OAuthHttpProfile.applyJsonContentType(httpReqBuilder);
+            OAuthHttpProfile.applyProviderUserAgent(httpReqBuilder, provider);
             HttpRequest httpReq = httpReqBuilder.POST(HttpRequest.BodyPublishers.ofString(body.toString())).build();
 
             HttpResponse<String> resp = HTTP.send(httpReq, HttpResponse.BodyHandlers.ofString());
@@ -318,11 +311,9 @@ public class OAuthAuthorizationService implements IOAuthService {
 
             var pollReqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getDevicePollUrl()))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", "application/json");
-            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
-                pollReqBuilder.header("User-Agent", provider.getUserAgent());
-            }
+                    .timeout(Duration.ofSeconds(15));
+            OAuthHttpProfile.applyJsonContentType(pollReqBuilder);
+            OAuthHttpProfile.applyProviderUserAgent(pollReqBuilder, provider);
             HttpRequest pollReq = pollReqBuilder.POST(HttpRequest.BodyPublishers.ofString(pollBody.toString())).build();
 
             HttpResponse<String> pollResp = HTTP.send(pollReq, HttpResponse.BodyHandlers.ofString());
@@ -364,11 +355,9 @@ public class OAuthAuthorizationService implements IOAuthService {
 
             var tokenReqBuilder = HttpRequest.newBuilder()
                     .uri(URI.create(provider.getTokenUrl()))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", "application/x-www-form-urlencoded");
-            if (provider.getUserAgent() != null && !provider.getUserAgent().isEmpty()) {
-                tokenReqBuilder.header("User-Agent", provider.getUserAgent());
-            }
+                    .timeout(Duration.ofSeconds(15));
+            OAuthHttpProfile.applyContentType(tokenReqBuilder, OAuthHttpProfile.tokenExchangeContentType(provider));
+            OAuthHttpProfile.applyProviderUserAgent(tokenReqBuilder, provider);
             HttpRequest tokenReq = tokenReqBuilder.POST(
                     HttpRequest.BodyPublishers.ofString(tokenBody)).build();
 

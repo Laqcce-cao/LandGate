@@ -3,6 +3,7 @@ package com.landgate.trigger.gateway.converter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.landgate.trigger.gateway.converter.compat.AnthropicToResponsesConverter;
 import com.landgate.trigger.gateway.converter.compat.ResponsesToAnthropicConverter;
+import com.landgate.types.gateway.GatewayProtocolFormat;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -31,7 +32,7 @@ public class AnthropicConverter implements ProtocolConverter {
 
     @Override
     public String getFormatId() {
-        return "messages";
+        return GatewayProtocolFormat.MESSAGES.id();
     }
 
     // ========================

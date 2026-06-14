@@ -115,10 +115,15 @@ class ResponsesUsageParserTest {
     @DisplayName("流式终止事件识别 response 结束状态")
     void isStreamDoneRecognizesResponsesTerminalEvents() {
         assertTrue(parser.isStreamDone("data: {\"type\":\"response.completed\"}"));
+        assertTrue(parser.isStreamDone("data:{\"type\":\"response.completed\"}"));
+        assertTrue(parser.isStreamDone("data:\t{\"type\":\"response.completed\"}"));
         assertTrue(parser.isStreamDone("data: {\"type\":\"response.done\"}"));
         assertTrue(parser.isStreamDone("data: {\"type\":\"response.failed\"}"));
         assertTrue(parser.isStreamDone("data: {\"type\":\"response.incomplete\"}"));
+        assertTrue(parser.isStreamDone("data: {\"type\":\"response.cancelled\"}"));
+        assertTrue(parser.isStreamDone("data: {\"type\":\"response.canceled\"}"));
         assertTrue(parser.isStreamDone("data: [DONE]"));
+        assertTrue(parser.isStreamDone("data:[DONE]"));
         assertFalse(parser.isStreamDone("data: {\"type\":\"response.output_text.delta\"}"));
         assertFalse(parser.isStreamDone("event: response.completed"));
     }

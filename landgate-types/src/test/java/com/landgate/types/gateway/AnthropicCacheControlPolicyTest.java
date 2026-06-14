@@ -1,4 +1,4 @@
-package com.landgate.trigger.gateway.transformer;
+package com.landgate.types.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -9,13 +9,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@DisplayName("AnthropicCacheControlPolicy 测试")
+@DisplayName("AnthropicCacheControlPolicy tests")
 class AnthropicCacheControlPolicyTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
     @Test
-    @DisplayName("cache_control 超限时优先移除 tools 并保留 system")
+    @DisplayName("cache_control over limit drops tools before messages and system")
     void enforceLimitDropsToolsBeforeMessagesAndSystem() throws Exception {
         String body = """
                 {
@@ -45,7 +45,7 @@ class AnthropicCacheControlPolicyTest {
     }
 
     @Test
-    @DisplayName("thinking content block 上的非法 cache_control 会被移除")
+    @DisplayName("thinking content block cache_control is stripped")
     void stripsInvalidThinkingCacheControl() throws Exception {
         String body = """
                 {

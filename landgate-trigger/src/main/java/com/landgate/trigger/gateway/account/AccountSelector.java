@@ -9,6 +9,7 @@ import com.landgate.domain.group.model.entity.AccountGroupEntity;
 import com.landgate.domain.group.model.entity.GroupEntity;
 import com.landgate.trigger.gateway.limit.ConcurrencyService;
 import com.landgate.trigger.gateway.limit.RateLimitSnapshot;
+import com.landgate.types.gateway.GatewayAccountModelSupportPolicy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -260,36 +261,24 @@ public class AccountSelector {
     }
 
     /**
-     * 检查号是否支持指定模型。
+     * 检查账号是否支持指定模型。
      * <p>
-     * {@code null} / 空字符串 / {@code "[]"}（空数组）→ 不支持任何模型，返回 {@code false}。
-     * {@code ["*"]} → 通配符，支持所有模型，返回 {@code true}。
-     * 其他 → model 必须在白名单中。
+     * 显式 {@code supportedModels} 仍是 LandGate 强白名单；未配置时按 Sub2API
+     * 语义使用账号 {@code model_mapping} 判断支持，若两者都未配置则允许所有模型。
      */
     public boolean isModelSupportedByAccount(AccountEntity account, String model) {
-        String supportedJson = account.getSupportedModels();
-        // null / 空字符串 / 空数组 [] = 不支持任何模型
-        if (supportedJson == null || supportedJson.isEmpty() || "[]".equals(supportedJson)) {
-            log.debug("账户无模型白名单: account_id={}, name={}, supported_models=空", account.getId(), account.getName());
-            return false;
+        boolean supported = GatewayAccountModelSupportPolicy.supportsModel(
+                account.getPlatform(),
+                account.getType(),
+                account.getSupportedModels(),
+                account.getCredentials(),
+                account.getExtra(),
+                model);
+        if (!supported) {
+            log.debug("模型不受账号支持: model={}, account_id={}, name={}, platform={}",
+                    model, account.getId(), account.getName(), account.getPlatform());
         }
-        try {
-            List<String> supported = OBJECT_MAPPER.readValue(
-                    supportedJson, new TypeReference<List<String>>() {});
-            // ["*"] 通配符 = 支持所有模型
-            if (supported.contains("*")) {
-                return true;
-            }
-            boolean result = supported.contains(model);
-            if (!result) {
-                log.debug("模型不在账户白名单: model={}, account_id={}, name={}, supported={}",
-                        model, account.getId(), account.getName(), supported);
-            }
-            return result;
-        } catch (Exception e) {
-            log.debug("解析 supportedModels 失败: account_id={}", account.getId(), e);
-            return false;
-        }
+        return supported;
     }
 
     // ---- 显式路由 ----

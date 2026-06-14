@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.request;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.types.gateway.GatewayRequestBodyPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.stereotype.Service;
 
@@ -30,18 +31,22 @@ public class GatewayRequestParser {
     public static String extractModel(String body) {
         try {
             JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("model")) return root.get("model").asText();
+            if (root.has(GatewayRequestBodyPolicy.FIELD_MODEL)) {
+                return root.get(GatewayRequestBodyPolicy.FIELD_MODEL).asText();
+            }
         } catch (Exception e) {
             // ignore
         }
-        return "unknown";
+        return GatewayRequestBodyPolicy.DEFAULT_MODEL;
     }
 
     /** 从请求 body JSON 中提取 stream 字段 */
     public static boolean isStreamRequest(String body) {
         try {
             JsonNode root = JSON_MAPPER.readTree(body);
-            if (root.has("stream")) return root.get("stream").asBoolean();
+            if (root.has(GatewayRequestBodyPolicy.FIELD_STREAM)) {
+                return root.get(GatewayRequestBodyPolicy.FIELD_STREAM).asBoolean();
+            }
         } catch (Exception e) {
             // ignore
         }

@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.oauth;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -28,9 +29,6 @@ public class BillingHeaderService {
     private static final Pattern CCH_PLACEHOLDER_PATTERN =
             Pattern.compile("(x-anthropic-billing-header:[^\"]*?\\bcch=)(00000)(;)");
 
-    /** xxHash64 seed（与 sub2api 一致） */
-    private static final long CCH_SEED = 0x6E52736AC806831EL;
-
     /**
      * 构造 billing attribution block JSON。
      * <p>
@@ -54,8 +52,8 @@ public class BillingHeaderService {
                 cliVersion, fp);
         try {
             var node = JSON.createObjectNode();
-            node.put("type", "text");
-            node.put("text", text);
+            node.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_TEXT);
+            node.put(AnthropicMessagesBodyPolicy.FIELD_TEXT, text);
             return JSON.writeValueAsString(node);
         } catch (Exception e) {
             log.error("Failed to build billing attribution block", e);
@@ -111,8 +109,8 @@ public class BillingHeaderService {
 
         try {
             JsonNode root = JSON.readTree(body);
-            if (!root.has("system")) return body;
-            JsonNode system = root.get("system");
+            if (!root.has(AnthropicMessagesBodyPolicy.FIELD_SYSTEM)) return body;
+            JsonNode system = root.get(AnthropicMessagesBodyPolicy.FIELD_SYSTEM);
             if (!system.isArray()) return body;
 
             String replacement = "cc_version=" + version;
@@ -120,12 +118,19 @@ public class BillingHeaderService {
 
             for (int i = 0; i < system.size(); i++) {
                 JsonNode item = system.get(i);
-                if (item.has("text") && item.get("text").isTextual()) {
-                    String text = item.get("text").asText();
+                if (item.has(AnthropicMessagesBodyPolicy.FIELD_TEXT)
+                        && item.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).isTextual()) {
+                    String text = item.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).asText();
                     if (text != null && text.startsWith("x-anthropic-billing-header")) {
                         String newText = CC_VERSION_PATTERN.matcher(text).replaceAll(replacement);
                         if (!newText.equals(text)) {
-                            body = replaceJsonPathValue(body, "system", i, "text", text, newText);
+                            body = replaceJsonPathValue(
+                                    body,
+                                    AnthropicMessagesBodyPolicy.FIELD_SYSTEM,
+                                    i,
+                                    AnthropicMessagesBodyPolicy.FIELD_TEXT,
+                                    text,
+                                    newText);
                             modified = true;
                         }
                     }
@@ -149,7 +154,7 @@ public class BillingHeaderService {
     public String signBillingHeaderCCH(String body) {
         if (!CCH_PLACEHOLDER_PATTERN.matcher(body).find()) return body;
 
-        long hash = xxHash64(body.getBytes(StandardCharsets.UTF_8), CCH_SEED);
+        long hash = xxHash64(body.getBytes(StandardCharsets.UTF_8), ClaudeConstants.CCH_SEED);
         String cch = String.format("%05x", hash & 0xFFFFFL);
 
         return CCH_PLACEHOLDER_PATTERN.matcher(body).replaceAll("$1" + cch + "$3");
@@ -166,18 +171,25 @@ public class BillingHeaderService {
     static String extractFirstUserText(String body) {
         try {
             JsonNode root = JSON.readTree(body);
-            if (!root.has("messages") || !root.get("messages").isArray()) return "";
-            JsonNode messages = root.get("messages");
+            if (!root.has(AnthropicMessagesBodyPolicy.FIELD_MESSAGES)
+                    || !root.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGES).isArray()) return "";
+            JsonNode messages = root.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGES);
             for (JsonNode msg : messages) {
-                if (!"user".equals(msg.has("role") ? msg.get("role").asText() : "")) continue;
-                JsonNode content = msg.get("content");
+                if (!AnthropicMessagesBodyPolicy.ROLE_USER.equals(
+                        msg.has(AnthropicMessagesBodyPolicy.FIELD_ROLE)
+                                ? msg.get(AnthropicMessagesBodyPolicy.FIELD_ROLE).asText()
+                                : "")) continue;
+                JsonNode content = msg.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT);
                 if (content == null) continue;
                 if (content.isTextual()) return content.asText();
                 if (content.isArray()) {
                     for (JsonNode block : content) {
-                        if ("text".equals(block.has("type") ? block.get("type").asText() : "")
-                                && block.has("text")) {
-                            return block.get("text").asText();
+                        if (AnthropicMessagesBodyPolicy.TYPE_TEXT.equals(
+                                block.has(AnthropicMessagesBodyPolicy.FIELD_TYPE)
+                                        ? block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE).asText()
+                                        : "")
+                                && block.has(AnthropicMessagesBodyPolicy.FIELD_TEXT)) {
+                            return block.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).asText();
                         }
                     }
                 }

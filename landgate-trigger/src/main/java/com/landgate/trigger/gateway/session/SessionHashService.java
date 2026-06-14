@@ -1,6 +1,8 @@
 package com.landgate.trigger.gateway.session;
 
-import com.landgate.trigger.gateway.converter.compat.CompatPromptCacheKeyPolicy;
+import com.landgate.types.gateway.CompatPromptCacheKeyPolicy;
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
+import com.landgate.types.gateway.SessionHashPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RMapCache;
@@ -11,7 +13,6 @@ import org.springframework.stereotype.Component;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 会话粘滞服务 —— 基于客户端 IP + User-Agent + API Key 的 SHA-256 哈希实现会话保持。
@@ -23,14 +24,11 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class SessionHashService {
 
-    private static final long TTL_MINUTES = 30;
-    private static final String CACHE_KEY = "session:sticky";
-
     private final RMapCache<String, Long> sessionCache;
 
     @Autowired
     public SessionHashService(RedissonClient redissonClient) {
-        this.sessionCache = redissonClient.getMapCache(CACHE_KEY);
+        this.sessionCache = redissonClient.getMapCache(SessionHashPolicy.CACHE_KEY);
     }
 
     SessionHashService(RMapCache<String, Long> sessionCache) {
@@ -58,19 +56,16 @@ public class SessionHashService {
     public String generateHash(HttpServletRequest request, Long apiKeyId, String body) {
         String promptCacheKey = CompatPromptCacheKeyPolicy.extractPromptCacheKey(body);
         if (!promptCacheKey.isEmpty()) {
-            return hashRaw("prompt_cache_key|" + apiKeyId + "|" + promptCacheKey);
+            return hashRaw(SessionHashPolicy.promptCacheKeyMaterial(apiKeyId, promptCacheKey));
         }
         String anthropicCacheAnchor = CompatPromptCacheKeyPolicy.extractAnthropicCacheControlSessionAnchor(body);
         if (!anthropicCacheAnchor.isEmpty()) {
-            return hashRaw("anthropic_cache|" + apiKeyId + "|" + anthropicCacheAnchor);
+            return hashRaw(SessionHashPolicy.anthropicCacheAnchorMaterial(apiKeyId, anthropicCacheAnchor));
         }
 
         String clientIp = request.getRemoteAddr();
-        String userAgent = normalizeUserAgent(request.getHeader("User-Agent"));
-        String raw = new StringBuilder()
-                .append(clientIp).append('|').append(userAgent).append('|').append(apiKeyId)
-                .toString();
-        return hashRaw(raw);
+        String userAgent = request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT);
+        return hashRaw(SessionHashPolicy.requestContextMaterial(clientIp, userAgent, apiKeyId));
     }
 
     private static String hashRaw(String raw) {
@@ -96,7 +91,7 @@ public class SessionHashService {
         Long accountId = sessionCache.get(sessionHash);
         if (accountId != null) {
             // 滑动过期：每次读取刷新 TTL
-            sessionCache.put(sessionHash, accountId, TTL_MINUTES, TimeUnit.MINUTES);
+            sessionCache.put(sessionHash, accountId, SessionHashPolicy.TTL_VALUE, SessionHashPolicy.TTL_UNIT);
             log.debug("Session TTL refreshed: hash={}, account_id={}", sessionHash, accountId);
         }
         return accountId;
@@ -120,17 +115,8 @@ public class SessionHashService {
      * @param accountId   上游账号 ID
      */
     public void bindSession(String sessionHash, Long accountId) {
-        sessionCache.put(sessionHash, accountId, TTL_MINUTES, TimeUnit.MINUTES);
+        sessionCache.put(sessionHash, accountId, SessionHashPolicy.TTL_VALUE, SessionHashPolicy.TTL_UNIT);
         log.debug("Session bound: hash={}, account_id={}", sessionHash, accountId);
-    }
-
-    /**
-     * 归一化 User-Agent —— 将版本号替换为占位符，
-     * 避免客户端版本升级导致粘性断裂。
-     */
-    private String normalizeUserAgent(String ua) {
-        if (ua == null) return "";
-        return ua.replaceAll("\\d+\\.\\d+\\.\\d+", "X.Y.Z");
     }
 
     private static String bytesToHex(byte[] bytes) {

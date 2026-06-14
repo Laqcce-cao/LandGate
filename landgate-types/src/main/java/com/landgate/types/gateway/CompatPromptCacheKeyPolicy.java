@@ -1,9 +1,8 @@
-package com.landgate.trigger.gateway.converter.compat;
+package com.landgate.types.gateway;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.landgate.trigger.gateway.oauth.MetadataUserIdParser;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -11,14 +10,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * OpenAI Responses 兼容缓存键派生策略。
- * <p>
- * 对齐 sub2api {@code openai_compat_prompt_cache_key.go}：
- * <ol>
- *   <li>metadata.user_id.session_id 派生 {@code anthropic-metadata-*}</li>
- *   <li>Anthropic cache_control 锚点派生 {@code anthropic-cache-*}</li>
- *   <li>无锚点时，从 Anthropic replay digest 派生 {@code anthropic-digest-*}</li>
- * </ol>
+ * OpenAI Responses compatibility prompt-cache-key derivation policy.
+ *
+ * <p>Aligned with Sub2API openai_compat_prompt_cache_key behavior.</p>
  */
 public final class CompatPromptCacheKeyPolicy {
 
@@ -27,7 +21,8 @@ public final class CompatPromptCacheKeyPolicy {
     private static final String ANTHROPIC_METADATA_PREFIX = "anthropic-metadata-";
     private static final String ANTHROPIC_DIGEST_PREFIX = "anthropic-digest-";
 
-    private CompatPromptCacheKeyPolicy() {}
+    private CompatPromptCacheKeyPolicy() {
+    }
 
     public static String deriveAnthropicCompatPromptCacheKey(JsonNode anthropicRequest) {
         if (anthropicRequest == null || !anthropicRequest.isObject()) return "";
@@ -39,7 +34,7 @@ public final class CompatPromptCacheKeyPolicy {
         if (!anchorKey.isEmpty()) {
             return anchorKey;
         }
-        String model = textOrDefault(anthropicRequest.get("model"), "");
+        String model = textOrDefault(anthropicRequest.get(AnthropicMessagesBodyPolicy.FIELD_MODEL), "");
         if (!shouldAutoInjectPromptCacheKeyForCompat(model)) {
             return "";
         }
@@ -48,9 +43,9 @@ public final class CompatPromptCacheKeyPolicy {
 
     public static String promptCacheKeyFromAnthropicMetadataSession(JsonNode anthropicRequest) {
         if (anthropicRequest == null || !anthropicRequest.isObject()) return "";
-        JsonNode metadata = anthropicRequest.get("metadata");
+        JsonNode metadata = anthropicRequest.get(AnthropicMessagesBodyPolicy.FIELD_METADATA);
         if (metadata == null || !metadata.isObject()) return "";
-        String userId = textOrDefault(metadata.get("user_id"), "");
+        String userId = textOrDefault(metadata.get(AnthropicMessagesBodyPolicy.FIELD_USER_ID), "");
         MetadataUserIdParser.ParsedMetadataUserId parsed = MetadataUserIdParser.parse(userId);
         if (parsed == null || parsed.sessionId() == null || parsed.sessionId().isBlank()) {
             return "";
@@ -66,17 +61,18 @@ public final class CompatPromptCacheKeyPolicy {
     public static String buildOpenAICompatAnthropicDigestChain(JsonNode anthropicRequest) {
         if (anthropicRequest == null || !anthropicRequest.isObject()) return "";
         List<String> parts = new ArrayList<>();
-        JsonNode system = anthropicRequest.get("system");
+        JsonNode system = anthropicRequest.get(AnthropicMessagesBodyPolicy.FIELD_SYSTEM);
         if (system != null && !system.isNull() && !system.toString().isBlank()
                 && !"null".equals(system.toString().trim())) {
             parts.add("s:" + sha256Hex16(system.toString()));
         }
-        JsonNode messages = anthropicRequest.get("messages");
+        JsonNode messages = anthropicRequest.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGES);
         if (messages != null && messages.isArray()) {
             for (JsonNode message : messages) {
-                JsonNode content = message.get("content");
+                JsonNode content = message.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT);
                 if (content == null || content.isNull() || content.toString().isBlank()) continue;
-                String prefix = "assistant".equals(textOrDefault(message.get("role"), "")) ? "a" : "u";
+                String prefix = AnthropicMessagesBodyPolicy.ROLE_ASSISTANT.equals(
+                        textOrDefault(message.get(AnthropicMessagesBodyPolicy.FIELD_ROLE), "")) ? "a" : "u";
                 parts.add(prefix + ":" + sha256Hex16(content.toString()));
             }
         }
@@ -111,11 +107,11 @@ public final class CompatPromptCacheKeyPolicy {
             if (!(parsed instanceof ObjectNode root)) {
                 return responsesBody;
             }
-            JsonNode existing = root.get("prompt_cache_key");
+            JsonNode existing = root.get(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY);
             if (existing != null && existing.isTextual() && !existing.asText().isBlank()) {
                 return responsesBody;
             }
-            root.put("prompt_cache_key", promptCacheKey.trim());
+            root.put(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY, promptCacheKey.trim());
             return JSON.writeValueAsString(root);
         } catch (Exception ignored) {
             return responsesBody;
@@ -126,7 +122,7 @@ public final class CompatPromptCacheKeyPolicy {
         if (body == null || body.isBlank()) return "";
         try {
             JsonNode root = JSON.readTree(body);
-            JsonNode value = root.get("prompt_cache_key");
+            JsonNode value = root.get(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY);
             return value != null && value.isTextual() ? value.asText().trim() : "";
         } catch (Exception ignored) {
             return "";
@@ -146,7 +142,7 @@ public final class CompatPromptCacheKeyPolicy {
         List<String> parts = new ArrayList<>();
         if (anthropicRequest == null || !anthropicRequest.isObject()) return parts;
 
-        JsonNode system = anthropicRequest.get("system");
+        JsonNode system = anthropicRequest.get(AnthropicMessagesBodyPolicy.FIELD_SYSTEM);
         if (system != null && system.isArray()) {
             for (JsonNode block : system) {
                 String text = cacheControlText(block);
@@ -157,18 +153,18 @@ public final class CompatPromptCacheKeyPolicy {
         }
 
         String firstUserAnchor = "";
-        JsonNode messages = anthropicRequest.get("messages");
+        JsonNode messages = anthropicRequest.get(AnthropicMessagesBodyPolicy.FIELD_MESSAGES);
         if (messages != null && messages.isArray()) {
             for (JsonNode message : messages) {
-                String role = textOrDefault(message.get("role"), "");
-                JsonNode content = message.get("content");
+                String role = textOrDefault(message.get(AnthropicMessagesBodyPolicy.FIELD_ROLE), "");
+                JsonNode content = message.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT);
                 if (content == null || !content.isArray()) continue;
                 for (JsonNode block : content) {
                     String text = cacheControlText(block);
                     if (text.isEmpty()) continue;
-                    if ("user".equals(role) && firstUserAnchor.isEmpty()) {
+                    if (AnthropicMessagesBodyPolicy.ROLE_USER.equals(role) && firstUserAnchor.isEmpty()) {
                         firstUserAnchor = text;
-                    } else if ("assistant".equals(role)) {
+                    } else if (AnthropicMessagesBodyPolicy.ROLE_ASSISTANT.equals(role)) {
                         parts.add("assistant:" + text);
                     }
                 }
@@ -182,16 +178,18 @@ public final class CompatPromptCacheKeyPolicy {
 
     private static String cacheControlText(JsonNode block) {
         if (block == null || !block.isObject()
-                || !"text".equals(textOrDefault(block.get("type"), ""))
-                || isBlankText(block.get("text"))) {
+                || !AnthropicMessagesBodyPolicy.TYPE_TEXT.equals(
+                textOrDefault(block.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), ""))
+                || isBlankText(block.get(AnthropicMessagesBodyPolicy.FIELD_TEXT))) {
             return "";
         }
-        JsonNode cacheControl = block.get("cache_control");
+        JsonNode cacheControl = block.get(AnthropicMessagesBodyPolicy.FIELD_CACHE_CONTROL);
         if (cacheControl == null || !cacheControl.isObject()
-                || !"ephemeral".equals(textOrDefault(cacheControl.get("type"), ""))) {
+                || !AnthropicMessagesBodyPolicy.CACHE_CONTROL_TYPE_EPHEMERAL.equals(
+                textOrDefault(cacheControl.get(AnthropicMessagesBodyPolicy.FIELD_TYPE), ""))) {
             return "";
         }
-        return block.get("text").asText().trim();
+        return block.get(AnthropicMessagesBodyPolicy.FIELD_TEXT).asText().trim();
     }
 
     public static boolean shouldAutoInjectPromptCacheKeyForCompat(String model) {

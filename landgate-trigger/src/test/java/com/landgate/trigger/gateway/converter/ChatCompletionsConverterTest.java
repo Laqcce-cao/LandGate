@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.trigger.gateway.converter.ResponsesConverter;
 import com.landgate.trigger.gateway.converter.StreamTranslator;
+import com.landgate.types.gateway.GatewayProtocolIrPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -86,6 +87,38 @@ class ChatCompletionsConverterTest {
 
             assertTrue(toIR.requestToIR(streamTrue).get("stream").asBoolean());
             assertTrue(toIR.requestToIR(streamFalse).get("stream").asBoolean());
+        }
+
+        @Test
+        @DisplayName("Chat endpoint 收到 Responses-shape body 时保留 input 并清理 Codex 不支持字段")
+        void responsesShapeChatBodyPreservesInputAndCleansUnsupportedFields() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-5.4",
+                        "stream": false,
+                        "service_tier": "fast",
+                        "prompt_cache_key": "tenant:thread",
+                        "prompt_cache_retention": "24h",
+                        "safety_identifier": "safe-user",
+                        "metadata": {"trace_id": "req_1"},
+                        "stream_options": {"include_usage": true},
+                        "input": [
+                            {"type": "message", "role": "user", "content": "Hello from Responses shape"}
+                        ]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("gpt-5.4", resp.get("model").asText());
+            assertTrue(resp.get("stream").asBoolean());
+            assertEquals("priority", resp.get("service_tier").asText());
+            assertEquals("tenant:thread", resp.get("prompt_cache_key").asText());
+            assertFalse(resp.has("prompt_cache_retention"));
+            assertFalse(resp.has("safety_identifier"));
+            assertFalse(resp.has("metadata"));
+            assertFalse(resp.has("stream_options"));
+            assertEquals(1, resp.get("input").size());
+            assertEquals("Hello from Responses shape", resp.get("input").get(0).get("content").asText());
         }
 
         @Test
@@ -255,6 +288,53 @@ class ChatCompletionsConverterTest {
             assertNotNull(resp.get("reasoning"));
             assertEquals("high", resp.get("reasoning").get("effort").asText());
             assertEquals("auto", resp.get("reasoning").get("summary").asText());
+        }
+
+        @Test
+        @DisplayName("reasoning.effort 优先于 reasoning_effort")
+        void nestedReasoningEffortPreferred() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "reasoning": {"effort": " HIGH "},
+                        "reasoning_effort": "low",
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("high", resp.get("reasoning").get("effort").asText());
+            assertEquals("auto", resp.get("reasoning").get("summary").asText());
+        }
+
+        @Test
+        @DisplayName("reasoning_effort 按 sub2api 兼容格式归一化")
+        void reasoningEffortCompatibilityNormalization() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "reasoning_effort": "x-high",
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertEquals("xhigh", resp.get("reasoning").get("effort").asText());
+        }
+
+        @Test
+        @DisplayName("minimal reasoning_effort 按 sub2api 不写入 Responses reasoning")
+        void minimalReasoningEffortIgnored() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "reasoning": {"effort": "minimal"},
+                        "messages": [{"role": "user", "content": "Hi"}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+
+            assertFalse(resp.has("reasoning"));
         }
 
         @Test
@@ -607,6 +687,33 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
+        @DisplayName("system 数组 content 按 sub2api 转为 Responses content parts")
+        void systemArrayContentUsesResponsesParts() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "messages": [
+                            {"role":"system","content":[
+                                {"type":"text","text":"You are a careful visual assistant."},
+                                {"type":"image_url","image_url":{"url":"data:image/png;base64,abc123"}}
+                            ]},
+                            {"role":"user","content":"Describe this"}
+                        ]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode system = resp.get("input").get(0);
+            JsonNode content = system.get("content");
+
+            assertEquals("system", system.get("role").asText());
+            assertEquals(2, content.size());
+            assertEquals("input_text", content.get(0).get("type").asText());
+            assertEquals("You are a careful visual assistant.", content.get(0).get("text").asText());
+            assertEquals("input_image", content.get(1).get("type").asText());
+            assertEquals("data:image/png;base64,abc123", content.get(1).get("image_url").asText());
+        }
+
+        @Test
         @DisplayName("Chat file/audio content parts → Responses input_file/input_audio")
         void fileAndAudioContentParts() throws Exception {
             String body = """
@@ -705,6 +812,26 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
             JsonNode content = resp.get("input").get(0).get("content");
             assertEquals(1, content.size());
+        }
+
+        @Test
+        @DisplayName("非 base64 空 data URI 不按 sub2api empty base64 规则跳过")
+        void nonBase64EmptyDataUriImageURLIsPreserved() throws Exception {
+            String body = """
+                    {
+                        "model": "gpt-4o",
+                        "messages": [{"role": "user", "content": [
+                            {"type":"text","text":"Describe this"},
+                            {"type":"image_url","image_url":{"url":"data:image/svg+xml,"}}
+                        ]}]
+                    }""";
+
+            JsonNode resp = toIR.requestToIR(body);
+            JsonNode content = resp.get("input").get(0).get("content");
+
+            assertEquals(2, content.size());
+            assertEquals("input_image", content.get(1).get("type").asText());
+            assertEquals("data:image/svg+xml,", content.get(1).get("image_url").asText());
         }
 
         @Test
@@ -811,10 +938,9 @@ class ChatCompletionsConverterTest {
             JsonNode resp = toIR.requestToIR(body);
             JsonNode input = resp.get("input");
 
-            assertEquals(2, input.size());
+            assertEquals(1, input.size());
             assertEquals("user", input.get(0).get("role").asText());
-            assertEquals("user", input.get(1).get("role").asText());
-            assertEquals("visible", input.get(1).get("content").asText());
+            assertEquals("visible", input.get(0).get("content").asText());
         }
 
         @Test
@@ -1301,9 +1427,9 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertEquals("</end>", resp.get("_landgate_stop_sequences").get(0).asText());
-            assertEquals("DONE", resp.get("_landgate_stop_sequences").get(1).asText());
-            assertEquals(2, resp.get("_landgate_stop_sequences").size());
+            assertEquals("</end>", resp.get(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES).get(0).asText());
+            assertEquals("DONE", resp.get(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES).get(1).asText());
+            assertEquals(2, resp.get(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES).size());
 
             String chatBody = fromIR.requestFromIR(resp);
             JsonNode chat = JSON.readTree(chatBody);
@@ -1312,7 +1438,7 @@ class ChatCompletionsConverterTest {
             assertEquals(2, chat.get("stop").size());
 
             String responsesBody = new ResponsesConverter().requestFromIR(resp);
-            assertFalse(JSON.readTree(responsesBody).has("_landgate_stop_sequences"));
+            assertFalse(JSON.readTree(responsesBody).has(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES));
         }
 
         @Test
@@ -1327,7 +1453,7 @@ class ChatCompletionsConverterTest {
 
             JsonNode resp = toIR.requestToIR(body);
 
-            assertFalse(resp.has("_landgate_stop_sequences"));
+            assertFalse(resp.has(GatewayProtocolIrPolicy.FIELD_STOP_SEQUENCES));
         }
 
         @Test
@@ -1850,7 +1976,7 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("incomplete without reason → length")
+        @DisplayName("incomplete without reason 按 sub2api → stop")
         void incompleteWithoutReason() throws Exception {
             String body = """
                     {
@@ -1862,11 +1988,11 @@ class ChatCompletionsConverterTest {
             String result = fromIR.responseFromIR(JSON.readTree(body));
             JsonNode chat = JSON.readTree(result);
 
-            assertEquals("length", chat.get("choices").get(0).get("finish_reason").asText());
+            assertEquals("stop", chat.get("choices").get(0).get("finish_reason").asText());
         }
 
         @Test
-        @DisplayName("incomplete content_filter → content_filter")
+        @DisplayName("incomplete content_filter 按 sub2api → stop")
         void incompleteContentFilter() throws Exception {
             String body = """
                     {
@@ -1878,7 +2004,7 @@ class ChatCompletionsConverterTest {
 
             JsonNode chat = JSON.readTree(fromIR.responseFromIR(JSON.readTree(body)));
 
-            assertEquals("content_filter", chat.get("choices").get(0).get("finish_reason").asText());
+            assertEquals("stop", chat.get("choices").get(0).get("finish_reason").asText());
         }
 
         @Test
@@ -3613,20 +3739,25 @@ class ChatCompletionsConverterTest {
             // response.created → role chunk
             List<String> out = t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream\"}}");
             assertTrue(out.stream().anyMatch(s -> s.contains("\"assistant\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"id\":\"resp_stream\"")));
 
             // response.output_text.delta → content chunk
             out = t.feed("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}");
             assertTrue(out.stream().anyMatch(s -> s.contains("\"Hello\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"id\":\"resp_stream\"")));
         }
 
         @Test
-        @DisplayName("Responses stream created_at → Chat created")
-        void streamCreatedAtToChatCreated() {
+        @DisplayName("Responses stream 元数据按 sub2api 不覆盖 Chat model/created")
+        void responsesStreamMetadataDoesNotOverrideChatModelOrCreated() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
 
-            List<String> out = t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream\",\"created_at\":1710000333}}");
+            List<String> out = t.feed("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream\",\"model\":\"gpt-5.1-codex\",\"created_at\":1710000333}}");
 
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"created\":1710000333")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"id\":\"resp_stream\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"model\":\"gpt-4o\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"model\":\"gpt-5.1-codex\"")));
+            assertTrue(out.stream().noneMatch(s -> s.contains("\"created\":1710000333")));
         }
 
         @Test
@@ -3836,22 +3967,22 @@ class ChatCompletionsConverterTest {
         }
 
         @Test
-        @DisplayName("response.incomplete without reason → length")
+        @DisplayName("response.incomplete without reason 按 sub2api → stop")
         void responseIncompleteWithoutReason() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
 
             List<String> out = t.feed("data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"usage\":{\"input_tokens\":13,\"output_tokens\":7}}}");
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"finish_reason\":\"length\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"finish_reason\":\"stop\"")));
             assertTrue(t.isDone());
         }
 
         @Test
-        @DisplayName("response.done incomplete content_filter → content_filter")
+        @DisplayName("response.done incomplete content_filter 按 sub2api → stop")
         void responseDoneIncompleteContentFilter() {
             StreamTranslator t = fromIR.createStreamFromIR("gpt-4o");
 
             List<String> out = t.feed("data: {\"type\":\"response.done\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"},\"usage\":{\"input_tokens\":13,\"output_tokens\":7}}}");
-            assertTrue(out.stream().anyMatch(s -> s.contains("\"finish_reason\":\"content_filter\"")));
+            assertTrue(out.stream().anyMatch(s -> s.contains("\"finish_reason\":\"stop\"")));
             assertTrue(t.isDone());
         }
 

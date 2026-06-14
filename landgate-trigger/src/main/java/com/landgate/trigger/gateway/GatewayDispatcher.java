@@ -1,7 +1,8 @@
 package com.landgate.trigger.gateway;
 
-import com.landgate.trigger.gateway.IGatewayHandler;
+import com.landgate.types.gateway.GatewayClientRoute;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -9,8 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.util.LinkedHashMap;
-import java.util.Map;
 
 /**
  * 网关请求派发器 —— 根据 URL 路径确定平台和请求格式，选择对应的 {@link IGatewayHandler} 处理请求。
@@ -34,38 +33,6 @@ public class GatewayDispatcher {
 
     private final GatewayHandlerFactory factory;
 
-    /**
-     * URL 路径前缀 → Platform 映射。
-     * <p>
-     * 使用 {@link LinkedHashMap} 保证迭代顺序，前缀匹配按声明顺序进行：
-     * 较长/更具体的路径（如 {@code /backend-api/codex/responses}）必须放在通用前缀之前。
-     */
-    private static final Map<String, Platform> PATH_PLATFORM;
-
-    /**
-     * URL 路径前缀 → Converter formatId 映射。
-     * <p>
-     * formatId 取值与 {@link com.landgate.trigger.gateway.converter.ProtocolConverter#getFormatId()} 一致。
-     */
-    private static final Map<String, String> PATH_FORMAT;
-
-    static {
-        PATH_PLATFORM = new LinkedHashMap<>();
-        PATH_PLATFORM.put("/v1/messages", Platform.ANTHROPIC);
-        PATH_PLATFORM.put("/v1/chat/completions", Platform.OPENAI);
-        PATH_PLATFORM.put("/v1/responses", Platform.OPENAI);
-        // Codex CLI 兼容路径：实际请求体为 Responses API 格式
-        PATH_PLATFORM.put("/backend-api/codex/responses", Platform.OPENAI);
-        PATH_PLATFORM.put("/responses", Platform.OPENAI);
-
-        PATH_FORMAT = new LinkedHashMap<>();
-        PATH_FORMAT.put("/v1/messages", "messages");
-        PATH_FORMAT.put("/v1/chat/completions", "chat_completions");
-        PATH_FORMAT.put("/v1/responses", "responses");
-        PATH_FORMAT.put("/backend-api/codex/responses", "responses");
-        PATH_FORMAT.put("/responses", "responses");
-    }
-
     /** request attribute key：客户端请求平台（URL 路径决定） */
     public static final String ATTR_REQUEST_PLATFORM = "gateway_request_platform";
 
@@ -86,15 +53,16 @@ public class GatewayDispatcher {
      */
     public void dispatch(HttpServletRequest request, HttpServletResponse response, String body) throws IOException {
         String path = request.getServletPath();
-        Platform platform = resolvePlatform(path);
-        String format = resolveFormat(path);
-        if (platform == null) {
+        GatewayClientRoute route = GatewayClientRoute.resolve(path).orElse(null);
+        if (route == null) {
             log.warn("路由失败: 未找到路径映射 | path={}", path);
             response.setStatus(404);
-            response.setContentType("application/json;charset=UTF-8");
+            response.setContentType(GatewayHttpHeaderPolicy.MEDIA_TYPE_JSON_UTF8);
             response.getWriter().write("{\"error\":\"Unsupported API path: " + path + "\"}");
             return;
         }
+        Platform platform = route.platform();
+        String format = route.format();
         // 存入 request attribute，供 AbstractGatewayHandler 判断是否需要协议翻译
         request.setAttribute(ATTR_REQUEST_PLATFORM, platform);
         if (format != null) {
@@ -105,31 +73,5 @@ public class GatewayDispatcher {
         IGatewayHandler handler = factory.getHandler(platform);
         log.debug("派发到 Handler: {}", handler.getClass().getSimpleName());
         handler.handle(body, request, response);
-    }
-
-    /**
-     * 根据请求路径匹配平台。
-     */
-    private Platform resolvePlatform(String path) {
-        for (Map.Entry<String, Platform> entry : PATH_PLATFORM.entrySet()) {
-            if (path.startsWith(entry.getKey())) {
-                return entry.getValue();
-            }
-        }
-        return null;
-    }
-
-    /**
-     * 根据请求路径匹配 Converter formatId。
-     * <p>
-     * 与 {@link #resolvePlatform(String)} 同样的前缀匹配语义，但返回字符串 ID 而非枚举。
-     */
-    private String resolveFormat(String path) {
-        for (Map.Entry<String, String> entry : PATH_FORMAT.entrySet()) {
-            if (path.startsWith(entry.getKey())) {
-                return entry.getValue();
-            }
-        }
-        return null;
     }
 }
