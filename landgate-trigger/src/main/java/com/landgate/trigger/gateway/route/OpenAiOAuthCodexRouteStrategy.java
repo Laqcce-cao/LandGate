@@ -1,9 +1,9 @@
 package com.landgate.trigger.gateway.route;
 
 import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
-import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.OpenAiAccountAuthPolicy;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
@@ -18,8 +18,8 @@ public class OpenAiOAuthCodexRouteStrategy implements UpstreamRouteStrategy {
     public boolean supports(UpstreamRouteRequest request) {
         return request != null
                 && request.account() != null
-                && request.account().getPlatform() == Platform.OPENAI
-                && request.account().getType() == AccountType.OAUTH;
+                && OpenAiAccountAuthPolicy.isOpenAiOAuth(
+                request.account().getPlatform(), request.account().getType());
     }
 
     @Override
@@ -28,15 +28,13 @@ public class OpenAiOAuthCodexRouteStrategy implements UpstreamRouteStrategy {
                 request.account(), java.util.Set.of(GatewayProtocolFormat.RESPONSES.id()));
         UpstreamEndpointProfile endpointProfile = UpstreamEndpointProfile.OPENAI_CODEX_RESPONSES;
         String targetUrl = endpointProfile.targetUrl(request);
-        boolean compact = UpstreamRoute.isCompactCodexResponsesEndpoint(
-                endpointProfile.endpointKind(), targetUrl);
         return new UpstreamRoute(
                 Platform.OPENAI,
                 request.requestFormat(),
                 upstreamFormat,
                 endpointProfile.endpointKind(),
                 targetUrl,
-                !compact,
+                UpstreamStreamPolicy.forceOpenAiOAuthCodexStreaming(endpointProfile.endpointKind(), targetUrl),
                 true,
                 upstreamFormat,
                 "openai_oauth_codex"

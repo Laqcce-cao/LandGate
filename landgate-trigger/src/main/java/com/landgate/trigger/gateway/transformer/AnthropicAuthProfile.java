@@ -1,7 +1,7 @@
 package com.landgate.trigger.gateway.transformer;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
-import com.landgate.types.enums.AccountType;
+import com.landgate.types.gateway.AnthropicAccountAuthPolicy;
 import com.landgate.types.gateway.AnthropicApiProfile;
 import com.landgate.types.gateway.AnthropicHeaderPolicy;
 
@@ -37,8 +37,7 @@ enum AnthropicAuthProfile {
     };
 
     static AnthropicAuthProfile from(AccountEntity account) {
-        if (account != null
-                && (account.getType() == AccountType.OAUTH || account.getType() == AccountType.SETUP_TOKEN)) {
+        if (account != null && AnthropicAccountAuthPolicy.isOAuthOrSetupTokenType(account.getType())) {
             return OAUTH;
         }
         return API_KEY;

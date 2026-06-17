@@ -18,4 +18,13 @@ public final class AnthropicMessagesHttpRequestPolicy {
 
     private AnthropicMessagesHttpRequestPolicy() {
     }
+
+    public static boolean appliesToClientFormat(String requestFormat) {
+        return GatewayProtocolFormat.MESSAGES.is(requestFormat);
+    }
+
+    public static boolean isNativeMessagesRoute(String requestFormat, String upstreamFormat) {
+        return appliesToClientFormat(requestFormat)
+                && GatewayProtocolFormat.MESSAGES.is(upstreamFormat);
+    }
 }

@@ -12,6 +12,8 @@ import java.net.http.HttpResponse;
  */
 public final class GatewayResponseHandlingPolicy {
 
+    public static final long STREAMING_CONCURRENCY_LEASE_RENEWAL_INTERVAL_MILLIS = 60_000L;
+
     private GatewayResponseHandlingPolicy() {
     }
 

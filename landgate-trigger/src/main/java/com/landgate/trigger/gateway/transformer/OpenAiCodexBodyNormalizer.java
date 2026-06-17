@@ -8,13 +8,15 @@ import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.GatewayRequestContext;
 import com.landgate.trigger.gateway.compat.OpenAiCompatTodoGuard;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
-import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.GatewayRouteCompatibilityPolicy;
 import com.landgate.types.gateway.GatewayResponsesRoutePolicy;
 import com.landgate.types.gateway.CompatPromptCacheKeyPolicy;
 import com.landgate.types.gateway.OpenAiCompatModelPolicy;
+import com.landgate.types.gateway.OpenAiChatCompletionsBodyPolicy;
 import com.landgate.types.gateway.OpenAiCompactAccountPolicy;
 import com.landgate.types.gateway.OpenAiCompactRequestBodyPolicy;
 import com.landgate.types.gateway.OpenAiCodexBodyShapeProfile;
+import com.landgate.types.gateway.OpenAiCodexProfile;
 import com.landgate.types.gateway.OpenAiFastPolicy;
 import com.landgate.types.gateway.OpenAiForcedCodexInstructionsPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
@@ -101,7 +103,7 @@ class OpenAiCodexBodyNormalizer {
                 normalizeCodexOAuthModel(root);
             }
             normalizeCodexReasoningEffort(root);
-            for (String field : OpenAiNormalizerProfile.codexUnsupportedFields()) {
+            for (String field : OpenAiCodexProfile.unsupportedRequestFields()) {
                 if (shouldRemoveCodexField(field, preservePromptCacheKey)) {
                     root.remove(field);
                 }
@@ -124,7 +126,7 @@ class OpenAiCodexBodyNormalizer {
             extractSystemMessagesToInstructions(root);
             applyForcedCodexInstructionsTemplate(root, route, originalModel, requestedModel);
             if (isBlankText(root.get(FIELD_INSTRUCTIONS))) {
-                root.put(FIELD_INSTRUCTIONS, OpenAiNormalizerProfile.DEFAULT_CODEX_INSTRUCTIONS);
+                root.put(FIELD_INSTRUCTIONS, OpenAiCodexProfile.DEFAULT_INSTRUCTIONS);
             }
             normalizeCodexInput(root, isAnthropicMessagesCompat(route));
             if (isAnthropicMessagesCompat(route)
@@ -204,17 +206,17 @@ class OpenAiCodexBodyNormalizer {
 
     private static void normalizeCodexEndpointFields(ObjectNode root, UpstreamRoute route) {
         if (isCodexCompactEndpoint(route)) {
-            root.remove(OpenAiNormalizerProfile.FIELD_PROMPT_CACHE_KEY);
-            root.remove(OpenAiNormalizerProfile.FIELD_STORE);
-            root.remove(OpenAiNormalizerProfile.FIELD_STREAM);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_STORE);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_STREAM);
             return;
         }
         if (isAnthropicMessagesCompat(route)) {
-            root.remove(OpenAiNormalizerProfile.FIELD_PROMPT_CACHE_KEY);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY);
         }
-        root.put(OpenAiNormalizerProfile.FIELD_STORE, false);
+        root.put(OpenAiResponsesBodyPolicy.FIELD_STORE, false);
         // ChatGPT Codex internal Responses endpoint only accepts streaming requests.
-        root.put(OpenAiNormalizerProfile.FIELD_STREAM, true);
+        root.put(OpenAiResponsesBodyPolicy.FIELD_STREAM, true);
     }
 
     private static void retainCompactRequestFields(ObjectNode root) {
@@ -553,13 +555,13 @@ class OpenAiCodexBodyNormalizer {
     }
 
     private void normalizeOpenAIServiceTier(ObjectNode root, AccountEntity account) {
-        JsonNode value = root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+        JsonNode value = root.get(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
         if (value == null || !value.isTextual()) {
             return;
         }
-        String normalized = OpenAiNormalizerProfile.normalizeServiceTier(value.asText());
+        String normalized = OpenAiResponsesBodyPolicy.normalizeServiceTier(value.asText());
         if (normalized.isBlank()) {
-            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
             return;
         }
         OpenAiFastPolicy.Decision decision = OpenAiFastPolicy.evaluate(
@@ -575,9 +577,9 @@ class OpenAiCodexBodyNormalizer {
             throw new OpenAiFastPolicyBlockedException(message, normalized, model);
         }
         if (decision.filters()) {
-            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
         } else {
-            root.put(OpenAiNormalizerProfile.FIELD_SERVICE_TIER, normalized);
+            root.put(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER, normalized);
         }
     }
 
@@ -590,7 +592,7 @@ class OpenAiCodexBodyNormalizer {
         if (modelNode == null || !modelNode.isTextual()) {
             return;
         }
-        root.put(FIELD_MODEL, OpenAiNormalizerProfile.normalizeCodexModel(modelNode.asText()));
+        root.put(FIELD_MODEL, OpenAiCodexProfile.normalizeModel(modelNode.asText()));
     }
 
     private static void normalizeCodexReasoningEffort(ObjectNode root) {
@@ -603,12 +605,12 @@ class OpenAiCodexBodyNormalizer {
 
     private static void normalizeCodexTextVerbosity(ObjectNode root) {
         String model = textValue(root.get(FIELD_MODEL));
-        if (OpenAiNormalizerProfile.supportsTextVerbosity(model)) {
+        if (OpenAiCodexProfile.supportsTextVerbosity(model)) {
             return;
         }
         JsonNode text = root.get(FIELD_TEXT);
         if (text instanceof ObjectNode textObject) {
-            textObject.remove(OpenAiNormalizerProfile.FIELD_TEXT_VERBOSITY);
+            textObject.remove(OpenAiChatCompletionsBodyPolicy.FIELD_VERBOSITY);
         }
     }
 
@@ -734,11 +736,12 @@ class OpenAiCodexBodyNormalizer {
     }
 
     private static boolean shouldRemoveCodexField(String field, boolean preservePromptCacheKey) {
-        return !(OpenAiNormalizerProfile.FIELD_PROMPT_CACHE_KEY.equals(field) && preservePromptCacheKey);
+        return !(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY.equals(field) && preservePromptCacheKey);
     }
 
     private static boolean isAnthropicMessagesCompat(UpstreamRoute route) {
-        return route != null && GatewayProtocolFormat.MESSAGES.is(route.clientFormat());
+        return route != null
+                && GatewayRouteCompatibilityPolicy.isAnthropicMessagesClientFormat(route.clientFormat());
     }
 
     private static void logCodexNormalizationDiagnostics(String requestId,
@@ -852,13 +855,13 @@ class OpenAiCodexBodyNormalizer {
                     systemOrDeveloperItems,
                     !isBlankText(root.get(FIELD_INSTRUCTIONS)),
                     tools != null && tools.isArray() ? tools.size() : -1,
-                    root.has(OpenAiNormalizerProfile.FIELD_PROMPT_CACHE_KEY),
+                    root.has(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY),
                     root.has(FIELD_PROMPT_CACHE_RETENTION),
                     root.has(FIELD_PREVIOUS_RESPONSE_ID),
                     root.has(FIELD_CONVERSATION),
                     root.has(FIELD_METADATA),
-                    scalarValue(root.get(OpenAiNormalizerProfile.FIELD_STORE)),
-                    scalarValue(root.get(OpenAiNormalizerProfile.FIELD_STREAM))
+                    scalarValue(root.get(OpenAiResponsesBodyPolicy.FIELD_STORE)),
+                    scalarValue(root.get(OpenAiResponsesBodyPolicy.FIELD_STREAM))
             );
         }
 

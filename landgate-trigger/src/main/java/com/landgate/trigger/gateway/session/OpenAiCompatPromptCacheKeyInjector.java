@@ -4,10 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
-import com.landgate.types.enums.AccountType;
-import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.CompatPromptCacheKeyPolicy;
-import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.GatewayRouteCompatibilityPolicy;
 import com.landgate.types.gateway.OpenAiCompatModelPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 
@@ -57,13 +55,14 @@ public final class OpenAiCompatPromptCacheKeyInjector {
 
     private static boolean isChatCompletionsCodexCompat(AccountEntity account, UpstreamRoute route) {
         return account != null
-                && account.getPlatform() == Platform.OPENAI
-                && account.getType() == AccountType.OAUTH
                 && route != null
-                && route.upstreamPlatform() == Platform.OPENAI
-                && route.normalizeCodexOAuthBody()
-                && GatewayProtocolFormat.CHAT_COMPLETIONS.is(route.clientFormat())
-                && GatewayProtocolFormat.RESPONSES.is(route.upstreamFormat());
+                && GatewayRouteCompatibilityPolicy.isOpenAiOAuthChatCompletionsToCodexResponsesCompat(
+                account.getPlatform(),
+                account.getType(),
+                route.upstreamPlatform(),
+                route.normalizeCodexOAuthBody(),
+                route.clientFormat(),
+                route.upstreamFormat());
     }
 
     private static String extractResponsesModel(String body) {

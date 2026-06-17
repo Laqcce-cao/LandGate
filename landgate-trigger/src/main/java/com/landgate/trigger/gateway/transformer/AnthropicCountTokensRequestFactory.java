@@ -4,11 +4,11 @@ import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.route.UpstreamEndpointDefaults;
+import com.landgate.types.gateway.AnthropicAccountAuthPolicy;
 import com.landgate.types.gateway.AnthropicApiProfile;
 import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.GatewayHeaderPolicy;
 import com.landgate.types.gateway.MetadataUserIdParser;
-import com.landgate.types.enums.AccountType;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -144,7 +144,7 @@ public class AnthropicCountTokensRequestFactory {
 
     private static boolean isAnthropicOAuth(AccountEntity account) {
         return account != null
-                && (account.getType() == AccountType.OAUTH || account.getType() == AccountType.SETUP_TOKEN);
+                && AnthropicAccountAuthPolicy.isOAuthOrSetupTokenType(account.getType());
     }
 
     public record Options(

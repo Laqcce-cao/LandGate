@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import com.landgate.types.gateway.AnthropicMessagesHttpRequestPolicy;
-import com.landgate.types.gateway.GatewayProtocolFormat;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -22,7 +21,7 @@ public class AnthropicMessagesHttpRequestValidator {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public ValidationResult validate(String body, String requestFormat) {
-        if (!GatewayProtocolFormat.MESSAGES.is(requestFormat)) {
+        if (!AnthropicMessagesHttpRequestPolicy.appliesToClientFormat(requestFormat)) {
             return ValidationResult.acceptedResult();
         }
         if (body == null || body.isEmpty()) {
@@ -49,7 +48,7 @@ public class AnthropicMessagesHttpRequestValidator {
     }
 
     public ValidationResult validateNativeStreamType(String body, String requestFormat, String upstreamFormat) {
-        if (!GatewayProtocolFormat.MESSAGES.is(requestFormat) || !GatewayProtocolFormat.MESSAGES.is(upstreamFormat)) {
+        if (!AnthropicMessagesHttpRequestPolicy.isNativeMessagesRoute(requestFormat, upstreamFormat)) {
             return ValidationResult.acceptedResult();
         }
         JsonNode root = parseBody(body);

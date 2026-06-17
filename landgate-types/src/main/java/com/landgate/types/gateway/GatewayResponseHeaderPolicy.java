@@ -1,5 +1,6 @@
 package com.landgate.types.gateway;
 
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -16,13 +17,18 @@ public final class GatewayResponseHeaderPolicy {
     public static final String HEADER_CONTENT_LENGTH = "content-length";
     public static final String HEADER_TRANSFER_ENCODING = "transfer-encoding";
     public static final String HEADER_CONNECTION = "connection";
+    public static final String HEADER_CACHE_CONTROL = "cache-control";
+    public static final String HEADER_X_ACCEL_BUFFERING = "x-accel-buffering";
+    public static final String VALUE_NO_CACHE = "no-cache";
+    public static final String VALUE_KEEP_ALIVE = "keep-alive";
+    public static final String VALUE_NO = "no";
     public static final String CODEX_RESPONSE_HEADER_PREFIX = "x-codex-";
 
     private static final Set<String> DEFAULT_ALLOWED_HEADERS = Set.of(
             HEADER_CONTENT_TYPE,
             "content-encoding",
             "content-language",
-            "cache-control",
+            HEADER_CACHE_CONTROL,
             "etag",
             "last-modified",
             "expires",
@@ -45,6 +51,13 @@ public final class GatewayResponseHeaderPolicy {
             HEADER_CONNECTION);
 
     private GatewayResponseHeaderPolicy() {
+    }
+
+    public static Map<String, String> streamingResponseHeaders() {
+        return Map.of(
+                canonicalHeaderName(HEADER_CACHE_CONTROL), VALUE_NO_CACHE,
+                canonicalHeaderName(HEADER_CONNECTION), VALUE_KEEP_ALIVE,
+                canonicalHeaderName(HEADER_X_ACCEL_BUFFERING), VALUE_NO);
     }
 
     public static Set<String> defaultAllowedHeaders() {
@@ -72,5 +85,14 @@ public final class GatewayResponseHeaderPolicy {
 
     private static String normalize(String headerName) {
         return headerName == null ? "" : headerName.trim().toLowerCase();
+    }
+
+    private static String canonicalHeaderName(String headerName) {
+        return switch (normalize(headerName)) {
+            case HEADER_CACHE_CONTROL -> "Cache-Control";
+            case HEADER_CONNECTION -> "Connection";
+            case HEADER_X_ACCEL_BUFFERING -> "X-Accel-Buffering";
+            default -> headerName;
+        };
     }
 }

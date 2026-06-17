@@ -62,4 +62,20 @@ class GatewayFailoverExhaustionPolicyTest {
         assertEquals("upstream_error", serverError.code());
         assertEquals("Upstream service temporarily unavailable", serverError.message());
     }
+
+    @Test
+    @DisplayName("fallback no-account errors are centralized")
+    void fallbackNoAccountErrorsAreCentralized() {
+        GatewayFailoverExhaustionPolicy.Decision noAvailable =
+                GatewayFailoverExhaustionPolicy.noAvailableAccounts("core");
+        GatewayFailoverExhaustionPolicy.Decision exhausted =
+                GatewayFailoverExhaustionPolicy.exhaustedWithoutUpstreamError("core", 3);
+
+        assertEquals(503, noAvailable.status());
+        assertEquals("overloaded_error", noAvailable.code());
+        assertEquals("No available accounts in group 'core'.", noAvailable.message());
+        assertEquals(503, exhausted.status());
+        assertEquals("overloaded_error", exhausted.code());
+        assertEquals("All accounts in group 'core' are unavailable after 3 attempts.", exhausted.message());
+    }
 }

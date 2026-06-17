@@ -46,6 +46,11 @@ public final class SessionHashPolicy {
                 + apiKeyId;
     }
 
+    public static boolean usesOpenAiContentSeedFallback(String requestFormat) {
+        return GatewayProtocolFormat.RESPONSES.is(requestFormat)
+                || GatewayProtocolFormat.CHAT_COMPLETIONS.is(requestFormat);
+    }
+
     public static String normalizeUserAgent(String userAgent) {
         if (userAgent == null) return "";
         return userAgent.replaceAll(SEMVER_PATTERN, SEMVER_PLACEHOLDER);

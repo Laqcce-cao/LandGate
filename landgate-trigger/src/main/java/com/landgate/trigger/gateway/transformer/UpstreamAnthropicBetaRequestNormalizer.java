@@ -4,11 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
-import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.AnthropicApiProfile;
 import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.GatewayHeaderPolicy;
-import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.GatewayRouteCompatibilityPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 
 import java.util.Map;
@@ -48,8 +47,7 @@ public final class UpstreamAnthropicBetaRequestNormalizer {
 
     private static boolean isOpenAiAnthropicMessagesCompat(UpstreamRoute route) {
         return route != null
-                && route.upstreamPlatform() == Platform.OPENAI
-                && GatewayProtocolFormat.MESSAGES.is(route.clientFormat())
-                && GatewayProtocolFormat.RESPONSES.is(route.upstreamFormat());
+                && GatewayRouteCompatibilityPolicy.isOpenAiAnthropicMessagesCompat(
+                route.upstreamPlatform(), route.clientFormat(), route.upstreamFormat());
     }
 }

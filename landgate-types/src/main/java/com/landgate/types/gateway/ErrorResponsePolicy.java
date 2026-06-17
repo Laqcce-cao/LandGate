@@ -16,6 +16,8 @@ import java.util.Set;
 public final class ErrorResponsePolicy {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    public static final String ERROR_CODE_FORBIDDEN = "forbidden_error";
+    public static final String ERROR_CODE_PERMISSION = "permission_error";
 
     private static final List<RetryRule> RETRY_RULES = List.of(
             new RetryRule(Set.of(400, 404),
@@ -54,6 +56,12 @@ public final class ErrorResponsePolicy {
             case 529 -> "overloaded_error";
             default -> "upstream_error";
         };
+    }
+
+    public static String fastPolicyBlockedErrorCode(String requestFormat) {
+        return GatewayProtocolFormat.MESSAGES.is(requestFormat)
+                ? ERROR_CODE_FORBIDDEN
+                : ERROR_CODE_PERMISSION;
     }
 
     public static String safeMessageForStatus(int statusCode, String responseBody) {

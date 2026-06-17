@@ -22,4 +22,8 @@ public final class OpenAiResponsesHttpRequestPolicy {
 
     private OpenAiResponsesHttpRequestPolicy() {
     }
+
+    public static boolean appliesToClientFormat(String requestFormat) {
+        return GatewayProtocolFormat.RESPONSES.is(requestFormat);
+    }
 }

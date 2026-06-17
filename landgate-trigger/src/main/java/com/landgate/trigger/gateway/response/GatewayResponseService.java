@@ -18,7 +18,9 @@ import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
 import com.landgate.types.gateway.GatewayResponseContentPolicy;
 import com.landgate.types.gateway.GatewayResponseHeaderPolicy;
 import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.GatewayResponseRoutePolicy;
 import com.landgate.types.gateway.GatewayStreamAggregationPolicy;
+import com.landgate.types.gateway.GatewayResponseHandlingPolicy;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import com.landgate.types.gateway.AnthropicMessagesSsePolicy;
 import com.landgate.types.gateway.OpenAiResponsesSsePolicy;
@@ -81,9 +83,8 @@ public class GatewayResponseService {
         copyUpstreamResponseHeaders(upstreamResp, response, passthrough);
         response.setContentType(GatewayResponseContentPolicy.MEDIA_TYPE_EVENT_STREAM);
         response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
-        response.setHeader("Cache-Control", "no-cache");
-        response.setHeader("Connection", "keep-alive");
-        response.setHeader("X-Accel-Buffering", "no");
+        GatewayResponseHeaderPolicy.streamingResponseHeaders()
+                .forEach(response::setHeader);
 
         UsageTokens totalUsage = UsageTokens.builder().build();
         String responseId = "";
@@ -135,7 +136,8 @@ public class GatewayResponseService {
                 line = normalizeAnthropicUsageSseLine(ctx, route, line);
 
                 // 每 60 秒续约一次并发槽位租约，防止流式长连接期间 permit 过期
-                if (System.currentTimeMillis() - lastRenewal > 60_000) {
+                if (System.currentTimeMillis() - lastRenewal
+                        > GatewayResponseHandlingPolicy.STREAMING_CONCURRENCY_LEASE_RENEWAL_INTERVAL_MILLIS) {
                     if (ctx.getConcurrencySlot() != null) {
                         concurrencyService.renewLease(ctx.getConcurrencySlot());
                     }
@@ -398,9 +400,7 @@ public class GatewayResponseService {
     private static boolean isPassthrough(GatewayRequestContext ctx, UpstreamRoute route) {
         String clientFormat = resolveClientFormat(ctx, route);
         String upstreamFormat = resolveUpstreamFormat(ctx, route);
-        return clientFormat != null && upstreamFormat != null
-                && !clientFormat.isBlank()
-                && clientFormat.equals(upstreamFormat);
+        return GatewayResponseRoutePolicy.isPassthrough(clientFormat, upstreamFormat);
     }
 
     private String normalizeAnthropicUsageBody(GatewayRequestContext ctx, UpstreamRoute route, String body) {
@@ -416,8 +416,8 @@ public class GatewayResponseService {
     }
 
     private static boolean shouldNormalizeAnthropicUsageForTranslation(GatewayRequestContext ctx, UpstreamRoute route) {
-        return GatewayProtocolFormat.MESSAGES.is(resolveUpstreamFormat(ctx, route))
-                && !GatewayProtocolFormat.MESSAGES.is(resolveClientFormat(ctx, route));
+        return GatewayResponseRoutePolicy.shouldNormalizeAnthropicUsageForTranslation(
+                resolveUpstreamFormat(ctx, route), resolveClientFormat(ctx, route));
     }
 
     private static void copyUpstreamResponseHeaders(HttpResponse<?> upstreamResp,
@@ -481,8 +481,7 @@ public class GatewayResponseService {
                 usage != null ? usage.getCacheReadTokens() : 0);
         String clientFormat = resolveClientFormat(ctx, route);
         String upstreamFormat = resolveUpstreamFormat(ctx, route);
-        boolean needRespTranslation = clientFormat != null && upstreamFormat != null
-                && !clientFormat.equals(upstreamFormat);
+        boolean needRespTranslation = GatewayResponseRoutePolicy.needsResponseTranslation(clientFormat, upstreamFormat);
         String clientBody = responseBody;
         if (needRespTranslation) {
             log.debug("[{}] 响应协议翻译: {} -> {}",
@@ -566,16 +565,14 @@ public class GatewayResponseService {
         if (GatewayProtocolFormat.MESSAGES.is(upstreamFormat)) {
             return isAnthropicTerminalLine(line);
         }
-        if (GatewayProtocolFormat.RESPONSES.is(upstreamFormat) && translatedRoute) {
+        if (GatewayResponseRoutePolicy.usesResponsesProtocolTerminal(upstreamFormat, translatedRoute)) {
             return isResponsesProtocolTerminalLine(line);
         }
         return usageParser != null && usageParser.isStreamDone(line);
     }
 
     private static boolean requiresProtocolTerminal(String upstreamFormat) {
-        return GatewayProtocolFormat.MESSAGES.is(upstreamFormat)
-                || GatewayProtocolFormat.RESPONSES.is(upstreamFormat)
-                || GatewayProtocolFormat.CHAT_COMPLETIONS.is(upstreamFormat);
+        return GatewayResponseRoutePolicy.requiresProtocolTerminal(upstreamFormat);
     }
 
     private static String firstNonBlank(String... values) {
@@ -600,39 +597,6 @@ public class GatewayResponseService {
                     .getBytes(StandardCharsets.UTF_8));
             output.flush();
         }
-    }
-
-    /** 构造 Anthropic Messages 非流式响应 JSON。 */
-    private String buildAnthropicMessageJson(String id, String model, String text, String stopReason, UsageTokens usage)
-            throws IOException {
-        var root = JSON_MAPPER.createObjectNode();
-        root.put(AnthropicMessagesBodyPolicy.FIELD_ID, id);
-        root.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_MESSAGE);
-        root.put(AnthropicMessagesBodyPolicy.FIELD_ROLE, AnthropicMessagesBodyPolicy.ROLE_ASSISTANT);
-        root.put(AnthropicMessagesBodyPolicy.FIELD_MODEL, model);
-        var content = JSON_MAPPER.createArrayNode();
-        var textBlock = JSON_MAPPER.createObjectNode();
-        textBlock.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, AnthropicMessagesBodyPolicy.TYPE_TEXT);
-        textBlock.put(AnthropicMessagesBodyPolicy.FIELD_TEXT, text);
-        content.add(textBlock);
-        root.set(AnthropicMessagesBodyPolicy.FIELD_CONTENT, content);
-        root.put(AnthropicMessagesBodyPolicy.FIELD_STOP_REASON, stopReason);
-        root.putNull(AnthropicMessagesBodyPolicy.FIELD_STOP_SEQUENCE);
-        var usageNode = JSON_MAPPER.createObjectNode();
-        usageNode.put(AnthropicMessagesBodyPolicy.FIELD_INPUT_TOKENS,
-                usage != null ? usage.getInputTokens() : 0);
-        usageNode.put(AnthropicMessagesBodyPolicy.FIELD_OUTPUT_TOKENS,
-                usage != null ? usage.getOutputTokens() : 0);
-        if (usage != null && usage.getCacheCreationTokens() > 0) {
-            usageNode.put(AnthropicMessagesBodyPolicy.FIELD_CACHE_CREATION_INPUT_TOKENS,
-                    usage.getCacheCreationTokens());
-        }
-        if (usage != null && usage.getCacheReadTokens() > 0) {
-            usageNode.put(AnthropicMessagesBodyPolicy.FIELD_CACHE_READ_INPUT_TOKENS,
-                    usage.getCacheReadTokens());
-        }
-        root.set(AnthropicMessagesBodyPolicy.FIELD_USAGE, usageNode);
-        return JSON_MAPPER.writeValueAsString(root);
     }
 
     /** 从上游原始 SSE 行解析用量，避免协议翻译路径丢失缓存 Token。 */

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.OpenAiChatCompletionsBodyPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +39,7 @@ class OpenAiChatCompletionsRequestNormalizerTest {
         JsonNode root = JSON.readTree(normalized);
 
         assertEquals("gpt-5.4-upstream", root.get("model").asText());
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_STREAM_OPTIONS));
+        assertFalse(root.has(OpenAiChatCompletionsBodyPolicy.FIELD_STREAM_OPTIONS));
     }
 
     @Test
@@ -50,8 +51,8 @@ class OpenAiChatCompletionsRequestNormalizerTest {
 
         JsonNode root = JSON.readTree(normalized);
 
-        assertTrue(root.get(OpenAiNormalizerProfile.FIELD_STREAM_OPTIONS)
-                .get(OpenAiNormalizerProfile.FIELD_INCLUDE_USAGE)
+        assertTrue(root.get(OpenAiChatCompletionsBodyPolicy.FIELD_STREAM_OPTIONS)
+                .get(OpenAiChatCompletionsBodyPolicy.FIELD_INCLUDE_USAGE)
                 .asBoolean());
     }
 
@@ -69,8 +70,8 @@ class OpenAiChatCompletionsRequestNormalizerTest {
 
         JsonNode root = JSON.readTree(normalized);
 
-        assertTrue(root.get(OpenAiNormalizerProfile.FIELD_STREAM_OPTIONS)
-                .get(OpenAiNormalizerProfile.FIELD_INCLUDE_USAGE)
+        assertTrue(root.get(OpenAiChatCompletionsBodyPolicy.FIELD_STREAM_OPTIONS)
+                .get(OpenAiChatCompletionsBodyPolicy.FIELD_INCLUDE_USAGE)
                 .asBoolean());
     }
 
@@ -83,7 +84,7 @@ class OpenAiChatCompletionsRequestNormalizerTest {
 
         JsonNode root = JSON.readTree(normalized);
 
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_STREAM_OPTIONS));
+        assertFalse(root.has(OpenAiChatCompletionsBodyPolicy.FIELD_STREAM_OPTIONS));
     }
 
     @Test
@@ -91,15 +92,15 @@ class OpenAiChatCompletionsRequestNormalizerTest {
     void chatCompletionsDefaultFastPolicyFiltersPriorityOnly() throws Exception {
         String priority = normalizer.normalize("""
                 {"model":"gpt-5.5","service_tier":"fast","messages":[{"role":"user","content":"Hi"}]}
-                """, apiKeyAccount());
+        """, apiKeyAccount());
         JsonNode priorityRoot = JSON.readTree(priority);
-        assertFalse(priorityRoot.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+        assertFalse(priorityRoot.has(OpenAiChatCompletionsBodyPolicy.FIELD_SERVICE_TIER));
 
         String flex = normalizer.normalize("""
                 {"model":"gpt-5.5","service_tier":"flex","messages":[{"role":"user","content":"Hi"}]}
-                """, apiKeyAccount());
+        """, apiKeyAccount());
         JsonNode flexRoot = JSON.readTree(flex);
-        assertEquals("flex", flexRoot.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER).asText());
+        assertEquals("flex", flexRoot.get(OpenAiChatCompletionsBodyPolicy.FIELD_SERVICE_TIER).asText());
     }
 
     @Test

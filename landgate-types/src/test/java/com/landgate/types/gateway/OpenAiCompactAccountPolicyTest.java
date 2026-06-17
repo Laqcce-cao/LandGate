@@ -12,6 +12,11 @@ class OpenAiCompactAccountPolicyTest {
     @Test
     @DisplayName("compact mode and support state match Sub2API account extra semantics")
     void compactSupportSemantics() {
+        assertEquals(503, OpenAiCompactAccountPolicy.UNSUPPORTED_STATUS);
+        assertEquals("compact_not_supported", OpenAiCompactAccountPolicy.UNSUPPORTED_CODE);
+        assertEquals("No available OpenAI accounts support /responses/compact",
+                OpenAiCompactAccountPolicy.UNSUPPORTED_MESSAGE);
+
         assertEquals(OpenAiCompactAccountPolicy.MODE_AUTO,
                 OpenAiCompactAccountPolicy.compactMode(Platform.ANTHROPIC,
                         "{\"openai_compact_mode\":\"force_on\"}"));

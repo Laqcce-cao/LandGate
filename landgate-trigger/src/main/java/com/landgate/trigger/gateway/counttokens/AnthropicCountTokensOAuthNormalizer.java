@@ -7,7 +7,7 @@ import com.landgate.trigger.gateway.oauth.BillingHeaderService;
 import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.oauth.UserIdRewriter;
-import com.landgate.types.enums.AccountType;
+import com.landgate.types.gateway.AnthropicAccountAuthPolicy;
 import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.AnthropicForwardingRuntimePolicy;
 import lombok.RequiredArgsConstructor;
@@ -90,7 +90,7 @@ public class AnthropicCountTokensOAuthNormalizer {
 
     private static boolean isAnthropicOAuth(AccountEntity account) {
         return account != null
-                && (account.getType() == AccountType.OAUTH || account.getType() == AccountType.SETUP_TOKEN);
+                && AnthropicAccountAuthPolicy.isOAuthOrSetupTokenType(account.getType());
     }
 
     private static String extractAccountUuid(AccountEntity account) {

@@ -5,8 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
+import com.landgate.types.gateway.OpenAiApiProfile;
 import com.landgate.types.gateway.GatewayHeaderPolicy;
-import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.GatewayRouteCompatibilityPolicy;
 import com.landgate.types.gateway.OpenAiCodexProfile;
 import com.landgate.types.gateway.OpenAiHeaderPolicy;
 import com.landgate.types.gateway.OpenAiSessionIdPolicy;
@@ -28,8 +29,8 @@ final class OpenAiAuthProfile {
 
     static UpstreamHeaders build(UpstreamRequestContext context, String normalizedBody) {
         var headers = new UpstreamHeaders();
-        headers.set(OpenAiCodexProfile.HEADER_AUTHORIZATION, OpenAiCodexProfile.bearerToken(context.accessToken()));
-        headers.set(OpenAiCodexProfile.HEADER_CONTENT_TYPE, OpenAiCodexProfile.CONTENT_TYPE_JSON);
+        headers.set(OpenAiApiProfile.HEADER_AUTHORIZATION, OpenAiApiProfile.bearerToken(context.accessToken()));
+        headers.set(OpenAiApiProfile.HEADER_CONTENT_TYPE, OpenAiApiProfile.CONTENT_TYPE_JSON);
 
         UpstreamRoute route = context.upstreamRoute();
         if (route == null) {
@@ -52,7 +53,7 @@ final class OpenAiAuthProfile {
         headers.set(OpenAiCodexProfile.HEADER_CHATGPT_ACCOUNT_ID, chatgptAccountId);
         headers.copyAllowed(requestHeaders, OpenAiHeaderPolicy.CODEX_OAUTH_ALLOWED_HEADERS);
 
-        headers.set(OpenAiCodexProfile.HEADER_CONTENT_TYPE, OpenAiCodexProfile.CONTENT_TYPE_JSON);
+        headers.set(OpenAiApiProfile.HEADER_CONTENT_TYPE, OpenAiApiProfile.CONTENT_TYPE_JSON);
         headers.remove(OpenAiCodexProfile.HEADER_CONVERSATION_ID);
         headers.remove(OpenAiCodexProfile.HEADER_SESSION_ID);
 
@@ -83,10 +84,10 @@ final class OpenAiAuthProfile {
             }
         }
         if (route.forceNonStreamingResponse()) {
-            headers.set(OpenAiCodexProfile.HEADER_ACCEPT, OpenAiCodexProfile.ACCEPT_JSON);
+            headers.set(OpenAiApiProfile.HEADER_ACCEPT, OpenAiApiProfile.ACCEPT_JSON);
             headers.setIfAbsent(OpenAiCodexProfile.HEADER_VERSION, OpenAiCodexProfile.CLI_VERSION);
         } else {
-            headers.set(OpenAiCodexProfile.HEADER_ACCEPT, OpenAiCodexProfile.ACCEPT_EVENT_STREAM);
+            headers.set(OpenAiApiProfile.HEADER_ACCEPT, OpenAiApiProfile.ACCEPT_EVENT_STREAM);
         }
         if (isAnthropicMessagesCompat(route)) {
             headers.remove(OpenAiCodexProfile.HEADER_OPENAI_BETA);
@@ -97,14 +98,14 @@ final class OpenAiAuthProfile {
             headers.setIfAbsent(OpenAiCodexProfile.HEADER_ORIGINATOR,
                     OpenAiCodexProfile.ORIGINATOR_CODEX_CLI_RS);
         }
-        if (!OpenAiCodexProfile.isCodexCliUserAgent(headers.get(OpenAiCodexProfile.HEADER_USER_AGENT))) {
-            headers.set(OpenAiCodexProfile.HEADER_USER_AGENT, OpenAiCodexProfile.CLI_USER_AGENT);
+        if (!OpenAiCodexProfile.isCodexCliUserAgent(headers.get(OpenAiApiProfile.HEADER_USER_AGENT))) {
+            headers.set(OpenAiApiProfile.HEADER_USER_AGENT, OpenAiCodexProfile.CLI_USER_AGENT);
         }
     }
 
     private static void appendOpenAiRawChatHeaders(UpstreamHeaders headers, UpstreamRequestContext context) {
-        headers.set(OpenAiCodexProfile.HEADER_ACCEPT,
-                context.stream() ? OpenAiCodexProfile.ACCEPT_EVENT_STREAM : OpenAiCodexProfile.ACCEPT_JSON);
+        headers.set(OpenAiApiProfile.HEADER_ACCEPT,
+                context.stream() ? OpenAiApiProfile.ACCEPT_EVENT_STREAM : OpenAiApiProfile.ACCEPT_JSON);
         headers.copyAllowed(context.requestHeaders(), OpenAiHeaderPolicy.RAW_CHAT_ALLOWED_HEADERS);
         applyOpenAiApiKeyUserAgentOverride(headers, context.account());
     }
@@ -114,8 +115,8 @@ final class OpenAiAuthProfile {
                                                      String normalizedBody,
                                                      UpstreamRoute route) {
         headers.copyAllowed(context.requestHeaders(), OpenAiHeaderPolicy.API_KEY_RESPONSES_ALLOWED_HEADERS);
-        headers.setIfAbsent(OpenAiCodexProfile.HEADER_ACCEPT,
-                context.stream() ? OpenAiCodexProfile.ACCEPT_EVENT_STREAM : OpenAiCodexProfile.ACCEPT_JSON);
+        headers.setIfAbsent(OpenAiApiProfile.HEADER_ACCEPT,
+                context.stream() ? OpenAiApiProfile.ACCEPT_EVENT_STREAM : OpenAiApiProfile.ACCEPT_JSON);
         String promptCacheKey = firstNonBlank(
                 extractPromptCacheKey(normalizedBody),
                 extractPromptCacheKey(context.body()));
@@ -132,7 +133,7 @@ final class OpenAiAuthProfile {
     private static void applyOpenAiApiKeyUserAgentOverride(UpstreamHeaders headers, AccountEntity account) {
         String userAgent = credentialText(account, OpenAiCodexProfile.CREDENTIAL_USER_AGENT);
         if (!userAgent.isBlank()) {
-            headers.set(OpenAiCodexProfile.HEADER_USER_AGENT, userAgent);
+            headers.set(OpenAiApiProfile.HEADER_USER_AGENT, userAgent);
         }
     }
 
@@ -170,6 +171,7 @@ final class OpenAiAuthProfile {
     }
 
     private static boolean isAnthropicMessagesCompat(UpstreamRoute route) {
-        return route != null && GatewayProtocolFormat.MESSAGES.is(route.clientFormat());
+        return route != null
+                && GatewayRouteCompatibilityPolicy.isAnthropicMessagesClientFormat(route.clientFormat());
     }
 }

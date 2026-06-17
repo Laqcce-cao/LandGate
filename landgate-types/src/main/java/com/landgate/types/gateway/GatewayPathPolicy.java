@@ -14,9 +14,9 @@ public final class GatewayPathPolicy {
     private static final String[] SECURITY_MATCHERS = {
             "/v1/**",
             "/v1beta/**",
-            "/chat/completions",
+            OpenAiEndpointPolicy.CHAT_COMPLETIONS_ALIAS_PATH,
             "/images/**",
-            "/responses",
+            GatewayResponsesRoutePolicy.RESPONSES_ALIAS_PATH,
             "/responses/**",
             "/antigravity/**",
             "/backend-api/codex/**"
@@ -25,9 +25,9 @@ public final class GatewayPathPolicy {
     private static final String[] FILTER_PREFIXES = {
             "/v1/",
             "/v1beta/",
-            "/chat/completions",
+            OpenAiEndpointPolicy.CHAT_COMPLETIONS_ALIAS_PATH,
             "/images/",
-            "/responses",
+            GatewayResponsesRoutePolicy.RESPONSES_ALIAS_PATH,
             "/antigravity/",
             "/backend-api/codex/"
     };

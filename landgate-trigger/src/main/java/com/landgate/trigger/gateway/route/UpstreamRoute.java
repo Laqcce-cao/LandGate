@@ -35,4 +35,10 @@ public record UpstreamRoute(
     public static boolean isCompactCodexResponsesEndpoint(EndpointKind endpointKind, String targetUrl) {
         return UpstreamStreamPolicy.forceNonStreamingResponse(endpointKind, targetUrl);
     }
+
+    public boolean requiresOpenAiCompactAccount() {
+        return upstreamPlatform == Platform.OPENAI
+                && endpointKind == EndpointKind.OPENAI_RESPONSES
+                && forceNonStreamingResponse();
+    }
 }

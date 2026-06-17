@@ -1,7 +1,7 @@
 package com.landgate.trigger.gateway.account;
 
 import com.landgate.domain.account.model.entity.AccountEntity;
-import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.OpenAiAccountAuthPolicy;
 import com.landgate.types.gateway.OpenAiUpstreamErrorPolicy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -103,6 +103,8 @@ public class OpenAiAccountErrorStateService {
     }
 
     private static boolean isOpenAi(AccountEntity account) {
-        return account != null && account.getId() != null && account.getPlatform() == Platform.OPENAI;
+        return account != null
+                && account.getId() != null
+                && OpenAiAccountAuthPolicy.isOpenAiPlatform(account.getPlatform());
     }
 }

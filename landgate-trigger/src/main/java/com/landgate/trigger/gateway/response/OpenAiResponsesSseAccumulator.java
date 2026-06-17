@@ -24,6 +24,7 @@ import static com.landgate.types.gateway.OpenAiResponsesJsonPolicy.*;
 final class OpenAiResponsesSseAccumulator {
 
     private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+    private static final int CONTENT_KEY_OUTPUT_INDEX_MULTIPLIER = 10_000;
 
     private final Map<Integer, ObjectNode> outputItems = new LinkedHashMap<>();
     private final Map<Integer, StringBuilder> textByContentKey = new LinkedHashMap<>();
@@ -549,10 +550,10 @@ final class OpenAiResponsesSseAccumulator {
     }
 
     private static int contentKey(int outputIndex, int contentIndex) {
-        return outputIndex * 10_000 + contentIndex;
+        return outputIndex * CONTENT_KEY_OUTPUT_INDEX_MULTIPLIER + contentIndex;
     }
 
     private static int outputIndexFromContentKey(int contentKey) {
-        return contentKey / 10_000;
+        return contentKey / CONTENT_KEY_OUTPUT_INDEX_MULTIPLIER;
     }
 }

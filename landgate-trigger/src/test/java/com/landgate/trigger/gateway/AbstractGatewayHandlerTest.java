@@ -14,6 +14,7 @@ import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.response.GatewayResponseResult;
 import com.landgate.trigger.gateway.retry.AnthropicThinkingRetryPolicy;
 import com.landgate.trigger.gateway.session.OpenAiCompatSessionService;
+import com.landgate.trigger.gateway.session.OpenAiCompatSessionStateBinder;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.trigger.gateway.usage.IUsageParser;
@@ -212,7 +213,6 @@ class AbstractGatewayHandlerTest {
     @DisplayName("OpenAI API Key Messages compat 即使客户端断开也绑定 response id")
     void apiKeyMessagesCompatBindsResponseIdAfterClientDisconnect() throws Exception {
         OpenAiCompatSessionService sessionService = newOpenAiCompatSessionService();
-        TestGatewayHandler handler = new TestGatewayHandler(converterRegistry(), sessionService);
         AccountEntity account = AccountEntity.builder()
                 .id(7L)
                 .name("openai-api-key")
@@ -223,15 +223,8 @@ class AbstractGatewayHandlerTest {
         ctx.setSelectedAccount(account);
         ctx.setOpenAiCompatPromptCacheKey("stable-cache-key");
 
-        Method method = AbstractGatewayHandler.class.getDeclaredMethod(
-                "bindOpenAiCompatSuccessState",
-                GatewayRequestContext.class,
-                AccountEntity.class,
-                Long.class,
-                HttpResponse.class,
-                GatewayResponseResult.class);
-        method.setAccessible(true);
-        method.invoke(handler,
+        OpenAiCompatSessionStateBinder.bindSuccess(
+                sessionService,
                 ctx,
                 account,
                 42L,

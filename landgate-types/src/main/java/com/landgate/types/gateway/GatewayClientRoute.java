@@ -16,9 +16,9 @@ import java.util.Optional;
  */
 public enum GatewayClientRoute {
 
-    MESSAGES("/v1/messages", Platform.ANTHROPIC, GatewayProtocolFormat.MESSAGES),
-    CHAT_COMPLETIONS("/v1/chat/completions", Platform.OPENAI, GatewayProtocolFormat.CHAT_COMPLETIONS),
-    CHAT_COMPLETIONS_ALIAS("/chat/completions", Platform.OPENAI, GatewayProtocolFormat.CHAT_COMPLETIONS),
+    MESSAGES(AnthropicEndpointPolicy.MESSAGES_PATH, Platform.ANTHROPIC, GatewayProtocolFormat.MESSAGES),
+    CHAT_COMPLETIONS(OpenAiEndpointPolicy.V1_CHAT_COMPLETIONS_PATH, Platform.OPENAI, GatewayProtocolFormat.CHAT_COMPLETIONS),
+    CHAT_COMPLETIONS_ALIAS(OpenAiEndpointPolicy.CHAT_COMPLETIONS_ALIAS_PATH, Platform.OPENAI, GatewayProtocolFormat.CHAT_COMPLETIONS),
     CODEX_RESPONSES(GatewayResponsesRoutePolicy.CODEX_RESPONSES_PATH, Platform.OPENAI, GatewayProtocolFormat.RESPONSES),
     V1_RESPONSES(GatewayResponsesRoutePolicy.V1_RESPONSES_PATH, Platform.OPENAI, GatewayProtocolFormat.RESPONSES),
     RESPONSES_ALIAS(GatewayResponsesRoutePolicy.RESPONSES_ALIAS_PATH, Platform.OPENAI, GatewayProtocolFormat.RESPONSES);

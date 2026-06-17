@@ -2,7 +2,6 @@ package com.landgate.trigger.gateway.request;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.OpenAiChatCompletionsBodyPolicy;
 import com.landgate.types.gateway.OpenAiChatCompletionsHttpRequestPolicy;
 import lombok.extern.slf4j.Slf4j;
@@ -22,7 +21,7 @@ public class OpenAiChatCompletionsHttpRequestValidator {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public ValidationResult validate(String body, String requestFormat) {
-        if (!GatewayProtocolFormat.CHAT_COMPLETIONS.is(requestFormat)) {
+        if (!OpenAiChatCompletionsHttpRequestPolicy.appliesToClientFormat(requestFormat)) {
             return ValidationResult.acceptedResult();
         }
         if (body == null || body.isEmpty()) {

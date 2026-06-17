@@ -17,4 +17,8 @@ public final class OpenAiChatCompletionsHttpRequestPolicy {
 
     private OpenAiChatCompletionsHttpRequestPolicy() {
     }
+
+    public static boolean appliesToClientFormat(String requestFormat) {
+        return GatewayProtocolFormat.CHAT_COMPLETIONS.is(requestFormat);
+    }
 }

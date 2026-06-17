@@ -187,6 +187,10 @@ public final class OpenAiChatCompletionsBodyPolicy {
         return REASONING_EFFORTS.contains(value) ? value : null;
     }
 
+    public static String normalizeServiceTier(String raw) {
+        return OpenAiResponsesBodyPolicy.normalizeServiceTier(raw);
+    }
+
     public static String normalizeTextVerbosity(String value) {
         return TEXT_VERBOSITY_VALUES.contains(value) ? value : null;
     }

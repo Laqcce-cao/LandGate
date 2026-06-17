@@ -1,9 +1,9 @@
 package com.landgate.trigger.gateway.route;
 
 import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
-import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.GatewayProtocolFormat;
+import com.landgate.types.gateway.OpenAiAccountAuthPolicy;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
@@ -18,8 +18,8 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
     public boolean supports(UpstreamRouteRequest request) {
         return request != null
                 && request.account() != null
-                && request.account().getPlatform() == Platform.OPENAI
-                && request.account().getType() == AccountType.API_KEY;
+                && OpenAiAccountAuthPolicy.isOpenAiApiKey(
+                request.account().getPlatform(), request.account().getType());
     }
 
     @Override
@@ -32,9 +32,8 @@ public class OpenAiApiKeyRouteStrategy implements UpstreamRouteStrategy {
         UpstreamEndpointProfile endpointProfile = useResponses
                 ? UpstreamEndpointProfile.OPENAI_RESPONSES
                 : UpstreamEndpointProfile.OPENAI_CHAT_COMPLETIONS;
-        boolean forceStreaming = useResponses
-                && (GatewayProtocolFormat.CHAT_COMPLETIONS.is(request.requestFormat())
-                || GatewayProtocolFormat.MESSAGES.is(request.requestFormat()));
+        boolean forceStreaming = UpstreamStreamPolicy.forceOpenAiApiKeyResponsesStreaming(
+                request.requestFormat(), upstreamFormat);
 
         return new UpstreamRoute(
                 Platform.OPENAI,

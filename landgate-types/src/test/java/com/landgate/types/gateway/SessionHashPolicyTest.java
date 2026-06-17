@@ -40,4 +40,13 @@ class SessionHashPolicyTest {
                         "client/1.2.3 plugin/10.20.30", 10L));
         assertEquals("", SessionHashPolicy.normalizeUserAgent(null));
     }
+
+    @Test
+    @DisplayName("OpenAI content seed fallback applies only to OpenAI client formats")
+    void openAiContentSeedFallbackAppliesOnlyToOpenAiClientFormats() {
+        assertTrue(SessionHashPolicy.usesOpenAiContentSeedFallback(GatewayProtocolFormat.RESPONSES.id()));
+        assertTrue(SessionHashPolicy.usesOpenAiContentSeedFallback(GatewayProtocolFormat.CHAT_COMPLETIONS.id()));
+        assertFalse(SessionHashPolicy.usesOpenAiContentSeedFallback(GatewayProtocolFormat.MESSAGES.id()));
+        assertFalse(SessionHashPolicy.usesOpenAiContentSeedFallback(null));
+    }
 }

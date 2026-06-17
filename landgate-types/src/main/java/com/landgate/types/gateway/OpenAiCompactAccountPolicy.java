@@ -24,6 +24,9 @@ public final class OpenAiCompactAccountPolicy {
     public static final String EXTRA_OPENAI_COMPACT_MODE = "openai_compact_mode";
     public static final String EXTRA_OPENAI_COMPACT_SUPPORTED = "openai_compact_supported";
     public static final String CREDENTIAL_COMPACT_MODEL_MAPPING = "compact_model_mapping";
+    public static final int UNSUPPORTED_STATUS = 503;
+    public static final String UNSUPPORTED_CODE = "compact_not_supported";
+    public static final String UNSUPPORTED_MESSAGE = "No available OpenAI accounts support /responses/compact";
 
     private static final ObjectMapper JSON = new ObjectMapper();
 

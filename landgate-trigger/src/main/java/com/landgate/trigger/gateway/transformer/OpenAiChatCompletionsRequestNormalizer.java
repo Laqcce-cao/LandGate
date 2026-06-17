@@ -54,23 +54,23 @@ public class OpenAiChatCompletionsRequestNormalizer {
      * This mirrors Sub2API's raw Chat route behavior.
      */
     private static void ensureStreamUsage(ObjectNode root) {
-        if (!root.path(OpenAiNormalizerProfile.FIELD_STREAM).asBoolean(false)) return;
-        JsonNode streamOptionsNode = root.get(OpenAiNormalizerProfile.FIELD_STREAM_OPTIONS);
+        if (!root.path(OpenAiChatCompletionsBodyPolicy.FIELD_STREAM).asBoolean(false)) return;
+        JsonNode streamOptionsNode = root.get(OpenAiChatCompletionsBodyPolicy.FIELD_STREAM_OPTIONS);
         ObjectNode streamOptions = streamOptionsNode instanceof ObjectNode objectNode
                 ? objectNode
                 : JSON.createObjectNode();
-        streamOptions.put(OpenAiNormalizerProfile.FIELD_INCLUDE_USAGE, true);
-        root.set(OpenAiNormalizerProfile.FIELD_STREAM_OPTIONS, streamOptions);
+        streamOptions.put(OpenAiChatCompletionsBodyPolicy.FIELD_INCLUDE_USAGE, true);
+        root.set(OpenAiChatCompletionsBodyPolicy.FIELD_STREAM_OPTIONS, streamOptions);
     }
 
     private void normalizeOpenAIServiceTier(ObjectNode root, AccountEntity account) {
-        JsonNode value = root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+        JsonNode value = root.get(OpenAiChatCompletionsBodyPolicy.FIELD_SERVICE_TIER);
         if (value == null || !value.isTextual()) {
             return;
         }
-        String normalized = OpenAiNormalizerProfile.normalizeServiceTier(value.asText());
+        String normalized = OpenAiChatCompletionsBodyPolicy.normalizeServiceTier(value.asText());
         if (normalized.isBlank()) {
-            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            root.remove(OpenAiChatCompletionsBodyPolicy.FIELD_SERVICE_TIER);
             return;
         }
         String model = model(root);
@@ -86,9 +86,9 @@ public class OpenAiChatCompletionsRequestNormalizer {
             throw new OpenAiFastPolicyBlockedException(message, normalized, model);
         }
         if (decision.filters()) {
-            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            root.remove(OpenAiChatCompletionsBodyPolicy.FIELD_SERVICE_TIER);
         } else {
-            root.put(OpenAiNormalizerProfile.FIELD_SERVICE_TIER, normalized);
+            root.put(OpenAiChatCompletionsBodyPolicy.FIELD_SERVICE_TIER, normalized);
         }
     }
 

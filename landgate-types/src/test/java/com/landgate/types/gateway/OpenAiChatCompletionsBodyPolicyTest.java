@@ -58,6 +58,10 @@ class OpenAiChatCompletionsBodyPolicyTest {
         assertEquals("xhigh", OpenAiChatCompletionsBodyPolicy.normalizeReasoningEffort("xhigh"));
         assertNull(OpenAiChatCompletionsBodyPolicy.normalizeReasoningEffort("extreme"));
 
+        assertEquals("priority", OpenAiChatCompletionsBodyPolicy.normalizeServiceTier(" fast "));
+        assertEquals("flex", OpenAiChatCompletionsBodyPolicy.normalizeServiceTier("flex"));
+        assertEquals("", OpenAiChatCompletionsBodyPolicy.normalizeServiceTier("turbo"));
+
         assertEquals("medium", OpenAiChatCompletionsBodyPolicy.normalizeTextVerbosity("medium"));
         assertNull(OpenAiChatCompletionsBodyPolicy.normalizeTextVerbosity("verbose"));
 

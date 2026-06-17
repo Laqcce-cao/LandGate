@@ -55,7 +55,7 @@ public class OpenAiResponsesRequestNormalizer {
                 OpenAiModelMappingRequestNormalizer.apply(root, account, OpenAiResponsesBodyPolicy.FIELD_MODEL);
                 normalizeOpenAIServiceTier(root, account);
                 normalizeReasoningEffort(root);
-                root.remove(OpenAiNormalizerProfile.publicResponsesUnsupportedFields());
+                root.remove(OpenAiResponsesBodyPolicy.publicResponsesUnsupportedFields());
             }
             sanitizeEmptyBase64InputImages(root);
             return JSON.writeValueAsString(root);
@@ -98,13 +98,13 @@ public class OpenAiResponsesRequestNormalizer {
     }
 
     private void normalizeOpenAIServiceTier(ObjectNode root, AccountEntity account) {
-        JsonNode value = root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+        JsonNode value = root.get(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
         if (value == null || !value.isTextual()) {
             return;
         }
-        String normalized = OpenAiNormalizerProfile.normalizeServiceTier(value.asText());
+        String normalized = OpenAiResponsesBodyPolicy.normalizeServiceTier(value.asText());
         if (normalized.isBlank()) {
-            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
             return;
         }
         OpenAiFastPolicy.Decision decision = OpenAiFastPolicy.evaluate(
@@ -119,9 +119,9 @@ public class OpenAiResponsesRequestNormalizer {
             throw new OpenAiFastPolicyBlockedException(message, normalized, model(root));
         }
         if (decision.filters()) {
-            root.remove(OpenAiNormalizerProfile.FIELD_SERVICE_TIER);
+            root.remove(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER);
         } else {
-            root.put(OpenAiNormalizerProfile.FIELD_SERVICE_TIER, normalized);
+            root.put(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER, normalized);
         }
     }
 
@@ -150,7 +150,7 @@ public class OpenAiResponsesRequestNormalizer {
     }
 
     private static void sanitizeEmptyBase64InputImages(ObjectNode root) {
-        JsonNode input = root.get(OpenAiNormalizerProfile.FIELD_INPUT);
+        JsonNode input = root.get(OpenAiResponsesBodyPolicy.FIELD_INPUT);
         if (input == null || !input.isArray()) {
             return;
         }
@@ -165,7 +165,7 @@ public class OpenAiResponsesRequestNormalizer {
                 changed = true;
                 continue;
             }
-            JsonNode content = itemObject.get(OpenAiNormalizerProfile.FIELD_CONTENT);
+            JsonNode content = itemObject.get(OpenAiResponsesBodyPolicy.FIELD_CONTENT);
             if (content == null || !content.isArray()) {
                 normalizedItems.add(item);
                 continue;
@@ -185,23 +185,23 @@ public class OpenAiResponsesRequestNormalizer {
                     continue;
                 }
                 ObjectNode copied = itemObject.deepCopy();
-                copied.set(OpenAiNormalizerProfile.FIELD_CONTENT, normalizedParts);
+                copied.set(OpenAiResponsesBodyPolicy.FIELD_CONTENT, normalizedParts);
                 normalizedItems.add(copied);
             } else {
                 normalizedItems.add(item);
             }
         }
         if (changed) {
-            root.set(OpenAiNormalizerProfile.FIELD_INPUT, normalizedItems);
+            root.set(OpenAiResponsesBodyPolicy.FIELD_INPUT, normalizedItems);
         }
     }
 
     private static boolean shouldDropEmptyBase64InputImagePart(ObjectNode part) {
-        JsonNode type = part.get(OpenAiNormalizerProfile.FIELD_TYPE);
-        JsonNode imageUrl = part.get(OpenAiNormalizerProfile.FIELD_IMAGE_URL);
+        JsonNode type = part.get(OpenAiResponsesBodyPolicy.FIELD_TYPE);
+        JsonNode imageUrl = part.get(OpenAiResponsesBodyPolicy.FIELD_IMAGE_URL);
         return type != null && type.isTextual()
-                && OpenAiNormalizerProfile.TYPE_INPUT_IMAGE.equals(type.asText().trim())
+                && OpenAiResponsesBodyPolicy.TYPE_INPUT_IMAGE.equals(type.asText().trim())
                 && imageUrl != null && imageUrl.isTextual()
-                && OpenAiNormalizerProfile.isEmptyBase64DataUri(imageUrl.asText().trim());
+                && OpenAiResponsesBodyPolicy.isEmptyBase64DataUri(imageUrl.asText().trim());
     }
 }

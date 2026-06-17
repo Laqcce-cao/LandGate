@@ -23,6 +23,17 @@ class ErrorResponsePolicyTest {
     }
 
     @Test
+    @DisplayName("Fast policy block error code follows client protocol")
+    void fastPolicyBlockedErrorCodeFollowsClientProtocol() {
+        assertEquals("forbidden_error",
+                ErrorResponsePolicy.fastPolicyBlockedErrorCode(GatewayProtocolFormat.MESSAGES.id()));
+        assertEquals("permission_error",
+                ErrorResponsePolicy.fastPolicyBlockedErrorCode(GatewayProtocolFormat.RESPONSES.id()));
+        assertEquals("permission_error",
+                ErrorResponsePolicy.fastPolicyBlockedErrorCode(GatewayProtocolFormat.CHAT_COMPLETIONS.id()));
+    }
+
+    @Test
     @DisplayName("Safe messages extract normal request errors but hide account/quota failures")
     void safeMessageExtraction() {
         assertEquals("bad param",

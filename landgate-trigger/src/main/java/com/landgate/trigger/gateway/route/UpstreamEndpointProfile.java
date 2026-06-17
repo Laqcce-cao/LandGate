@@ -2,6 +2,8 @@ package com.landgate.trigger.gateway.route;
 
 import com.landgate.types.gateway.GatewayResponsesRoutePolicy;
 import com.landgate.types.gateway.AnthropicCountTokensPolicy;
+import com.landgate.types.gateway.AnthropicEndpointPolicy;
+import com.landgate.types.gateway.OpenAiEndpointPolicy;
 
 /**
  * Centralized endpoint URL and path policy for upstream protocol routes.
@@ -11,7 +13,10 @@ import com.landgate.types.gateway.AnthropicCountTokensPolicy;
  */
 enum UpstreamEndpointProfile {
 
-    OPENAI_RESPONSES(EndpointKind.OPENAI_RESPONSES, "https://api.openai.com", "/v1/responses") {
+    OPENAI_RESPONSES(
+            EndpointKind.OPENAI_RESPONSES,
+            OpenAiEndpointPolicy.PUBLIC_API_BASE_URL,
+            GatewayResponsesRoutePolicy.V1_RESPONSES_PATH) {
         @Override
         String routePath(UpstreamRouteRequest request) {
             return GatewayResponsesRoutePolicy.openAiPublicResponsesPath(
@@ -24,14 +29,20 @@ enum UpstreamEndpointProfile {
         }
     },
 
-    OPENAI_CHAT_COMPLETIONS(EndpointKind.OPENAI_CHAT_COMPLETIONS, "https://api.openai.com", "/v1/chat/completions") {
+    OPENAI_CHAT_COMPLETIONS(
+            EndpointKind.OPENAI_CHAT_COMPLETIONS,
+            OpenAiEndpointPolicy.PUBLIC_API_BASE_URL,
+            OpenAiEndpointPolicy.V1_CHAT_COMPLETIONS_PATH) {
         @Override
         String targetUrl(UpstreamRouteRequest request) {
             return openAiPublicUrl(request, routePath(request));
         }
     },
 
-    OPENAI_CODEX_RESPONSES(EndpointKind.OPENAI_CODEX_RESPONSES, "https://chatgpt.com", "/backend-api/codex/responses") {
+    OPENAI_CODEX_RESPONSES(
+            EndpointKind.OPENAI_CODEX_RESPONSES,
+            OpenAiEndpointPolicy.CODEX_BASE_URL,
+            GatewayResponsesRoutePolicy.CODEX_RESPONSES_PATH) {
         @Override
         String routePath(UpstreamRouteRequest request) {
             return GatewayResponsesRoutePolicy.codexResponsesPath(
@@ -44,7 +55,10 @@ enum UpstreamEndpointProfile {
         }
     },
 
-    ANTHROPIC_MESSAGES(EndpointKind.ANTHROPIC_MESSAGES, "https://api.anthropic.com", "/v1/messages") {
+    ANTHROPIC_MESSAGES(
+            EndpointKind.ANTHROPIC_MESSAGES,
+            AnthropicEndpointPolicy.API_BASE_URL,
+            AnthropicEndpointPolicy.MESSAGES_PATH) {
         @Override
         String targetUrl(UpstreamRouteRequest request) {
             return AccountRouteOptions.baseUrl(request == null ? null : request.account())
@@ -55,7 +69,7 @@ enum UpstreamEndpointProfile {
 
     ANTHROPIC_MESSAGES_COUNT_TOKENS(
             EndpointKind.ANTHROPIC_MESSAGES_COUNT_TOKENS,
-            "https://api.anthropic.com",
+            AnthropicEndpointPolicy.API_BASE_URL,
             AnthropicCountTokensPolicy.UPSTREAM_PATH_WITH_QUERY) {
         @Override
         String targetUrl(UpstreamRouteRequest request) {
@@ -98,12 +112,12 @@ enum UpstreamEndpointProfile {
     private static String openAiPublicUrl(UpstreamRouteRequest request, String pathSuffix) {
         return AccountRouteOptions.baseUrl(request == null ? null : request.account())
                 .map(baseUrl -> buildOpenAiEndpointUrl(baseUrl, pathSuffix))
-                .orElse("https://api.openai.com" + pathSuffix);
+                .orElse(OpenAiEndpointPolicy.PUBLIC_API_BASE_URL + pathSuffix);
     }
 
     static String buildOpenAiEndpointUrl(String baseUrl, String pathSuffix) {
         if (baseUrl == null || baseUrl.isBlank()) {
-            return "https://api.openai.com" + pathSuffix;
+            return OpenAiEndpointPolicy.PUBLIC_API_BASE_URL + pathSuffix;
         }
         String base = trimTrailingSlashes(baseUrl);
         String suffix = pathSuffix == null || pathSuffix.isBlank()
@@ -113,12 +127,13 @@ enum UpstreamEndpointProfile {
             suffix = "/" + suffix;
         }
 
-        if (suffix.startsWith("/v1/chat/completions")) {
-            if (base.endsWith("/v1/chat/completions") || base.endsWith("/chat/completions")) {
-                return base + suffix.substring("/v1/chat/completions".length());
+        if (suffix.startsWith(OpenAiEndpointPolicy.V1_CHAT_COMPLETIONS_PATH)) {
+            if (base.endsWith(OpenAiEndpointPolicy.V1_CHAT_COMPLETIONS_PATH)
+                    || base.endsWith(OpenAiEndpointPolicy.CHAT_COMPLETIONS_ALIAS_PATH)) {
+                return base + suffix.substring(OpenAiEndpointPolicy.V1_CHAT_COMPLETIONS_PATH.length());
             }
-            if (base.endsWith("/v1")) {
-                return base + suffix.substring("/v1".length());
+            if (base.endsWith(OpenAiEndpointPolicy.V1_PREFIX)) {
+                return base + suffix.substring(OpenAiEndpointPolicy.V1_PREFIX.length());
             }
             return base + suffix;
         }
@@ -128,8 +143,8 @@ enum UpstreamEndpointProfile {
                     || base.endsWith(GatewayResponsesRoutePolicy.RESPONSES_ALIAS_PATH)) {
                 return base + suffix.substring(GatewayResponsesRoutePolicy.V1_RESPONSES_PATH.length());
             }
-            if (base.endsWith("/v1")) {
-                return base + suffix.substring("/v1".length());
+            if (base.endsWith(OpenAiEndpointPolicy.V1_PREFIX)) {
+                return base + suffix.substring(OpenAiEndpointPolicy.V1_PREFIX.length());
             }
             return base + suffix;
         }

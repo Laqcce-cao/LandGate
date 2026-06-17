@@ -1,5 +1,6 @@
 package com.landgate.trigger.gateway.route;
 
+import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.GatewayResponsesRoutePolicy;
 
 import java.net.URI;
@@ -20,6 +21,26 @@ final class UpstreamStreamPolicy {
         return (endpointKind == EndpointKind.OPENAI_CODEX_RESPONSES
                 || endpointKind == EndpointKind.OPENAI_RESPONSES)
                 && endpointPathEndsWith(targetUrl, GatewayResponsesRoutePolicy.COMPACT_SUBPATH);
+    }
+
+    /**
+     * Public OpenAI Responses can be used as the upstream IR endpoint for
+     * Anthropic Messages and Chat Completions clients. Those translated routes
+     * use upstream SSE so the response bridge can preserve deltas/tool events
+     * and then stream or aggregate according to the client request.
+     */
+    static boolean forceOpenAiApiKeyResponsesStreaming(String clientFormat, String upstreamFormat) {
+        return GatewayProtocolFormat.RESPONSES.is(upstreamFormat)
+                && (GatewayProtocolFormat.CHAT_COMPLETIONS.is(clientFormat)
+                || GatewayProtocolFormat.MESSAGES.is(clientFormat));
+    }
+
+    /**
+     * ChatGPT Codex Responses is SSE-only for the normal route; /compact is
+     * the explicit JSON exception.
+     */
+    static boolean forceOpenAiOAuthCodexStreaming(EndpointKind endpointKind, String targetUrl) {
+        return !forceNonStreamingResponse(endpointKind, targetUrl);
     }
 
     private static boolean endpointPathEndsWith(String targetUrl, String suffix) {

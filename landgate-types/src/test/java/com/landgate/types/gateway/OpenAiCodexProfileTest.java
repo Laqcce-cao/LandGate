@@ -32,6 +32,11 @@ class OpenAiCodexProfileTest {
         assertEquals("5h", OpenAiCodexProfile.RATE_LIMIT_LABEL_SHORT_WINDOW);
         assertEquals("7d", OpenAiCodexProfile.RATE_LIMIT_LABEL_LONG_WINDOW);
         assertEquals(360, OpenAiCodexProfile.RATE_LIMIT_SHORT_WINDOW_MAX_MINUTES);
+        assertTrue(OpenAiCodexProfile.isQuotaDebugHeader("x-codex-primary-reset-at"));
+        assertTrue(OpenAiCodexProfile.isQuotaDebugHeader("x-ratelimit-remaining-tokens"));
+        assertTrue(OpenAiCodexProfile.isQuotaDebugHeader("x-openai-quota-window"));
+        assertFalse(OpenAiCodexProfile.isQuotaDebugHeader("content-type"));
+        assertFalse(OpenAiCodexProfile.isQuotaDebugHeader(null));
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.landgate.trigger.gateway.route;
 
 import com.landgate.trigger.gateway.converter.ProtocolFormatResolver;
 import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.AnthropicAccountAuthPolicy;
 import com.landgate.types.gateway.GatewayProtocolFormat;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -17,7 +18,7 @@ public class AnthropicRouteStrategy implements UpstreamRouteStrategy {
     public boolean supports(UpstreamRouteRequest request) {
         return request != null
                 && request.account() != null
-                && request.account().getPlatform() == Platform.ANTHROPIC;
+                && AnthropicAccountAuthPolicy.isAnthropicPlatform(request.account().getPlatform());
     }
 
     @Override

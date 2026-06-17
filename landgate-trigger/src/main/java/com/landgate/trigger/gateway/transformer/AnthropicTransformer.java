@@ -9,8 +9,7 @@ import com.landgate.trigger.gateway.oauth.FingerprintService;
 import com.landgate.trigger.gateway.oauth.OAuthMimicryService;
 import com.landgate.trigger.gateway.oauth.UserIdRewriter;
 import com.landgate.trigger.gateway.forwarding.AnthropicForwardingRuntimePolicyProvider;
-import com.landgate.types.enums.AccountType;
-import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.AnthropicAccountAuthPolicy;
 import com.landgate.types.gateway.AnthropicApiProfile;
 import com.landgate.types.gateway.AnthropicCacheControlPolicy;
 import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
@@ -281,9 +280,9 @@ public class AnthropicTransformer implements IRequestTransformer {
 
     /** 判断是否为 Anthropic 平台的 OAuth/SetupToken 账号 */
     private static boolean isAnthropicOAuth(AccountEntity account) {
-        return account.getPlatform() == Platform.ANTHROPIC
-                && (account.getType() == AccountType.OAUTH
-                    || account.getType() == AccountType.SETUP_TOKEN);
+        return account != null
+                && AnthropicAccountAuthPolicy.isAnthropicOAuthOrSetupToken(
+                account.getPlatform(), account.getType());
     }
 
     /** 提取账号的 account_uuid（从 extra JSON 中读取） */

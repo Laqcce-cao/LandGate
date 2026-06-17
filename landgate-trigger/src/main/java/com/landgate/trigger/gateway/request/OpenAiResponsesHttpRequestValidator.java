@@ -2,7 +2,6 @@ package com.landgate.trigger.gateway.request;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.OpenAiPreviousResponseIdPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import com.landgate.types.gateway.OpenAiResponsesHttpRequestPolicy;
@@ -25,7 +24,7 @@ public class OpenAiResponsesHttpRequestValidator {
     private static final ObjectMapper JSON = new ObjectMapper();
 
     public ValidationResult validate(String body, String requestFormat) {
-        if (!GatewayProtocolFormat.RESPONSES.is(requestFormat)) {
+        if (!OpenAiResponsesHttpRequestPolicy.appliesToClientFormat(requestFormat)) {
             return ValidationResult.acceptedResult();
         }
         if (body == null || body.isEmpty()) {

@@ -24,21 +24,21 @@ public final class OpenAiCodexProfile {
     public static final String ACCOUNT_EXTRA_CODEX_CLI_ONLY = "codex_cli_only";
     public static final String FIELD_PROMPT_CACHE_KEY = OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY;
 
-    public static final String CONTENT_TYPE_JSON = "application/json";
-    public static final String ACCEPT_EVENT_STREAM = "text/event-stream";
-    public static final String ACCEPT_JSON = "application/json";
-    public static final String AUTH_BEARER_PREFIX = "Bearer ";
+    public static final String CONTENT_TYPE_JSON = OpenAiApiProfile.CONTENT_TYPE_JSON;
+    public static final String ACCEPT_EVENT_STREAM = OpenAiApiProfile.ACCEPT_EVENT_STREAM;
+    public static final String ACCEPT_JSON = OpenAiApiProfile.ACCEPT_JSON;
+    public static final String AUTH_BEARER_PREFIX = OpenAiApiProfile.AUTH_BEARER_PREFIX;
 
-    public static final String HEADER_ACCEPT = "Accept";
-    public static final String HEADER_ACCEPT_LANGUAGE = "Accept-Language";
-    public static final String HEADER_AUTHORIZATION = "Authorization";
+    public static final String HEADER_ACCEPT = OpenAiApiProfile.HEADER_ACCEPT;
+    public static final String HEADER_ACCEPT_LANGUAGE = OpenAiApiProfile.HEADER_ACCEPT_LANGUAGE;
+    public static final String HEADER_AUTHORIZATION = OpenAiApiProfile.HEADER_AUTHORIZATION;
     public static final String HEADER_CHATGPT_ACCOUNT_ID = "chatgpt-account-id";
-    public static final String HEADER_CONTENT_TYPE = "Content-Type";
+    public static final String HEADER_CONTENT_TYPE = OpenAiApiProfile.HEADER_CONTENT_TYPE;
     public static final String HEADER_CONVERSATION_ID = "conversation_id";
     public static final String HEADER_OPENAI_BETA = "OpenAI-Beta";
     public static final String HEADER_ORIGINATOR = "Originator";
     public static final String HEADER_SESSION_ID = "session_id";
-    public static final String HEADER_USER_AGENT = "User-Agent";
+    public static final String HEADER_USER_AGENT = OpenAiApiProfile.HEADER_USER_AGENT;
     public static final String HEADER_VERSION = "Version";
     public static final String HEADER_X_CODEX_TURN_METADATA = "x-codex-turn-metadata";
     public static final String HEADER_X_CODEX_TURN_STATE = "x-codex-turn-state";
@@ -80,6 +80,13 @@ public final class OpenAiCodexProfile {
     public static final List<String> CODEX_OFFICIAL_CLIENT_ORIGINATOR_PREFIXES = List.of(
             "codex_",
             "codex ");
+    public static final List<String> QUOTA_DEBUG_HEADER_KEYWORDS = List.of(
+            "limit",
+            "remaining",
+            "reset",
+            "usage",
+            "quota",
+            "window");
 
     private static final Set<String> UNSUPPORTED_REQUEST_FIELDS = Set.of(
             OpenAiResponsesBodyPolicy.FIELD_MAX_OUTPUT_TOKENS,
@@ -221,12 +228,25 @@ public final class OpenAiCodexProfile {
         return isCodexOfficialClientUserAgent(userAgent) || isCodexOfficialClientOriginator(originator);
     }
 
+    public static boolean isQuotaDebugHeader(String headerName) {
+        String normalized = headerName == null ? "" : headerName.trim().toLowerCase(Locale.ROOT);
+        if (normalized.isBlank()) {
+            return false;
+        }
+        for (String keyword : QUOTA_DEBUG_HEADER_KEYWORDS) {
+            if (normalized.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static String headerKey(String headerName) {
-        return normalizeClientHeader(headerName);
+        return OpenAiApiProfile.headerKey(headerName);
     }
 
     public static String bearerToken(String accessToken) {
-        return AUTH_BEARER_PREFIX + accessToken;
+        return OpenAiApiProfile.bearerToken(accessToken);
     }
 
     private static String normalizeKnownModel(String model) {

@@ -3,7 +3,7 @@ package com.landgate.types.gateway;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 @DisplayName("OpenAI Chat Completions HTTP request policy tests")
 class OpenAiChatCompletionsHttpRequestPolicyTest {
@@ -16,5 +16,16 @@ class OpenAiChatCompletionsHttpRequestPolicyTest {
         assertEquals("Request body is empty", OpenAiChatCompletionsHttpRequestPolicy.MESSAGE_EMPTY_BODY);
         assertEquals("Failed to parse request body", OpenAiChatCompletionsHttpRequestPolicy.MESSAGE_PARSE_BODY_FAILED);
         assertEquals("model is required", OpenAiChatCompletionsHttpRequestPolicy.MESSAGE_MODEL_REQUIRED);
+    }
+
+    @Test
+    @DisplayName("Chat Completions validator route applicability is centralized")
+    void routeApplicabilityIsCentralized() {
+        assertTrue(OpenAiChatCompletionsHttpRequestPolicy.appliesToClientFormat(
+                GatewayProtocolFormat.CHAT_COMPLETIONS.id()));
+        assertFalse(OpenAiChatCompletionsHttpRequestPolicy.appliesToClientFormat(
+                GatewayProtocolFormat.RESPONSES.id()));
+        assertFalse(OpenAiChatCompletionsHttpRequestPolicy.appliesToClientFormat(
+                GatewayProtocolFormat.MESSAGES.id()));
     }
 }

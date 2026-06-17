@@ -39,14 +39,14 @@ class OpenAiResponsesRequestNormalizerTest {
 
         JsonNode root = JSON.readTree(normalized);
 
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+        assertFalse(root.has(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER));
         assertEquals("none", root.get(OpenAiResponsesBodyPolicy.FIELD_REASONING)
                 .get(OpenAiResponsesBodyPolicy.FIELD_EFFORT).asText());
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_MAX_OUTPUT_TOKENS));
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_MAX_COMPLETION_TOKENS));
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_PROMPT_CACHE_RETENTION));
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SAFETY_IDENTIFIER));
-        assertEquals("tenant:thread", root.get(OpenAiNormalizerProfile.FIELD_PROMPT_CACHE_KEY).asText());
+        assertFalse(root.has(OpenAiResponsesBodyPolicy.FIELD_MAX_OUTPUT_TOKENS));
+        assertFalse(root.has(OpenAiResponsesBodyPolicy.FIELD_MAX_COMPLETION_TOKENS));
+        assertFalse(root.has(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_RETENTION));
+        assertFalse(root.has(OpenAiResponsesBodyPolicy.FIELD_SAFETY_IDENTIFIER));
+        assertEquals("tenant:thread", root.get(OpenAiResponsesBodyPolicy.FIELD_PROMPT_CACHE_KEY).asText());
         assertEquals("resp_internal", root.get(OpenAiResponsesBodyPolicy.FIELD_PREVIOUS_RESPONSE_ID).asText());
     }
 
@@ -60,7 +60,7 @@ class OpenAiResponsesRequestNormalizerTest {
 
             JsonNode root = JSON.readTree(normalized);
 
-            assertEquals(tier, root.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER).asText(), tier);
+            assertEquals(tier, root.get(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER).asText(), tier);
         }
     }
 
@@ -73,7 +73,7 @@ class OpenAiResponsesRequestNormalizerTest {
 
         JsonNode root = JSON.readTree(normalized);
 
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+        assertFalse(root.has(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER));
     }
 
     @Test
@@ -95,7 +95,7 @@ class OpenAiResponsesRequestNormalizerTest {
                 """, responsesRoute(), account);
 
         JsonNode root = JSON.readTree(normalized);
-        assertFalse(root.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+        assertFalse(root.has(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER));
     }
 
     @Test
@@ -140,12 +140,12 @@ class OpenAiResponsesRequestNormalizerTest {
                 }
                 """);
 
-        JsonNode input = JSON.readTree(normalized).get(OpenAiNormalizerProfile.FIELD_INPUT);
+        JsonNode input = JSON.readTree(normalized).get(OpenAiResponsesBodyPolicy.FIELD_INPUT);
 
         assertEquals(1, input.size());
-        assertEquals(1, input.get(0).get(OpenAiNormalizerProfile.FIELD_CONTENT).size());
-        assertEquals("input_text", input.get(0).get(OpenAiNormalizerProfile.FIELD_CONTENT).get(0)
-                .get(OpenAiNormalizerProfile.FIELD_TYPE).asText());
+        assertEquals(1, input.get(0).get(OpenAiResponsesBodyPolicy.FIELD_CONTENT).size());
+        assertEquals("input_text", input.get(0).get(OpenAiResponsesBodyPolicy.FIELD_CONTENT).get(0)
+                .get(OpenAiResponsesBodyPolicy.FIELD_TYPE).asText());
     }
 
     @Test

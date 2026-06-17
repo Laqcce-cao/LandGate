@@ -7,7 +7,7 @@ import com.landgate.trigger.gateway.GatewayRequestContext;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamEndpointDefaults;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
-import com.landgate.types.enums.AccountType;
+import com.landgate.types.gateway.OpenAiAccountAuthPolicy;
 import com.landgate.types.gateway.GatewayRequestBodyPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import lombok.extern.slf4j.Slf4j;
@@ -66,7 +66,7 @@ public class OpenAiTransformer implements IRequestTransformer {
         String body = context.body();
         AccountEntity account = context.account();
         String targetUrl;
-        boolean isOAuth = account.getType() == AccountType.OAUTH;
+        boolean isOAuth = OpenAiAccountAuthPolicy.isOAuthType(account.getType());
         UpstreamRoute route = context.upstreamRoute();
 
         if (route != null) {

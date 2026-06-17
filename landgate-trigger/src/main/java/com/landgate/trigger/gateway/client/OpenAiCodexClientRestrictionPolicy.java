@@ -5,8 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.route.EndpointKind;
 import com.landgate.trigger.gateway.route.UpstreamRoute;
-import com.landgate.types.enums.AccountType;
-import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.OpenAiAccountAuthPolicy;
 import com.landgate.types.gateway.OpenAiCodexProfile;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -20,6 +19,8 @@ import jakarta.servlet.http.HttpServletRequest;
  */
 public final class OpenAiCodexClientRestrictionPolicy {
 
+    public static final int ERROR_STATUS = 403;
+    public static final String ERROR_CODE = "forbidden_error";
     public static final String ERROR_MESSAGE = "This account only allows Codex official clients";
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -43,7 +44,7 @@ public final class OpenAiCodexClientRestrictionPolicy {
         if (account == null || route == null) {
             return false;
         }
-        if (account.getPlatform() != Platform.OPENAI || account.getType() != AccountType.OAUTH) {
+        if (!OpenAiAccountAuthPolicy.isOpenAiOAuth(account.getPlatform(), account.getType())) {
             return false;
         }
         if (route.endpointKind() != EndpointKind.OPENAI_CODEX_RESPONSES) {

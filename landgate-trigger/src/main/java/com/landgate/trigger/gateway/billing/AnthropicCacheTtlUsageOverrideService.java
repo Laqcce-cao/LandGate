@@ -5,8 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
-import com.landgate.types.enums.AccountType;
-import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.AnthropicAccountAuthPolicy;
 import com.landgate.types.gateway.AnthropicClaudeCodeProfile;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import com.landgate.types.gateway.GatewayCacheTtlPolicy;
@@ -71,9 +70,8 @@ public class AnthropicCacheTtlUsageOverrideService {
 
     private static boolean isAnthropicOAuthOrSetupToken(AccountEntity account) {
         return account != null
-                && account.getPlatform() == Platform.ANTHROPIC
-                && (account.getType() == AccountType.OAUTH
-                || account.getType() == AccountType.SETUP_TOKEN);
+                && AnthropicAccountAuthPolicy.isAnthropicOAuthOrSetupToken(
+                account.getPlatform(), account.getType());
     }
 
     private String accountOverrideTarget(AccountEntity account) {

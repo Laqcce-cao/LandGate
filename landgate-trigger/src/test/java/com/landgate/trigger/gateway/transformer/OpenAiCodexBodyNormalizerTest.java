@@ -8,6 +8,8 @@ import com.landgate.trigger.gateway.route.UpstreamRoute;
 import com.landgate.types.enums.AccountType;
 import com.landgate.types.enums.Platform;
 import com.landgate.types.gateway.OpenAiAnthropicMessagesCompatPolicy;
+import com.landgate.types.gateway.OpenAiCodexProfile;
+import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -45,7 +47,7 @@ class OpenAiCodexBodyNormalizerTest {
         JsonNode root = JSON.readTree(normalized);
 
         assertEquals("gpt-5.3-codex", root.get("model").asText());
-        assertEquals(OpenAiNormalizerProfile.DEFAULT_CODEX_INSTRUCTIONS, root.get("instructions").asText());
+        assertEquals(OpenAiCodexProfile.DEFAULT_INSTRUCTIONS, root.get("instructions").asText());
     }
 
     @Test
@@ -155,7 +157,7 @@ class OpenAiCodexBodyNormalizerTest {
                 """, account, codexRoute(), "req-codex-fast-filter", true);
         JsonNode priorityRoot = JSON.readTree(priority);
 
-        assertFalse(priorityRoot.has(OpenAiNormalizerProfile.FIELD_SERVICE_TIER));
+        assertFalse(priorityRoot.has(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER));
 
         String flex = normalizer.normalize("""
                 {
@@ -166,7 +168,7 @@ class OpenAiCodexBodyNormalizerTest {
                 """, account, codexRoute(), "req-codex-flex-pass", true);
         JsonNode flexRoot = JSON.readTree(flex);
 
-        assertEquals("flex", flexRoot.get(OpenAiNormalizerProfile.FIELD_SERVICE_TIER).asText());
+        assertEquals("flex", flexRoot.get(OpenAiResponsesBodyPolicy.FIELD_SERVICE_TIER).asText());
     }
 
     @Test

@@ -27,4 +27,12 @@ class GatewayResponseHeaderPolicyTest {
         assertTrue(GatewayResponseHeaderPolicy.shouldCopy("x-codex-turn-state", true));
         assertFalse(GatewayResponseHeaderPolicy.shouldCopy("x-codex-turn-state", false));
     }
+
+    @Test
+    @DisplayName("流式响应固定响应头集中维护")
+    void streamingResponseHeadersAreCentralized() {
+        assertEquals("no-cache", GatewayResponseHeaderPolicy.streamingResponseHeaders().get("Cache-Control"));
+        assertEquals("keep-alive", GatewayResponseHeaderPolicy.streamingResponseHeaders().get("Connection"));
+        assertEquals("no", GatewayResponseHeaderPolicy.streamingResponseHeaders().get("X-Accel-Buffering"));
+    }
 }

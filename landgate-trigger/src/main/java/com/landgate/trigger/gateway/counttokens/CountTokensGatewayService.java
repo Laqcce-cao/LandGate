@@ -14,11 +14,11 @@ import com.landgate.trigger.gateway.oauth.GetAccessTokenService;
 import com.landgate.trigger.gateway.request.AnthropicMessagesHttpRequestValidator;
 import com.landgate.trigger.gateway.request.GatewayRequestParser;
 import com.landgate.trigger.gateway.transformer.AnthropicCountTokensRequestFactory;
-import com.landgate.types.enums.AccountType;
-import com.landgate.types.enums.Platform;
+import com.landgate.types.gateway.AnthropicAccountAuthPolicy;
 import com.landgate.types.gateway.AnthropicApiProfile;
 import com.landgate.types.gateway.AnthropicCountTokensPolicy;
 import com.landgate.types.gateway.AnthropicForwardingRuntimePolicy;
+import com.landgate.types.gateway.GatewayClientAccessPolicy;
 import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
 import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.GatewayUnsupportedFeaturePolicy;
@@ -87,8 +87,10 @@ public class CountTokensGatewayService {
 
         GroupEntity group = access.group();
         if (!ProtocolFormatResolver.groupAllowsClientFormat(group, GatewayProtocolFormat.MESSAGES.id())) {
-            errorWriter.writeError(response, 403, "permission_error",
-                    "This group does not allow protocol: " + GatewayProtocolFormat.MESSAGES.id());
+            errorWriter.writeError(response,
+                    GatewayClientAccessPolicy.FORBIDDEN_STATUS,
+                    GatewayClientAccessPolicy.ERROR_CODE_PERMISSION,
+                    GatewayClientAccessPolicy.groupProtocolNotAllowedMessage(GatewayProtocolFormat.MESSAGES.id()));
             return;
         }
 
@@ -104,7 +106,7 @@ public class CountTokensGatewayService {
             return;
         }
 
-        if (account.getPlatform() != Platform.ANTHROPIC) {
+        if (!AnthropicAccountAuthPolicy.isAnthropicPlatform(account.getPlatform())) {
             log.debug("[{}] count_tokens unsupported selected platform: account_id={}, platform={}",
                     requestId, account.getId(), account.getPlatform());
             errorWriter.writeError(response,
@@ -264,7 +266,7 @@ public class CountTokensGatewayService {
 
     private static boolean isAnthropicOAuth(AccountEntity account) {
         return account != null
-                && (account.getType() == AccountType.OAUTH || account.getType() == AccountType.SETUP_TOKEN);
+                && AnthropicAccountAuthPolicy.isOAuthOrSetupTokenType(account.getType());
     }
 
     private record CountTokensUpstreamResult(int statusCode, String body, HttpHeaders headers) {

@@ -2,13 +2,11 @@ package com.landgate.trigger.gateway.session;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.trigger.gateway.compat.OpenAiCompatTodoGuard;
-import com.landgate.types.enums.AccountType;
 import com.landgate.types.gateway.AnthropicMessagesBodyPolicy;
 import com.landgate.types.gateway.CompatPromptCacheKeyPolicy;
+import com.landgate.types.gateway.OpenAiAccountAuthPolicy;
 import com.landgate.types.gateway.OpenAiCompatModelPolicy;
 import com.landgate.types.gateway.OpenAiCompatSessionPolicy;
 import com.landgate.types.gateway.OpenAiResponsesBodyPolicy;
@@ -17,9 +15,6 @@ import org.redisson.api.RMapCache;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-
-import java.util.HashSet;
-import java.util.Set;
 
 /**
  * OpenAI Responses compatibility session state.
@@ -100,25 +95,27 @@ public class OpenAiCompatSessionService {
             digestChain = CompatPromptCacheKeyPolicy.buildOpenAICompatAnthropicDigestChain(anthropic);
         }
 
-        responsesBody = ensureResponsesInstructionsField(responsesBody);
-        if (account.getType() == AccountType.API_KEY) {
-            responsesBody = removeOpenAiApiKeyUnsupportedResponseFields(responsesBody);
+        responsesBody = OpenAiCompatResponsesBodyNormalizer.ensureInstructionsField(responsesBody);
+        if (OpenAiAccountAuthPolicy.isApiKeyType(account.getType())) {
+            responsesBody = OpenAiCompatResponsesBodyNormalizer.removeOpenAiApiKeyUnsupportedResponseFields(
+                    responsesBody);
         }
 
         String previousResponseId = "";
         boolean continuationDisabled = false;
-        if (account.getType() == AccountType.API_KEY
+        if (OpenAiAccountAuthPolicy.isApiKeyType(account.getType())
                 && !promptCacheKey.isBlank()
                 && CompatPromptCacheKeyPolicy.shouldAutoInjectPromptCacheKeyForCompat(model)) {
             continuationDisabled = isContinuationDisabled(account, apiKeyId, promptCacheKey);
             if (!continuationDisabled) {
                 previousResponseId = getResponseId(account, apiKeyId, promptCacheKey);
                 if (!previousResponseId.isBlank()) {
-                    responsesBody = attachPreviousResponseIdAndTrim(responsesBody, previousResponseId);
+                    responsesBody = OpenAiCompatResponsesBodyNormalizer.attachPreviousResponseIdAndTrim(
+                            responsesBody, previousResponseId);
                 }
             }
         }
-        if (account.getType() == AccountType.API_KEY
+        if (OpenAiAccountAuthPolicy.isApiKeyType(account.getType())
                 && CompatPromptCacheKeyPolicy.shouldAutoInjectPromptCacheKeyForCompat(model)) {
             responsesBody = OpenAiCompatTodoGuard.appendToResponsesBody(responsesBody).body();
         }
@@ -138,7 +135,7 @@ public class OpenAiCompatSessionService {
                                                                               Long apiKeyId,
                                                                               String clientBody,
                                                                               String requestedModel) {
-        if (account == null || account.getType() != AccountType.API_KEY
+        if (account == null || !OpenAiAccountAuthPolicy.isApiKeyType(account.getType())
                 || clientBody == null || clientBody.isBlank()) {
             return new FullReplayTrimState(clientBody, false, 0);
         }
@@ -259,112 +256,6 @@ public class OpenAiCompatSessionService {
 
     private static <T> void refresh(RMapCache<String, T> cache, String key, T value) {
         cache.put(key, value, OpenAiCompatSessionPolicy.TTL_VALUE, OpenAiCompatSessionPolicy.TTL_UNIT);
-    }
-
-    private static String attachPreviousResponseIdAndTrim(String responsesBody, String previousResponseId) {
-        try {
-            JsonNode parsed = JSON.readTree(responsesBody);
-            if (!(parsed instanceof ObjectNode root)) return responsesBody;
-            root.put(OpenAiResponsesBodyPolicy.FIELD_PREVIOUS_RESPONSE_ID, previousResponseId);
-            trimResponsesInputToLatestTurn(root);
-            return JSON.writeValueAsString(root);
-        } catch (Exception ignored) {
-            return responsesBody;
-        }
-    }
-
-    private static String ensureResponsesInstructionsField(String responsesBody) {
-        if (responsesBody == null || responsesBody.isBlank()) return responsesBody;
-        try {
-            JsonNode parsed = JSON.readTree(responsesBody);
-            if (!(parsed instanceof ObjectNode root)) return responsesBody;
-            JsonNode instructions = root.get(OpenAiResponsesBodyPolicy.FIELD_INSTRUCTIONS);
-            if (instructions != null && instructions.isTextual()) {
-                return responsesBody;
-            }
-            root.put(OpenAiResponsesBodyPolicy.FIELD_INSTRUCTIONS, "");
-            return JSON.writeValueAsString(root);
-        } catch (Exception ignored) {
-            return responsesBody;
-        }
-    }
-
-    private static String removeOpenAiApiKeyUnsupportedResponseFields(String responsesBody) {
-        if (responsesBody == null || responsesBody.isBlank()) return responsesBody;
-        try {
-            JsonNode parsed = JSON.readTree(responsesBody);
-            if (!(parsed instanceof ObjectNode root)) return responsesBody;
-            boolean changed = false;
-            for (String field : OpenAiResponsesBodyPolicy.openAiApiKeyResponsesCompatUnsupportedFields()) {
-                if (root.has(field)) {
-                    root.remove(field);
-                    changed = true;
-                }
-            }
-            return changed ? JSON.writeValueAsString(root) : responsesBody;
-        } catch (Exception ignored) {
-            return responsesBody;
-        }
-    }
-
-    private static void trimResponsesInputToLatestTurn(ObjectNode root) {
-        JsonNode input = root.get(OpenAiResponsesBodyPolicy.FIELD_INPUT);
-        if (input == null || !input.isArray() || input.size() == 0) return;
-        int start = latestTurnStart((ArrayNode) input);
-        if (start <= 0) return;
-        ArrayNode trimmed = JSON.createArrayNode();
-        for (int i = start; i < input.size(); i++) {
-            trimmed.add(input.get(i));
-        }
-        root.set(OpenAiResponsesBodyPolicy.FIELD_INPUT, trimmed);
-    }
-
-    private static int latestTurnStart(ArrayNode items) {
-        int start = items.size() - 1;
-        JsonNode last = items.get(start);
-        String type = last.path(OpenAiResponsesBodyPolicy.FIELD_TYPE).asText("");
-        String role = last.path(OpenAiResponsesBodyPolicy.FIELD_ROLE).asText("");
-        if (OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL_OUTPUT.equals(type)) {
-            while (start > 0 && OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL_OUTPUT.equals(
-                    items.get(start - 1).path(OpenAiResponsesBodyPolicy.FIELD_TYPE).asText(""))) {
-                start--;
-            }
-        } else if (OpenAiResponsesBodyPolicy.TYPE_MESSAGE.equals(type) && OpenAiResponsesBodyPolicy.ROLE_USER.equals(role)) {
-            while (start > 0 && OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL_OUTPUT.equals(
-                    items.get(start - 1).path(OpenAiResponsesBodyPolicy.FIELD_TYPE).asText(""))) {
-                start--;
-            }
-        } else {
-            return start;
-        }
-        return expandToolCallStart(items, start);
-    }
-
-    private static int expandToolCallStart(ArrayNode items, int start) {
-        Set<String> neededCallIds = new HashSet<>();
-        for (int i = start; i < items.size(); i++) {
-            if (!OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL_OUTPUT.equals(
-                    items.get(i).path(OpenAiResponsesBodyPolicy.FIELD_TYPE).asText(""))) {
-                continue;
-            }
-            String callId = items.get(i).path(OpenAiResponsesBodyPolicy.FIELD_CALL_ID).asText("").trim();
-            if (!callId.isBlank()) neededCallIds.add(callId);
-        }
-        if (neededCallIds.isEmpty()) return start;
-
-        int expanded = start;
-        for (int i = start - 1; i >= 0 && !neededCallIds.isEmpty(); i--) {
-            JsonNode item = items.get(i);
-            if (!OpenAiResponsesBodyPolicy.TYPE_FUNCTION_CALL.equals(
-                    item.path(OpenAiResponsesBodyPolicy.FIELD_TYPE).asText(""))) {
-                continue;
-            }
-            String callId = item.path(OpenAiResponsesBodyPolicy.FIELD_CALL_ID).asText("").trim();
-            if (neededCallIds.remove(callId)) {
-                expanded = i;
-            }
-        }
-        return expanded;
     }
 
     private static JsonNode parse(String body) {

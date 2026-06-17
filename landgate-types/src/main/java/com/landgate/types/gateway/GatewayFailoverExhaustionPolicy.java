@@ -33,7 +33,7 @@ public final class GatewayFailoverExhaustionPolicy {
             "All available accounts exhausted";
 
     private static final int HTTP_BAD_GATEWAY = 502;
-    private static final int HTTP_SERVICE_UNAVAILABLE = 503;
+    public static final int HTTP_SERVICE_UNAVAILABLE = 503;
     private static final int HTTP_TOO_MANY_REQUESTS = 429;
 
     private GatewayFailoverExhaustionPolicy() {
@@ -53,6 +53,21 @@ public final class GatewayFailoverExhaustionPolicy {
             return mapOpenAiGatewayStyle(upstreamStatusCode);
         }
         return mapAnthropicGatewayStyle(upstreamStatusCode);
+    }
+
+    public static Decision noAvailableAccounts(String groupName) {
+        return new Decision(
+                HTTP_SERVICE_UNAVAILABLE,
+                CODE_OVERLOADED_ERROR,
+                "No available accounts in group '" + safe(groupName) + "'.");
+    }
+
+    public static Decision exhaustedWithoutUpstreamError(String groupName, int attempts) {
+        return new Decision(
+                HTTP_SERVICE_UNAVAILABLE,
+                CODE_OVERLOADED_ERROR,
+                "All accounts in group '" + safe(groupName)
+                        + "' are unavailable after " + Math.max(attempts, 0) + " attempts.");
     }
 
     private static Decision mapAnthropicGatewayStyle(int upstreamStatusCode) {
@@ -81,6 +96,10 @@ public final class GatewayFailoverExhaustionPolicy {
 
     private static int nonZeroStatus(int upstreamStatusCode) {
         return upstreamStatusCode > 0 ? upstreamStatusCode : HTTP_BAD_GATEWAY;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
     }
 
     public record Decision(int status, String code, String message) {

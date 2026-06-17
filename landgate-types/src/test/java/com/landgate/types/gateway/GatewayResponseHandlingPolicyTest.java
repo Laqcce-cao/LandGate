@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("Gateway response handling policy tests")
@@ -40,6 +41,12 @@ class GatewayResponseHandlingPolicyTest {
         assertFalse(GatewayResponseHandlingPolicy.shouldHandleAsStreaming(false, null));
         assertFalse(GatewayResponseHandlingPolicy.shouldHandleAsStreaming(false,
                 responseWithContentType("application/json")));
+    }
+
+    @Test
+    @DisplayName("Streaming lease renewal interval is centralized")
+    void streamingLeaseRenewalIntervalIsCentralized() {
+        assertEquals(60_000L, GatewayResponseHandlingPolicy.STREAMING_CONCURRENCY_LEASE_RENEWAL_INTERVAL_MILLIS);
     }
 
     private static HttpResponse<InputStream> responseWithContentType(String contentType) {

@@ -3,7 +3,7 @@ package com.landgate.types.gateway;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.*;
 
 @DisplayName("OpenAI Responses HTTP request policy tests")
 class OpenAiResponsesHttpRequestPolicyTest {
@@ -21,5 +21,13 @@ class OpenAiResponsesHttpRequestPolicyTest {
                 OpenAiResponsesHttpRequestPolicy.MESSAGE_FUNCTION_CALL_OUTPUT_REQUIRES_CALL_ID);
         assertEquals("function_call_output requires item_reference ids matching each call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2",
                 OpenAiResponsesHttpRequestPolicy.MESSAGE_FUNCTION_CALL_OUTPUT_REQUIRES_ITEM_REFERENCE);
+    }
+
+    @Test
+    @DisplayName("Responses validator route applicability is centralized")
+    void routeApplicabilityIsCentralized() {
+        assertTrue(OpenAiResponsesHttpRequestPolicy.appliesToClientFormat(GatewayProtocolFormat.RESPONSES.id()));
+        assertFalse(OpenAiResponsesHttpRequestPolicy.appliesToClientFormat(GatewayProtocolFormat.MESSAGES.id()));
+        assertFalse(OpenAiResponsesHttpRequestPolicy.appliesToClientFormat(GatewayProtocolFormat.CHAT_COMPLETIONS.id()));
     }
 }

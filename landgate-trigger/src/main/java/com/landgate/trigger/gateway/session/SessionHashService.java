@@ -2,7 +2,6 @@ package com.landgate.trigger.gateway.session;
 
 import com.landgate.types.gateway.CompatPromptCacheKeyPolicy;
 import com.landgate.types.gateway.GatewayHttpHeaderPolicy;
-import com.landgate.types.gateway.GatewayProtocolFormat;
 import com.landgate.types.gateway.OpenAiContentSessionSeedPolicy;
 import com.landgate.types.gateway.SessionHashPolicy;
 import jakarta.servlet.http.HttpServletRequest;
@@ -68,7 +67,7 @@ public class SessionHashService {
         if (!anthropicCacheAnchor.isEmpty()) {
             return hashRaw(SessionHashPolicy.anthropicCacheAnchorMaterial(apiKeyId, anthropicCacheAnchor));
         }
-        if (isOpenAiFormat(requestFormat)) {
+        if (SessionHashPolicy.usesOpenAiContentSeedFallback(requestFormat)) {
             String contentSeed = OpenAiContentSessionSeedPolicy.derive(body);
             if (!contentSeed.isBlank()) {
                 return hashRaw(SessionHashPolicy.openAiContentSeedMaterial(apiKeyId, contentSeed));
@@ -78,11 +77,6 @@ public class SessionHashService {
         String clientIp = request.getRemoteAddr();
         String userAgent = request.getHeader(GatewayHttpHeaderPolicy.HEADER_USER_AGENT);
         return hashRaw(SessionHashPolicy.requestContextMaterial(clientIp, userAgent, apiKeyId));
-    }
-
-    private static boolean isOpenAiFormat(String requestFormat) {
-        return GatewayProtocolFormat.RESPONSES.is(requestFormat)
-                || GatewayProtocolFormat.CHAT_COMPLETIONS.is(requestFormat);
     }
 
     private static String hashRaw(String raw) {
