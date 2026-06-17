@@ -46,6 +46,24 @@ class OpenAiResponsesSseAccumulatorTest {
     }
 
     @Test
+    @DisplayName("Can preserve Anthropic input token semantics when upstream IR came from Messages SSE")
+    void canPreserveAnthropicInputTokenSemantics() throws Exception {
+        OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator("claude-sonnet-4-5");
+
+        assertTrue(accumulator.process(event("""
+                {"type":"response.completed","response":{"id":"resp_123","model":"claude-sonnet-4-5","status":"completed",
+                 "output":[{"type":"message","role":"assistant","status":"completed",
+                   "content":[{"type":"output_text","text":"Hello"}]}]}}
+                """)));
+
+        JsonNode body = JSON.readTree(accumulator.buildResponsesJson(usage(10, 2, 3), false));
+
+        assertEquals(10, body.path("usage").path("input_tokens").asInt());
+        assertEquals(12, body.path("usage").path("total_tokens").asInt());
+        assertEquals(3, body.path("usage").path("input_tokens_details").path("cached_tokens").asInt());
+    }
+
+    @Test
     @DisplayName("Aggregates function call arguments and reasoning summary")
     void aggregatesFunctionCallAndReasoning() throws Exception {
         OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator("gpt-5.5");
@@ -79,6 +97,38 @@ class OpenAiResponsesSseAccumulatorTest {
         assertEquals("function_call", output.get(1).path("type").asText());
         assertEquals("call_1", output.get(1).path("call_id").asText());
         assertEquals("{\"q\":\"weather\"}", output.get(1).path("arguments").asText());
+    }
+
+    @Test
+    @DisplayName("Preserves web_search_call output items from Responses SSE")
+    void preservesWebSearchCallOutputItems() throws Exception {
+        OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator("gpt-5.5");
+
+        accumulator.process(event("""
+                {"type":"response.output_item.done","output_index":0,
+                 "item":{"type":"web_search_call","id":"ws_1","status":"completed",
+                   "action":{"type":"search","query":"LandGate"}}}
+                """));
+        accumulator.process(event("""
+                {"type":"response.output_item.added","output_index":1,
+                 "item":{"type":"message","role":"assistant","status":"in_progress","content":[]}}
+                """));
+        accumulator.process(event("""
+                {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"visible"}
+                """));
+        assertTrue(accumulator.process(event("""
+                {"type":"response.completed","response":{"status":"completed"}}
+                """)));
+
+        JsonNode output = JSON.readTree(accumulator.buildResponsesJson(usage(7, 2, 3))).path("output");
+
+        assertEquals(2, output.size());
+        assertEquals("web_search_call", output.get(0).path("type").asText());
+        assertEquals("ws_1", output.get(0).path("id").asText());
+        assertEquals("completed", output.get(0).path("status").asText());
+        assertEquals("LandGate", output.get(0).path("action").path("query").asText());
+        assertEquals("message", output.get(1).path("type").asText());
+        assertEquals("visible", output.get(1).path("content").get(0).path("text").asText());
     }
 
     @Test

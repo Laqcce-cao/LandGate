@@ -176,6 +176,19 @@ public class AnthropicThinkingRetryPolicy {
                 modified = true;
                 continue;
             }
+            if (block.isObject()
+                    && AnthropicMessagesBodyPolicy.TYPE_TOOL_RESULT.equals(
+                    block.path(AnthropicMessagesBodyPolicy.FIELD_TYPE).asText(""))
+                    && block.path(AnthropicMessagesBodyPolicy.FIELD_CONTENT).isArray()) {
+                FilterResult nested = stripEmptyTextBlocks((ArrayNode) block.get(AnthropicMessagesBodyPolicy.FIELD_CONTENT));
+                if (nested.modified()) {
+                    ObjectNode copy = ((ObjectNode) block).deepCopy();
+                    copy.set(AnthropicMessagesBodyPolicy.FIELD_CONTENT, nested.blocks());
+                    next.add(copy);
+                    modified = true;
+                    continue;
+                }
+            }
             next.add(block);
         }
         return new FilterResult(next, modified);

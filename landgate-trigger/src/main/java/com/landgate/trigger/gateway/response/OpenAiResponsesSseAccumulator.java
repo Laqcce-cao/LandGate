@@ -220,6 +220,10 @@ final class OpenAiResponsesSseAccumulator {
     }
 
     String buildResponsesJson(UsageTokens usage) throws IOException {
+        return buildResponsesJson(usage, true);
+    }
+
+    String buildResponsesJson(UsageTokens usage, boolean addCachedTokensToInput) throws IOException {
         supplementEmptyTerminalOutputFromDeltas();
 
         Map<Integer, ArrayNode> contentByOutputIndex = new LinkedHashMap<>();
@@ -315,9 +319,10 @@ final class OpenAiResponsesSseAccumulator {
         int inputTokens = usage != null ? usage.getInputTokens() : 0;
         int cachedTokens = usage != null ? usage.getCacheReadTokens() : 0;
         int outputTokens = usage != null ? usage.getOutputTokens() : 0;
-        usageNode.put(FIELD_INPUT_TOKENS, inputTokens + cachedTokens);
+        int responseInputTokens = addCachedTokensToInput ? inputTokens + cachedTokens : inputTokens;
+        usageNode.put(FIELD_INPUT_TOKENS, responseInputTokens);
         usageNode.put(FIELD_OUTPUT_TOKENS, outputTokens);
-        usageNode.put(FIELD_TOTAL_TOKENS, inputTokens + cachedTokens + outputTokens);
+        usageNode.put(FIELD_TOTAL_TOKENS, responseInputTokens + outputTokens);
         if (cachedTokens > 0) {
             ObjectNode inputDetails = JSON_MAPPER.createObjectNode();
             inputDetails.put(FIELD_CACHED_TOKENS, cachedTokens);
@@ -359,6 +364,11 @@ final class OpenAiResponsesSseAccumulator {
             normalized.put(FIELD_NAME, item.path(FIELD_NAME).asText(""));
             normalized.put(FIELD_ARGUMENTS, item.path(FIELD_ARGUMENTS).asText(EMPTY_JSON_OBJECT));
             normalized.put(FIELD_STATUS, STATUS_COMPLETED);
+        } else if (TYPE_WEB_SEARCH_CALL.equals(type)) {
+            normalized.put(FIELD_STATUS, item.path(FIELD_STATUS).asText(STATUS_COMPLETED));
+            if (item.has(FIELD_ACTION) && item.get(FIELD_ACTION).isObject()) {
+                normalized.set(FIELD_ACTION, item.get(FIELD_ACTION).deepCopy());
+            }
         } else if (TYPE_REASONING.equals(type)) {
             normalized.put(FIELD_STATUS, STATUS_COMPLETED);
             normalized.set(FIELD_SUMMARY, item.has(FIELD_SUMMARY) ? item.get(FIELD_SUMMARY) : JSON_MAPPER.createArrayNode());
@@ -385,7 +395,7 @@ final class OpenAiResponsesSseAccumulator {
     }
 
     private void supplementEmptyTerminalOutputFromDeltas() {
-        if (terminalResponseOutputPopulated || !hasBufferedDeltaContent()) {
+        if (terminalResponseOutputPopulated || hasWebSearchOutputItem() || !hasBufferedDeltaContent()) {
             return;
         }
 
@@ -431,6 +441,11 @@ final class OpenAiResponsesSseAccumulator {
         if (!supplemented.isEmpty()) {
             outputItems.clear();
             outputItems.putAll(supplemented);
+            textByContentKey.clear();
+            contentTypeByContentKey.clear();
+            argumentsByOutputIndex.clear();
+            reasoningSummaryByOutputIndex.clear();
+            reasoningTextByOutputIndex.clear();
         }
     }
 
@@ -439,6 +454,11 @@ final class OpenAiResponsesSseAccumulator {
                 || reasoningSummaryByOutputIndex.values().stream().anyMatch(builder -> builder.length() > 0)
                 || reasoningTextByOutputIndex.values().stream().anyMatch(builder -> builder.length() > 0)
                 || outputItems.values().stream().anyMatch(item -> TYPE_FUNCTION_CALL.equals(item.path(FIELD_TYPE).asText("")));
+    }
+
+    private boolean hasWebSearchOutputItem() {
+        return outputItems.values().stream()
+                .anyMatch(item -> TYPE_WEB_SEARCH_CALL.equals(item.path(FIELD_TYPE).asText("")));
     }
 
     private String bufferedReasoningSummaryText() {

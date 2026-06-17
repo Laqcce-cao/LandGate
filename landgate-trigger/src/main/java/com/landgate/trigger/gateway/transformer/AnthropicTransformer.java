@@ -130,6 +130,7 @@ public class AnthropicTransformer implements IRequestTransformer {
             }
         }
 
+        body = AnthropicEmptyTextBlockNormalizer.normalize(body);
         body = AnthropicModelMappingBodyNormalizer.apply(account, body);
         body = AnthropicCacheControlPolicy.enforceLimit(body);
 

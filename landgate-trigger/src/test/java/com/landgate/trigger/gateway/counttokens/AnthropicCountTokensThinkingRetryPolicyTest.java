@@ -61,4 +61,27 @@ class AnthropicCountTokensThinkingRetryPolicyTest {
         assertEquals("(content removed)",
                 filtered.path("messages").get(1).path("content").get(0).path("text").asText());
     }
+
+    @Test
+    @DisplayName("recursively strips nested empty text in tool_result during retry filtering")
+    void recursivelyStripsNestedEmptyTextInToolResult() throws Exception {
+        String body = """
+                {"messages":[{"role":"user","content":[
+                  {"type":"tool_result","tool_use_id":"t1","content":[
+                    {"type":"tool_result","tool_use_id":"t2","content":[
+                      {"type":"text","text":""},
+                      {"type":"text","text":"deep"}
+                    ]}
+                  ]}
+                ]}]}""";
+
+        JsonNode filtered = JSON.readTree(policy.filterBodyForRetry(body));
+        JsonNode deepContent = filtered.path("messages").get(0)
+                .path("content").get(0)
+                .path("content").get(0)
+                .path("content");
+
+        assertEquals(1, deepContent.size());
+        assertEquals("deep", deepContent.get(0).path("text").asText());
+    }
 }

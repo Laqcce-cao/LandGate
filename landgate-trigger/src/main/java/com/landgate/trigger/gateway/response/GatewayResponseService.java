@@ -265,6 +265,7 @@ public class GatewayResponseService {
         OpenAiResponsesSseAccumulator accumulator = new OpenAiResponsesSseAccumulator(responseModel);
         StringBuilder rawSseBody = new StringBuilder();
         String failedMessage = "";
+        StreamTranslator upstreamToResponses = createStreamingAggregationTranslator(ctx);
 
         try (var upstreamInput = upstreamResp.body();
              var reader = new BufferedReader(new InputStreamReader(upstreamInput, StandardCharsets.UTF_8))) {
@@ -274,37 +275,28 @@ public class GatewayResponseService {
                 line = normalizeAnthropicUsageSseLine(ctx, ctx != null ? ctx.getUpstreamRoute() : null, line);
                 rawSseBody.append(line).append('\n');
                 mergeStreamingUsageFromUpstreamLine(totalUsage, usageParser, line);
-                String dataPayload = OpenAiResponsesSsePolicy.extractDataPayload(line);
-                if (dataPayload == null) continue;
-
-                JsonNode event;
-                try {
-                    event = JSON_MAPPER.readTree(dataPayload);
-                } catch (Exception e) {
-                    continue;
-                }
-                if (OpenAiResponsesSsePolicy.EVENT_RESPONSE_FAILED.equals(
-                        event.path(OpenAiResponsesJsonPolicy.FIELD_TYPE).asText(""))) {
-                    failedMessage = extractUpstreamErrorMessage(event);
+                AggregationResult aggregationResult = processAggregationLine(line, upstreamToResponses, accumulator);
+                if (!aggregationResult.failedMessage().isBlank()) {
+                    failedMessage = aggregationResult.failedMessage();
                     break;
                 }
-                if (accumulator.process(event)) {
+                if (aggregationResult.done()) {
                     break;
                 }
             }
         }
 
+        String clientFormat = resolveClientFormat(ctx, ctx != null ? ctx.getUpstreamRoute() : null);
         if (!failedMessage.isBlank()) {
-            writeOpenAiProtocolError(response, failedMessage);
+            writeProtocolError(response, clientFormat, failedMessage);
             return new GatewayResponseResult(totalUsage, false, accumulator.responseId());
         }
 
-        String clientFormat = resolveClientFormat(ctx, ctx != null ? ctx.getUpstreamRoute() : null);
         if (!accumulator.terminalSeen()) {
             return switch (GatewayStreamAggregationPolicy.missingTerminalAction(clientFormat)) {
                 case PRESERVE_UPSTREAM_SSE -> writePreservedSseResponse(upstreamResp, response, totalUsage, rawSseBody.toString());
                 case PROTOCOL_ERROR -> {
-                    writeOpenAiProtocolError(response, GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE);
+                    writeProtocolError(response, clientFormat, GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE);
                     yield new GatewayResponseResult(totalUsage, false, accumulator.responseId());
                 }
             };
@@ -313,11 +305,13 @@ public class GatewayResponseService {
             return writePreservedSseResponse(upstreamResp, response, totalUsage, rawSseBody.toString());
         }
         if (!GatewayStreamAggregationPolicy.isResponsesClient(clientFormat) && !accumulator.terminalResponseSeen()) {
-            writeOpenAiProtocolError(response, GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE);
+            writeProtocolError(response, clientFormat, GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE);
             return new GatewayResponseResult(totalUsage, false, accumulator.responseId());
         }
 
-        String responsesBody = accumulator.buildResponsesJson(totalUsage);
+        String upstreamFormat = resolveUpstreamFormat(ctx, ctx != null ? ctx.getUpstreamRoute() : null);
+        String responsesBody = accumulator.buildResponsesJson(totalUsage,
+                shouldAddCachedTokensToAggregatedResponsesInput(upstreamFormat));
         String clientBody = GatewayProtocolFormat.RESPONSES.is(clientFormat)
                 ? responsesBody
                 : translationService.translateResponse(responsesBody, GatewayProtocolFormat.RESPONSES.id(), clientFormat);
@@ -331,6 +325,77 @@ public class GatewayResponseService {
                 totalUsage.getInputTokens(), totalUsage.getOutputTokens(),
                 totalUsage.getCacheCreationTokens(), totalUsage.getCacheReadTokens());
         return new GatewayResponseResult(totalUsage, false, accumulator.responseId());
+    }
+
+    private static boolean shouldAddCachedTokensToAggregatedResponsesInput(String upstreamFormat) {
+        return !GatewayProtocolFormat.MESSAGES.is(upstreamFormat);
+    }
+
+    private StreamTranslator createStreamingAggregationTranslator(GatewayRequestContext ctx) {
+        UpstreamRoute route = ctx != null ? ctx.getUpstreamRoute() : null;
+        String upstreamFormat = resolveUpstreamFormat(ctx, route);
+        if (GatewayProtocolFormat.RESPONSES.is(upstreamFormat)) {
+            return null;
+        }
+        if (converterRegistry == null) {
+            return null;
+        }
+        ProtocolConverter upstreamConverter = converterRegistry.get(upstreamFormat);
+        if (upstreamConverter == null) {
+            return null;
+        }
+        return upstreamConverter.createStreamToIR(ctx != null ? ctx.getRequestedModel() : null);
+    }
+
+    private AggregationResult processAggregationLine(String line,
+                                                     StreamTranslator upstreamToResponses,
+                                                     OpenAiResponsesSseAccumulator accumulator) {
+        boolean done = false;
+        String failedMessage = "";
+        if (upstreamToResponses == null) {
+            AggregationEventResult result = processResponsesAggregationLine(line, accumulator);
+            return new AggregationResult(result.done(), result.failedMessage());
+        }
+        for (String irLine : upstreamToResponses.feed(line)) {
+            AggregationEventResult result = processResponsesAggregationLine(irLine, accumulator);
+            if (!result.failedMessage().isBlank()) {
+                failedMessage = result.failedMessage();
+                done = true;
+                break;
+            }
+            if (result.done()) {
+                done = true;
+                break;
+            }
+        }
+        return new AggregationResult(done, failedMessage);
+    }
+
+    private AggregationEventResult processResponsesAggregationLine(String line,
+                                                                   OpenAiResponsesSseAccumulator accumulator) {
+        String dataPayload = OpenAiResponsesSsePolicy.extractDataPayload(line);
+        if (dataPayload == null) {
+            return AggregationEventResult.CONTINUE;
+        }
+
+        JsonNode event;
+        try {
+            event = JSON_MAPPER.readTree(dataPayload);
+        } catch (Exception e) {
+            return AggregationEventResult.CONTINUE;
+        }
+        if (OpenAiResponsesSsePolicy.EVENT_RESPONSE_FAILED.equals(
+                event.path(OpenAiResponsesJsonPolicy.FIELD_TYPE).asText(""))) {
+            return new AggregationEventResult(true, extractUpstreamErrorMessage(event));
+        }
+        return new AggregationEventResult(accumulator.process(event), "");
+    }
+
+    private record AggregationResult(boolean done, String failedMessage) {
+    }
+
+    private record AggregationEventResult(boolean done, String failedMessage) {
+        private static final AggregationEventResult CONTINUE = new AggregationEventResult(false, "");
     }
 
     private GatewayResponseResult writePreservedSseResponse(HttpResponse<InputStream> upstreamResp,
@@ -348,17 +413,26 @@ public class GatewayResponseService {
         return new GatewayResponseResult(usage, false, "");
     }
 
-    private static void writeOpenAiProtocolError(HttpServletResponse response, String message) throws IOException {
+    private static void writeProtocolError(HttpServletResponse response,
+                                           String clientFormat,
+                                           String message) throws IOException {
         response.setStatus(GatewayStreamAggregationPolicy.PROTOCOL_ERROR_STATUS);
         response.setContentType(GatewayResponseContentPolicy.MEDIA_TYPE_JSON);
         response.setCharacterEncoding(GatewayResponseContentPolicy.CHARSET_UTF_8);
 
+        String resolvedMessage = message == null || message.isBlank()
+                ? GatewayStreamAggregationPolicy.INVALID_NON_STREAMING_RESPONSE_MESSAGE
+                : message;
         var root = JSON_MAPPER.createObjectNode();
         var error = JSON_MAPPER.createObjectNode();
-        error.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, GatewayStreamAggregationPolicy.PROTOCOL_ERROR_TYPE);
-        error.put(OpenAiResponsesJsonPolicy.FIELD_MESSAGE, message == null || message.isBlank()
-                ? GatewayStreamAggregationPolicy.INVALID_NON_STREAMING_RESPONSE_MESSAGE
-                : message);
+        if (GatewayProtocolFormat.MESSAGES.is(clientFormat)) {
+            root.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, OpenAiResponsesJsonPolicy.FIELD_ERROR);
+            error.put(AnthropicMessagesBodyPolicy.FIELD_TYPE, GatewayStreamAggregationPolicy.PROTOCOL_ERROR_TYPE);
+            error.put(OpenAiResponsesJsonPolicy.FIELD_MESSAGE, resolvedMessage);
+        } else {
+            error.put(OpenAiResponsesJsonPolicy.FIELD_TYPE, GatewayStreamAggregationPolicy.PROTOCOL_ERROR_TYPE);
+            error.put(OpenAiResponsesJsonPolicy.FIELD_MESSAGE, resolvedMessage);
+        }
         root.set(OpenAiResponsesJsonPolicy.FIELD_ERROR, error);
 
         try (var output = response.getOutputStream()) {

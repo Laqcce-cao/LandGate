@@ -1,5 +1,6 @@
 package com.landgate.trigger.gateway;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.landgate.domain.account.model.entity.AccountEntity;
 import com.landgate.domain.billing.model.valobj.UsageTokens;
 import com.landgate.trigger.gateway.converter.AnthropicConverter;
@@ -455,6 +456,635 @@ class GatewayRouteMatrixStreamingResponseTest {
 
         assertFalse(result.protocolError());
         assertTrue(servletResponse.getContentAsString().contains("data: [DONE]"));
+    }
+
+    @Test
+    @DisplayName("Messages 非流式聚合缺 terminal event 时返回 Anthropic 错误格式")
+    void messagesNonStreamingAggregationMissingTerminalUsesAnthropicErrorEnvelope() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("messages_non_streaming_missing_terminal")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "chat_completions",
+                        EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "https://upstream.example.com/v1/chat/completions",
+                        true,
+                        false,
+                        "chat_completions",
+                        "messages_non_streaming_missing_terminal"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"id":"chatcmpl_partial","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"}}]}
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new OpenAiUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        assertEquals(502, servletResponse.getStatus());
+        assertEquals("error", body.get("type").asText());
+        assertEquals("upstream_error", body.get("error").get("type").asText());
+        assertEquals(GatewayStreamAggregationPolicy.MISSING_TERMINAL_MESSAGE,
+                body.get("error").get("message").asText());
+        assertFalse(result.usage().hasUsage());
+    }
+
+    @Test
+    @DisplayName("Messages 非流式聚合 response.failed 时返回 Anthropic 错误格式")
+    void messagesNonStreamingAggregationFailedTerminalUsesAnthropicErrorEnvelope() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("messages_non_streaming_failed_terminal")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.OAUTH))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://upstream.example.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "messages_non_streaming_failed_terminal"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"message":"upstream failed"}}}
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new ResponsesUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        assertEquals(502, servletResponse.getStatus());
+        assertEquals("error", body.get("type").asText());
+        assertEquals("upstream_error", body.get("error").get("type").asText());
+        assertEquals("upstream failed", body.get("error").get("message").asText());
+        assertFalse(result.usage().hasUsage());
+    }
+
+    @Test
+    @DisplayName("Anthropic 上游 SSE 可聚合为 Responses 非流式 JSON")
+    void anthropicSseAggregatesToResponsesJsonForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("anthropic_sse_to_responses_json")
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("responses")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(account(Platform.ANTHROPIC, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "responses",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://upstream.example.com/v1/messages",
+                        true,
+                        false,
+                        "messages",
+                        "anthropic_sse_to_responses_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse(upstreamSse("messages"), "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new AnthropicUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("response", body.get("object").asText());
+        assertEquals("Hello stream", body.get("output").get(0).get("content").get(0).get("text").asText());
+        assertEquals(10, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("input_tokens_details").get("cached_tokens").asInt());
+        assertEquals(10, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Anthropic 上游 SSE 可聚合并翻译为 Chat 非流式 JSON")
+    void anthropicSseAggregatesToChatJsonForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("anthropic_sse_to_chat_json")
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("chat_completions")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(account(Platform.ANTHROPIC, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "chat_completions",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://upstream.example.com/v1/messages",
+                        true,
+                        false,
+                        "messages",
+                        "anthropic_sse_to_chat_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse(upstreamSse("messages"), "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new AnthropicUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("chat.completion", body.get("object").asText());
+        assertEquals("Hello stream", body.get("choices").get(0).get("message").get("content").asText());
+        assertEquals("stop", body.get("choices").get(0).get("finish_reason").asText());
+        assertEquals(10, body.get("usage").get("prompt_tokens").asInt());
+        assertEquals(2, body.get("usage").get("completion_tokens").asInt());
+        assertEquals(3, body.get("usage").get("prompt_tokens_details").get("cached_tokens").asInt());
+        assertEquals(10, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Chat 上游 SSE 可聚合为 Responses 非流式 JSON")
+    void chatSseAggregatesToResponsesJsonForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("chat_sse_to_responses_json")
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("responses")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "responses",
+                        "chat_completions",
+                        EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "https://upstream.example.com/v1/chat/completions",
+                        true,
+                        false,
+                        "chat_completions",
+                        "chat_sse_to_responses_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse(upstreamSse("chat_completions"), "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new OpenAiUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("response", body.get("object").asText());
+        assertEquals("Hello stream", body.get("output").get(0).get("content").get(0).get("text").asText());
+        assertEquals(10, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("input_tokens_details").get("cached_tokens").asInt());
+        assertEquals(7, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Chat 上游 SSE 可聚合并翻译为 Messages 非流式 JSON")
+    void chatSseAggregatesToMessagesJsonForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("chat_sse_to_messages_json")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "chat_completions",
+                        EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "https://upstream.example.com/v1/chat/completions",
+                        true,
+                        false,
+                        "chat_completions",
+                        "chat_sse_to_messages_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse(upstreamSse("chat_completions"), "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new OpenAiUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("message", body.get("type").asText());
+        assertEquals("assistant", body.get("role").asText());
+        assertEquals("Hello stream", body.get("content").get(0).get("text").asText());
+        assertEquals("end_turn", body.get("stop_reason").asText());
+        assertEquals(7, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("cache_read_input_tokens").asInt());
+        assertEquals(7, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Responses 上游 SSE 工具调用可聚合并翻译为 Messages 非流式 tool_use")
+    void responsesSseToolCallAggregatesToMessagesToolUseForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("responses_sse_tool_call_to_messages_json")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.OAUTH))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://upstream.example.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "responses_sse_tool_call_to_messages_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"type":"response.created","response":{"id":"resp_tool","model":"gpt-5.5"}}
+
+                        data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"get_weather","status":"in_progress"}}
+
+                        data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\\"city\\":"}
+
+                        data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\\"NYC\\"}"}
+
+                        data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\\"city\\":\\"NYC\\"}"}
+
+                        data: {"type":"response.completed","response":{"id":"resp_tool","model":"gpt-5.5","status":"completed","usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new ResponsesUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        JsonNode toolUse = body.get("content").get(0);
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("message", body.get("type").asText());
+        assertEquals("tool_use", toolUse.get("type").asText());
+        assertEquals("call_1", toolUse.get("id").asText());
+        assertEquals("get_weather", toolUse.get("name").asText());
+        assertEquals("NYC", toolUse.get("input").get("city").asText());
+        assertEquals("tool_use", body.get("stop_reason").asText());
+        assertEquals(7, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("cache_read_input_tokens").asInt());
+        assertEquals(7, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Chat 上游 SSE 工具调用可经 Responses IR 聚合并翻译为 Messages 非流式 tool_use")
+    void chatSseToolCallAggregatesToMessagesToolUseForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("chat_sse_tool_call_to_messages_json")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "chat_completions",
+                        EndpointKind.OPENAI_CHAT_COMPLETIONS,
+                        "https://upstream.example.com/v1/chat/completions",
+                        true,
+                        false,
+                        "chat_completions",
+                        "chat_sse_tool_call_to_messages_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+
+                        data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather"}}]}}]}
+
+                        data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":"}}]}}]}
+
+                        data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"NYC\\"}"}}]}}]}
+
+                        data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":null}
+
+                        data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","created":1,"model":"gpt-5.5","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":3}}}
+
+                        data: [DONE]
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new OpenAiUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        JsonNode toolUse = body.get("content").get(0);
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("message", body.get("type").asText());
+        assertEquals("tool_use", toolUse.get("type").asText());
+        assertEquals("call_1", toolUse.get("id").asText());
+        assertEquals("get_weather", toolUse.get("name").asText());
+        assertEquals("NYC", toolUse.get("input").get("city").asText());
+        assertEquals("tool_use", body.get("stop_reason").asText());
+        assertEquals(7, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("cache_read_input_tokens").asInt());
+        assertEquals(7, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Anthropic 上游 SSE tool_use 可经 Responses IR 聚合为 Messages 非流式 tool_use")
+    void anthropicSseToolUseAggregatesToMessagesToolUseForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("anthropic_sse_tool_use_to_messages_json")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("claude-sonnet-4-5")
+                .selectedAccount(account(Platform.ANTHROPIC, AccountType.API_KEY))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.ANTHROPIC,
+                        "messages",
+                        "messages",
+                        EndpointKind.ANTHROPIC_MESSAGES,
+                        "https://upstream.example.com/v1/messages",
+                        true,
+                        false,
+                        "messages",
+                        "anthropic_sse_tool_use_to_messages_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"usage":{"input_tokens":10,"cache_read_input_tokens":3}}}
+
+                        data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}
+
+                        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"city\\":"}}
+
+                        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"NYC\\"}"}}
+
+                        data: {"type":"content_block_stop","index":0}
+
+                        data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":2}}
+
+                        data: {"type":"message_stop"}
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new AnthropicUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        JsonNode toolUse = body.get("content").get(0);
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("message", body.get("type").asText());
+        assertEquals("tool_use", toolUse.get("type").asText());
+        assertEquals("toolu_1", toolUse.get("id").asText());
+        assertEquals("get_weather", toolUse.get("name").asText());
+        assertEquals("NYC", toolUse.get("input").get("city").asText());
+        assertEquals("tool_use", body.get("stop_reason").asText());
+        assertEquals(7, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("cache_read_input_tokens").asInt());
+        assertEquals(10, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Responses 上游 SSE web_search_call 可聚合并翻译为 Messages server tool blocks")
+    void responsesSseWebSearchAggregatesToMessagesServerToolBlocksForNonStreamingClient() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("responses_sse_web_search_to_messages_json")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.OAUTH))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://upstream.example.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "responses_sse_web_search_to_messages_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"type":"response.created","response":{"id":"resp_web_search","model":"gpt-5.5"}}
+
+                        data: {"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"LandGate"}}}
+
+                        data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+                        data: {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"visible"}
+
+                        data: {"type":"response.output_text.done","output_index":1,"content_index":0,"text":"visible"}
+
+                        data: {"type":"response.completed","response":{"id":"resp_web_search","model":"gpt-5.5","status":"completed","usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new ResponsesUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        JsonNode content = body.get("content");
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("message", body.get("type").asText());
+        assertEquals("server_tool_use", content.get(0).get("type").asText());
+        assertEquals("srvtoolu_ws_1", content.get(0).get("id").asText());
+        assertEquals("web_search", content.get(0).get("name").asText());
+        assertEquals("LandGate", content.get(0).get("input").get("query").asText());
+        assertEquals("web_search_tool_result", content.get(1).get("type").asText());
+        assertEquals("srvtoolu_ws_1", content.get(1).get("tool_use_id").asText());
+        assertEquals(0, content.get(1).get("content").size());
+        assertEquals("text", content.get(2).get("type").asText());
+        assertEquals("visible", content.get(2).get("text").asText());
+        assertEquals("end_turn", body.get("stop_reason").asText());
+        assertEquals(7, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("cache_read_input_tokens").asInt());
+        assertEquals(7, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Responses 上游 SSE hosted tool 输出聚合到 Messages 时不降级为可见 tool/text")
+    void responsesSseHostedToolsAggregateToMessagesWithoutVisibleHostedPayload() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("responses_sse_hosted_tools_to_messages_json")
+                .requestPlatform(Platform.ANTHROPIC)
+                .requestFormat("messages")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.OAUTH))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "messages",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://upstream.example.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "responses_sse_hosted_tools_to_messages_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"type":"response.created","response":{"id":"resp_hosted","model":"gpt-5.5"}}
+
+                        data: {"type":"response.output_item.done","output_index":0,"item":{"type":"file_search_call","id":"fs_1","status":"completed"}}
+
+                        data: {"type":"response.output_item.done","output_index":1,"item":{"type":"local_shell_call","id":"sh_1","status":"completed"}}
+
+                        data: {"type":"response.output_item.added","output_index":2,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+                        data: {"type":"response.output_text.delta","output_index":2,"content_index":0,"delta":"visible answer"}
+
+                        data: {"type":"response.output_text.done","output_index":2,"content_index":0,"text":"visible answer"}
+
+                        data: {"type":"response.completed","response":{"id":"resp_hosted","model":"gpt-5.5","status":"completed","usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new ResponsesUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        JsonNode content = body.get("content");
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("message", body.get("type").asText());
+        assertEquals(1, content.size());
+        assertEquals("text", content.get(0).get("type").asText());
+        assertEquals("visible answer", content.get(0).get("text").asText());
+        assertFalse(content.toString().contains("tool_use"));
+        assertFalse(content.toString().contains("file_search_call"));
+        assertFalse(content.toString().contains("local_shell_call"));
+        assertEquals("end_turn", body.get("stop_reason").asText());
+        assertEquals(7, body.get("usage").get("input_tokens").asInt());
+        assertEquals(2, body.get("usage").get("output_tokens").asInt());
+        assertEquals(3, body.get("usage").get("cache_read_input_tokens").asInt());
+        assertEquals(7, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
+    }
+
+    @Test
+    @DisplayName("Responses 上游 SSE hosted tool 输出聚合到 Chat 时不降级为 tool_calls")
+    void responsesSseHostedToolsAggregateToChatWithoutToolCalls() throws Exception {
+        GatewayRequestContext.set(GatewayRequestContext.builder()
+                .requestId("responses_sse_hosted_tools_to_chat_json")
+                .requestPlatform(Platform.OPENAI)
+                .requestFormat("chat_completions")
+                .requestedModel("gpt-5.5")
+                .selectedAccount(account(Platform.OPENAI, AccountType.OAUTH))
+                .upstreamRoute(new UpstreamRoute(
+                        Platform.OPENAI,
+                        "chat_completions",
+                        "responses",
+                        EndpointKind.OPENAI_CODEX_RESPONSES,
+                        "https://upstream.example.com/backend-api/codex/responses",
+                        true,
+                        true,
+                        "responses",
+                        "responses_sse_hosted_tools_to_chat_json"))
+                .stream(true)
+                .build());
+        MockHttpServletResponse servletResponse = new MockHttpServletResponse();
+
+        GatewayResponseResult result = responseService.handleStreamingAsNonStreaming(
+                new InputStreamHttpResponse("""
+                        data: {"type":"response.created","response":{"id":"resp_hosted","model":"gpt-5.5"}}
+
+                        data: {"type":"response.output_item.done","output_index":0,"item":{"type":"file_search_call","id":"fs_1","status":"completed"}}
+
+                        data: {"type":"response.output_item.done","output_index":1,"item":{"type":"local_shell_call","id":"sh_1","status":"completed"}}
+
+                        data: {"type":"response.output_item.added","output_index":2,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}
+
+                        data: {"type":"response.output_text.delta","output_index":2,"content_index":0,"delta":"visible answer"}
+
+                        data: {"type":"response.output_text.done","output_index":2,"content_index":0,"text":"visible answer"}
+
+                        data: {"type":"response.completed","response":{"id":"resp_hosted","model":"gpt-5.5","status":"completed","usage":{"input_tokens":10,"output_tokens":2,"input_tokens_details":{"cached_tokens":3}}}}
+
+                        """, "text/event-stream"),
+                servletResponse,
+                GatewayRequestContext.get(),
+                new ResponsesUsageParser());
+
+        JsonNode body = new com.fasterxml.jackson.databind.ObjectMapper()
+                .readTree(servletResponse.getContentAsString());
+        JsonNode message = body.get("choices").get(0).get("message");
+        assertEquals(200, servletResponse.getStatus());
+        assertEquals("chat.completion", body.get("object").asText());
+        assertEquals("visible answer", message.get("content").asText());
+        assertFalse(message.has("tool_calls"));
+        assertFalse(message.toString().contains("file_search_call"));
+        assertFalse(message.toString().contains("local_shell_call"));
+        assertEquals("stop", body.get("choices").get(0).get("finish_reason").asText());
+        assertEquals(10, body.get("usage").get("prompt_tokens").asInt());
+        assertEquals(2, body.get("usage").get("completion_tokens").asInt());
+        assertEquals(3, body.get("usage").get("prompt_tokens_details").get("cached_tokens").asInt());
+        assertEquals(7, result.usage().getInputTokens());
+        assertEquals(2, result.usage().getOutputTokens());
+        assertEquals(3, result.usage().getCacheReadTokens());
     }
 
     private static void assertClientSseShape(String clientFormat, String output, String name) {

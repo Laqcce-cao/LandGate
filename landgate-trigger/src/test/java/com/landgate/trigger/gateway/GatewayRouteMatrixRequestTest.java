@@ -95,6 +95,39 @@ class GatewayRouteMatrixRequestTest {
     }
 
     @Test
+    @DisplayName("Anthropic upstream request pre-filters nested empty text blocks in tool_result")
+    void anthropicUpstreamPreFiltersNestedEmptyTextBlocksInToolResult() throws Exception {
+        AccountEntity account = account(Platform.ANTHROPIC, AccountType.API_KEY,
+                "{}", "{}", "[\"messages\"]");
+        String clientBody = """
+                {
+                  "model":"claude-sonnet-4-5",
+                  "max_tokens":128,
+                  "messages":[{"role":"user","content":[
+                    {"type":"text","text":""},
+                    {"type":"tool_result","tool_use_id":"t1","content":[
+                      {"type":"tool_result","tool_use_id":"t2","content":[
+                        {"type":"text","text":""},
+                        {"type":"text","text":"deep"}
+                      ]}
+                    ]},
+                    {"type":"text","text":"hello"}
+                  ]}]
+                }""";
+
+        PreparedRequest prepared = prepare(account, Platform.ANTHROPIC, "messages", clientBody, false, null);
+        JsonNode upstream = JSON.readTree(prepared.body());
+        JsonNode content = upstream.path("messages").get(0).path("content");
+        JsonNode deepContent = content.get(0).path("content").get(0).path("content");
+
+        assertEquals(2, content.size());
+        assertEquals("tool_result", content.get(0).path("type").asText());
+        assertEquals(1, deepContent.size());
+        assertEquals("deep", deepContent.get(0).path("text").asText());
+        assertEquals("hello", content.get(1).path("text").asText());
+    }
+
+    @Test
     @DisplayName("Messages client fast-mode beta is filtered by default OpenAI fast policy")
     void messagesClientFastModeBetaMapsToOpenAiResponsesServiceTier() throws Exception {
         AccountEntity account = account(Platform.OPENAI, AccountType.API_KEY,

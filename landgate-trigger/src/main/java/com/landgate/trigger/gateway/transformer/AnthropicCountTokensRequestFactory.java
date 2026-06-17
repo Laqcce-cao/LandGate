@@ -54,7 +54,8 @@ public class AnthropicCountTokensRequestFactory {
                              Map<String, String> requestHeaders,
                              Options options) {
         Options effective = options == null ? Options.defaults() : options;
-        String upstreamBody = AnthropicModelMappingBodyNormalizer.apply(account, body);
+        String upstreamBody = AnthropicEmptyTextBlockNormalizer.normalize(
+                AnthropicModelMappingBodyNormalizer.apply(account, body));
         String targetUrl = UpstreamEndpointDefaults.anthropicMessagesCountTokensUrl(account);
         Map<String, String> upstreamHeaders = normalizeApiKeyCountTokensHeaders(account, requestHeaders, effective);
         String[] headers = AnthropicAuthProfile.from(account).buildHeaders(accessToken, upstreamHeaders);
